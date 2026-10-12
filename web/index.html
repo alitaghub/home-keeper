@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Home Observer</title><link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header><div class="brand">◉ <strong>Home Observer</strong></div><span class="demo">SYNTHETIC DEMO</span></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">YOUR HOME, OBSERVED</p><h1>Know what is connected.</h1>
+      <p class="intro">Discover devices. Choose the lights to monitor. Keep the evidence local.</p></div>
+      <button id="refresh">Refresh discovery</button></div>
+    <p class="notice">Demo data only. No hardware, Home Assistant, model, or device controls are connected.</p>
+    <div class="stats"><section><span>Collector</span><strong id="health">Connecting…</strong><small id="heartbeat">Waiting for collection</small></section>
+      <section><span>Discovered entities</span><strong id="count">—</strong><small>Entities grouped by device below</small></section>
+      <section><span>Monitoring</span><strong id="selected-count">0</strong><small>You choose what gets recorded</small></section></div>
+    <p id="message" role="status" aria-live="polite"></p>
+    <section class="panel"><div class="section-heading"><div><h2>Monitored lights</h2><p>Current baselines and collection freshness</p></div><span class="tag">READ ONLY</span></div>
+      <div id="monitored"></div></section>
+    <section class="panel"><div class="section-heading"><div><h2>Discovered devices</h2><p>Discovery does not enable monitoring. Select individual Hue lights.</p></div></div><div id="catalog"></div></section>
+    <footer>Stored on this machine · Stable snapshots are baselines, not recorded light changes · No agent in this milestone</footer>
+  </main>
+</body>
+</html>

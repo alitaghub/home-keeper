@@ -1,0 +1,43 @@
+services:
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OBSERVER_BIND: 0.0.0.0
+      OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
+    volumes:
+      - data:/data
+      - service-secret:/secrets
+    networks: [dashboard, collection]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+  collector:
+    build: .
+    command: [python, -m, home_observer.demo]
+    environment:
+      OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
+    volumes:
+      - service-secret:/secrets:ro
+    networks: [collection]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      api:
+        condition: service_healthy
+networks:
+  dashboard:
+  collection:
+    internal: true
+volumes:
+  data:
+  service-secret:
