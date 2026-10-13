@@ -1,35 +1,23 @@
-import json
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple
 from uuid import uuid4
 
 from pydantic import TypeAdapter
 
-from home_observer.models import CurrentReading, Entity, EventReading, HealthReport
+from home_observer.models import (
+    CoverageGap,
+    CurrentReading,
+    Entity,
+    EventReading,
+    GapReason,
+    HealthReport,
+    SelectionSnapshot,
+)
 
-
-class SelectionState(TypedDict):
-    revision: int
-    refresh_revision: int
-    entity_ids: list[str]
-
-
-class GapRecord(TypedDict):
-    id: str
-    source_id: str
-    entity_ids: list[str]
-    last_confirmed_at: str | None
-    uncertain_start: bool
-    detected_at: str
-    recovered_at: str | None
-    reason: str
-
-
-gap_record = TypeAdapter(GapRecord)
 current_reading: TypeAdapter[CurrentReading] = TypeAdapter(CurrentReading)
 
 
@@ -100,16 +88,16 @@ class Store:
             db.close()
 
     @staticmethod
-    def selection(db: sqlite3.Connection) -> SelectionState:
-        return {
-            "revision": int(
+    def selection(db: sqlite3.Connection) -> SelectionSnapshot:
+        return SelectionSnapshot(
+            revision=int(
                 db.execute("SELECT value FROM metadata WHERE key='revision'").fetchone()[0]
             ),
-            "refresh_revision": int(
+            refresh_revision=int(
                 db.execute("SELECT value FROM metadata WHERE key='refresh_revision'").fetchone()[0]
             ),
-            "entity_ids": [row[0] for row in db.execute("SELECT id FROM selection ORDER BY id")],
-        }
+            entity_ids=[row[0] for row in db.execute("SELECT id FROM selection ORDER BY id")],
+        )
 
     @staticmethod
     def entity(db: sqlite3.Connection, entity_id: str) -> Entity | None:
@@ -231,33 +219,35 @@ class Store:
         db: sqlite3.Connection,
         source_id: str,
         detected_at: str,
-        reason: str,
+        reason: GapReason,
         entity_id: str | None = None,
-    ) -> GapRecord:
+    ) -> CoverageGap:
         scope = entity_id or "*"
         existing = db.execute(
             "SELECT data FROM coverage WHERE scope=? AND recovered_at IS NULL", (scope,)
         ).fetchone()
         if existing:
-            return gap_record.validate_json(existing[0])
-        data: GapRecord = {
-            "id": str(uuid4()),
-            "source_id": source_id,
-            "entity_ids": [entity_id] if entity_id else cls.selection(db)["entity_ids"],
-            "last_confirmed_at": cls.last_confirmed(db, entity_id),
-            "uncertain_start": True,
-            "detected_at": detected_at,
-            "recovered_at": None,
-            "reason": reason,
-        }
+            return CoverageGap.model_validate_json(existing[0])
+        gap = CoverageGap.model_validate(
+            {
+                "id": str(uuid4()),
+                "source_id": source_id,
+                "entity_ids": [entity_id] if entity_id else cls.selection(db).entity_ids,
+                "last_confirmed_at": cls.last_confirmed(db, entity_id),
+                "uncertain_start": True,
+                "detected_at": detected_at,
+                "recovered_at": None,
+                "reason": reason,
+            }
+        )
         db.execute(
             "INSERT INTO coverage VALUES(?, ?, ?, NULL, ?)",
-            (data["id"], scope, detected_at, json.dumps(data)),
+            (gap.id, scope, detected_at, gap.model_dump_json()),
         )
-        return data
+        return gap
 
     @staticmethod
-    def open_gaps(db: sqlite3.Connection, entity_id: str | None = None) -> list[GapRecord]:
+    def open_gaps(db: sqlite3.Connection, entity_id: str | None = None) -> list[CoverageGap]:
         if entity_id is None:
             rows = db.execute("SELECT data FROM coverage WHERE recovered_at IS NULL")
         else:
@@ -265,4 +255,4 @@ class Store:
                 "SELECT data FROM coverage WHERE recovered_at IS NULL AND scope IN ('*', ?)",
                 (entity_id,),
             )
-        return [gap_record.validate_json(row[0]) for row in rows]
+        return [CoverageGap.model_validate_json(row[0]) for row in rows]

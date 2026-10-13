@@ -43,7 +43,7 @@ from home_observer.models import (
     SelectionSnapshot,
     to_utc,
 )
-from home_observer.store import SnapshotRead, Store, gap_record
+from home_observer.store import SnapshotRead, Store
 
 
 def create_app(
@@ -216,12 +216,12 @@ def create_app(
         with store.transaction() as db:
             entity = store.entity(db, entity_id)
             current = store.selection(db)
-            if entity is None and (change.selected or entity_id not in current["entity_ids"]):
+            if entity is None and (change.selected or entity_id not in current.entity_ids):
                 raise HTTPException(404, "Unknown entity")
             if change.selected and entity is not None and not entity.supported:
                 raise HTTPException(422, "Entity is unsupported")
             current = store.selection(db)
-            if change.selected != (entity_id in current["entity_ids"]):
+            if change.selected != (entity_id in current.entity_ids):
                 if change.selected:
                     db.execute("INSERT INTO selection VALUES(?)", (entity_id,))
                     # A fresh selection awaits a new confirmation, even if history exists.
@@ -231,7 +231,7 @@ def create_app(
                     db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
                 db.execute(
                     "UPDATE metadata SET value=? WHERE key='revision'",
-                    (str(current["revision"] + 1),),
+                    (str(current.revision + 1),),
                 )
             return store.selection(db)
 
@@ -262,8 +262,8 @@ def create_app(
             current = store.selection(db)
             entity = store.entity(db, payload.entity_id)
             if (
-                payload.selection_revision != current["revision"]
-                or payload.entity_id not in current["entity_ids"]
+                payload.selection_revision != current.revision
+                or payload.entity_id not in current.entity_ids
                 or entity is None
                 or not entity.supported
             ):
@@ -307,7 +307,7 @@ def create_app(
                 "recovery" if confirmed and gaps else "reconciliation" if confirmed else "baseline"
             )
             if gaps:
-                data["coverage_gap_ids"] = [gap["id"] for gap in gaps]
+                data["coverage_gap_ids"] = [gap.id for gap in gaps]
                 data["transition_time"] = "unknown"
 
             previous = db.execute(
@@ -399,8 +399,8 @@ def create_app(
             current = store.selection(db)
             entity = store.entity(db, payload.entity_id)
             if (
-                payload.selection_revision != current["revision"]
-                or payload.entity_id not in current["entity_ids"]
+                payload.selection_revision != current.revision
+                or payload.entity_id not in current.entity_ids
                 or entity is None
                 or not entity.supported
             ):
@@ -586,7 +586,7 @@ def create_app(
             current = store.selection(db)
             if (
                 payload.entity_id is not None
-                and payload.entity_id not in store.selection(db)["entity_ids"]
+                and payload.entity_id not in store.selection(db).entity_ids
             ):
                 raise conflict(
                     "selection_changed", "Selection no longer permits this coverage scope"
@@ -596,12 +596,12 @@ def create_app(
                     db, source_id, persisted.isoformat(), payload.reason, payload.entity_id
                 )
                 return {"accepted": True, "gap": gap}
-            if payload.selection_revision != store.selection(db)["revision"]:
+            if payload.selection_revision != store.selection(db).revision:
                 raise conflict("selection_changed", "Selection changed before recovery completed")
             recovered_entities = (
-                payload.entity_ids if payload.entity_ids is not None else current["entity_ids"]
+                payload.entity_ids if payload.entity_ids is not None else current.entity_ids
             )
-            if not set(recovered_entities).issubset(current["entity_ids"]):
+            if not set(recovered_entities).issubset(current.entity_ids):
                 raise conflict(
                     "selection_changed", "Selection no longer permits this recovery scope"
                 )
@@ -618,16 +618,14 @@ def create_app(
                     else row["scope"] == "*" or row["scope"] in recovered_entities
                 )
             ]
-            gaps = [gap_record.validate_json(row["data"]) for row in relevant]
-            if any(
-                payload.received_at < datetime.fromisoformat(gap["detected_at"]) for gap in gaps
-            ):
+            gaps = [CoverageGap.model_validate_json(row["data"]) for row in relevant]
+            if any(payload.received_at < datetime.fromisoformat(gap.detected_at) for gap in gaps):
                 raise conflict("recovery_older", "Recovery is older than interruption")
             for gap in gaps:
-                gap["recovered_at"] = persisted.isoformat()
+                gap.recovered_at = persisted.isoformat()
                 db.execute(
                     "UPDATE coverage SET recovered_at=?, data=? WHERE id=?",
-                    (persisted.isoformat(), json.dumps(gap), gap["id"]),
+                    (persisted.isoformat(), gap.model_dump_json(), gap.id),
                 )
             return {"accepted": True}
 
@@ -647,8 +645,7 @@ def create_app(
                 gaps=gaps,
                 state="interrupted"
                 if any(
-                    not gap["entity_ids"]
-                    or set(gap["entity_ids"]) & set(store.selection(db)["entity_ids"])
+                    not gap.entity_ids or set(gap.entity_ids) & set(store.selection(db).entity_ids)
                     for gap in store.open_gaps(db)
                 )
                 else "collecting"
@@ -670,7 +667,7 @@ def create_app(
         with store.transaction() as db:
             results: list[MonitoredEntity] = []
             health = get_health(db)
-            for entity_id in store.selection(db)["entity_ids"]:
+            for entity_id in store.selection(db).entity_ids:
                 entity = store.entity(db, entity_id)
                 missing = entity is None
                 if entity is None:
