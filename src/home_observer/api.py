@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from home_observer.models import (
     Catalog,
     ChangeEvent,
+    Coverage,
     Health,
     Identity,
     LightState,
@@ -70,6 +71,8 @@ def create_app(
             value = json.loads(row["data"])
             source_time = value.get("last_updated") or value["received_at"]
             store.update_current(db, row["entity_id"], source_time, value)
+        if store.last_confirmed(db):
+            store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "restart")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -224,23 +227,75 @@ def create_app(
             if confirmed and payload.received_at < datetime.fromisoformat(confirmed[0]):
                 raise HTTPException(409, "Observation is older than latest confirmation")
             data = payload.model_dump(mode="json", exclude={"selection_revision"})
-            data["kind"] = "reconciliation" if confirmed else "baseline"
+            latest = db.execute(
+                "SELECT data, source_time FROM current_state WHERE entity_id=?",
+                (payload.entity_id,),
+            ).fetchone()
+            # Only an authoritative snapshot lacking a recorded change exposes a gap.
+            # A newer buffered event wins over an older reconciliation snapshot.
+            if confirmed and latest:
+                previous_value = json.loads(latest["data"])
+                keys = LightState.model_fields.keys()
+                previous_state = LightState.model_validate(
+                    {key: value for key, value in previous_value.items() if key in keys}
+                )
+                snapshot_time = payload.last_updated or payload.received_at
+                if (
+                    LightState.model_validate(
+                        {key: getattr(payload, key) for key in keys}
+                    ).meaningful()
+                    != previous_state.meaningful()
+                    and (
+                        previous_value.get("kind") != "event"
+                        or snapshot_time >= datetime.fromisoformat(latest["source_time"])
+                    )
+                    and not store.open_gaps(db, payload.entity_id)
+                ):
+                    store.interrupt(
+                        db, source_id, persisted.isoformat(), "reconciliation", payload.entity_id
+                    )
+            gaps = store.open_gaps(db, payload.entity_id)
+            data["kind"] = (
+                "recovery" if confirmed and gaps else "reconciliation" if confirmed else "baseline"
+            )
+            if gaps:
+                data["coverage_gap_ids"] = [gap["id"] for gap in gaps]
+                data["transition_time"] = "unknown"
+
             previous = db.execute(
                 "SELECT data FROM baselines WHERE entity_id=? ORDER BY rowid DESC LIMIT 1",
                 (payload.entity_id,),
             ).fetchone()
             baseline = json.loads(previous[0]) if previous else None
             comparable = {
-                key: value for key, value in data.items() if key not in ("received_at", "kind")
+                key: value
+                for key, value in data.items()
+                if key not in ("received_at", "kind", "coverage_gap_ids", "transition_time")
             }
             old = {key: baseline.get(key) for key in comparable} if baseline else None
-            if comparable != old:
+            new_recovery = bool(gaps) and (
+                not baseline or baseline.get("coverage_gap_ids") != data.get("coverage_gap_ids")
+            )
+            if comparable != old or new_recovery:
                 baseline = {**data, "id": str(uuid4()), "persisted_at": persisted.isoformat()}
                 db.execute(
                     "INSERT INTO baselines VALUES(?, ?, ?)",
                     (baseline["id"], payload.entity_id, json.dumps(baseline)),
                 )
             source_time = payload.last_updated or payload.received_at
+            if gaps and latest:
+                value = json.loads(latest["data"])
+                before_gap = datetime.fromisoformat(value["persisted_at"]) <= min(
+                    datetime.fromisoformat(gap["detected_at"]) for gap in gaps
+                )
+                newer_receipt = payload.received_at >= datetime.fromisoformat(value["received_at"])
+                if value.get("kind") == "event":
+                    newer_receipt = payload.received_at > datetime.fromisoformat(
+                        value["received_at"]
+                    )
+                if newer_receipt and (value.get("kind") != "event" or before_gap):
+                    # A pre-gap event is a cached state, not proof of the recovered state.
+                    db.execute("DELETE FROM current_state WHERE entity_id=?", (payload.entity_id,))
             store.update_current(db, payload.entity_id, source_time.isoformat(), baseline)
             db.execute(
                 "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
@@ -293,7 +348,9 @@ def create_app(
                     if key not in ("persisted_at", "received_at")
                 }
                 if comparable != {
-                    key: value for key, value in data.items() if key not in ("received_at", "kind")
+                    key: value
+                    for key, value in data.items()
+                    if key not in ("received_at", "kind", "coverage_gap_ids", "transition_time")
                 }:
                     raise HTTPException(409, "Event identity conflict")
                 return {"accepted": True, "recorded": False, "duplicate": True}
@@ -410,6 +467,18 @@ def create_app(
                     previous["persisted_at"]
                 ) and payload.received_at < datetime.fromisoformat(previous["received_at"]):
                     raise HTTPException(409, "Heartbeat is older than latest health")
+            if payload.status == "failed":
+                reason = (
+                    "invalid_data"
+                    if payload.error == "discovery"
+                    else payload.error or "connection"
+                )
+                store.interrupt(db, source_id, persisted.isoformat(), reason)
+            if payload.status == "healthy":
+                db.execute(
+                    "INSERT OR REPLACE INTO metadata VALUES('last_healthy_at', ?)",
+                    (persisted.isoformat(),),
+                )
             data = payload.model_dump(mode="json") | {"persisted_at": persisted.isoformat()}
             db.execute("INSERT OR REPLACE INTO metadata VALUES('health', ?)", (json.dumps(data),))
         return {"accepted": True}
@@ -422,7 +491,78 @@ def create_app(
         age = (now() - datetime.fromisoformat(result["received_at"])).total_seconds()
         if age < 0 or age > 2 * reconciliation_seconds:
             result["status"] = "stale"
+            store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "heartbeat")
         return result
+
+    @app.post("/internal/coverage", dependencies=[Depends(internal_auth)])
+    def ingest_coverage(payload: Coverage):
+        if payload.source_id != source_id:
+            raise HTTPException(409, "Collection source mismatch")
+        persisted = now().astimezone(UTC)
+        if payload.received_at > persisted:
+            raise HTTPException(422, "Future receipt timestamp")
+        with store.transaction() as db:
+            if (
+                payload.entity_id is not None
+                and payload.entity_id not in store.selection(db)["entity_ids"]
+            ):
+                raise HTTPException(409, "Selection no longer permits this coverage scope")
+            if payload.status == "interrupted":
+                gap = store.interrupt(
+                    db, source_id, persisted.isoformat(), payload.reason, payload.entity_id
+                )
+                return {"accepted": True, "gap": gap}
+            if payload.selection_revision != store.selection(db)["revision"]:
+                raise HTTPException(409, "Selection changed before recovery completed")
+            # Recovery is a collector assertion that subscription and snapshots completed.
+            rows = db.execute(
+                "SELECT id, scope, data FROM coverage WHERE recovered_at IS NULL"
+            ).fetchall()
+            relevant = [
+                row
+                for row in rows
+                if payload.entity_id is None or row["scope"] == payload.entity_id
+            ]
+            if any(
+                payload.received_at < datetime.fromisoformat(json.loads(row["data"])["detected_at"])
+                for row in relevant
+            ):
+                raise HTTPException(409, "Recovery is older than interruption")
+            for row in rows:
+                if payload.entity_id is not None and row["scope"] != payload.entity_id:
+                    continue
+                gap = json.loads(row["data"])
+                gap["recovered_at"] = persisted.isoformat()
+                db.execute(
+                    "UPDATE coverage SET recovered_at=?, data=? WHERE id=?",
+                    (persisted.isoformat(), json.dumps(gap), row["id"]),
+                )
+            return {"accepted": True}
+
+    @app.get("/api/coverage")
+    def coverage(limit: Annotated[int, Query(ge=1, le=100)] = 100):
+        with store.transaction() as db:
+            health = get_health(db)
+            gaps = [
+                json.loads(row[0])
+                for row in db.execute(
+                    "SELECT data FROM coverage ORDER BY detected_at DESC, id DESC LIMIT ?", (limit,)
+                )
+            ]
+            return {
+                "gaps": gaps,
+                "state": "interrupted"
+                if store.open_gaps(db)
+                else "collecting"
+                if health["status"] == "healthy"
+                else "unknown",
+                "last_confirmed_at": store.last_confirmed(db),
+                "retained_since": (
+                    now().astimezone(UTC) - timedelta(days=retention_days)
+                ).isoformat(),
+                "continuous_coverage": False,
+                "outside_recorded_windows": "unknown",
+            }
 
     @app.get("/api/health")
     def health():
@@ -461,6 +601,7 @@ def create_app(
                         0 <= (now() - receipt).total_seconds() <= 2 * reconciliation_seconds
                         and 0 <= (now() - persisted).total_seconds() <= 2 * reconciliation_seconds
                         and health["status"] not in ("failed", "stale")
+                        and not store.open_gaps(db, entity_id)
                         and not missing
                         and entity["supported"]
                     )

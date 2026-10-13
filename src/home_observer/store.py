@@ -28,6 +28,12 @@ class Store:
                 CREATE TABLE IF NOT EXISTS current_state(
                     entity_id TEXT PRIMARY KEY, source_time TEXT NOT NULL, data TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS coverage(
+                    id TEXT PRIMARY KEY, scope TEXT NOT NULL, detected_at TEXT NOT NULL,
+                    recovered_at TEXT, data TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS open_coverage_scope
+                    ON coverage(scope) WHERE recovered_at IS NULL;
                 CREATE TABLE IF NOT EXISTS confirmed(
                     entity_id TEXT PRIMARY KEY, received_at TEXT NOT NULL,
                     persisted_at TEXT NOT NULL
@@ -69,6 +75,9 @@ class Store:
     def cleanup(db, cutoff):
         db.execute("DELETE FROM events WHERE persisted_at < ?", (cutoff,))
         db.execute(
+            "DELETE FROM coverage WHERE recovered_at IS NOT NULL AND recovered_at < ?", (cutoff,)
+        )
+        db.execute(
             "DELETE FROM current_state WHERE entity_id NOT IN (SELECT id FROM selection) "
             "AND json_extract(data, '$.persisted_at') < ?",
             (cutoff,),
@@ -95,3 +104,59 @@ class Store:
                 "INSERT OR REPLACE INTO current_state VALUES(?, ?, ?)",
                 (entity_id, instant.isoformat(), json.dumps(data)),
             )
+
+    @staticmethod
+    def last_confirmed(db, entity_id=None):
+        if entity_id is not None:
+            row = db.execute(
+                "SELECT persisted_at FROM confirmed WHERE entity_id=?", (entity_id,)
+            ).fetchone()
+            return row[0] if row else None
+        row = db.execute("SELECT MAX(persisted_at) FROM confirmed").fetchone()
+        retained = db.execute("SELECT value FROM metadata WHERE key='last_healthy_at'").fetchone()
+        health = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
+        timestamps = [row[0]] if row[0] else []
+        if retained:
+            timestamps.append(retained[0])
+        if health:
+            value = json.loads(health[0])
+            if value["status"] == "healthy":
+                timestamps.append(value["persisted_at"])
+        return max(timestamps) if timestamps else None
+
+    @classmethod
+    def interrupt(cls, db, source_id, detected_at, reason, entity_id=None):
+        from uuid import uuid4
+
+        scope = entity_id or "*"
+        existing = db.execute(
+            "SELECT data FROM coverage WHERE scope=? AND recovered_at IS NULL", (scope,)
+        ).fetchone()
+        if existing:
+            return json.loads(existing[0])
+        data = dict(
+            id=str(uuid4()),
+            source_id=source_id,
+            entity_ids=[entity_id] if entity_id else cls.selection(db)["entity_ids"],
+            last_confirmed_at=cls.last_confirmed(db, entity_id),
+            uncertain_start=True,
+            detected_at=detected_at,
+            recovered_at=None,
+            reason=reason,
+        )
+        db.execute(
+            "INSERT INTO coverage VALUES(?, ?, ?, NULL, ?)",
+            (data["id"], scope, detected_at, json.dumps(data)),
+        )
+        return data
+
+    @staticmethod
+    def open_gaps(db, entity_id=None):
+        if entity_id is None:
+            rows = db.execute("SELECT data FROM coverage WHERE recovered_at IS NULL")
+        else:
+            rows = db.execute(
+                "SELECT data FROM coverage WHERE recovered_at IS NULL AND scope IN ('*', ?)",
+                (entity_id,),
+            )
+        return [json.loads(row[0]) for row in rows]

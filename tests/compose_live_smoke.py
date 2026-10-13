@@ -129,6 +129,16 @@ def main():
                 else:
                     raise AssertionError("Stopped HA fixture did not cause visible failure")
                 assert client.get("/api/catalog").json()["freshness"] == "stale"
+                gap_state = client.get("/api/coverage").json()
+                assert gap_state["state"] == "interrupted"
+                interrupted_ids = {
+                    gap["id"] for gap in gap_state["gaps"] if gap["recovered_at"] is None
+                }
+                assert interrupted_ids
+                assert not any(
+                    event["new"] and event["new"]["state"] == "unavailable"
+                    for event in client.get("/api/events").json()["events"]
+                )
                 compose("start", "fake-ha")
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
@@ -137,6 +147,31 @@ def main():
                     time.sleep(0.2)
                 else:
                     raise AssertionError("Live connector did not recover")
+                coverage = client.get("/api/coverage").json()
+                assert coverage["state"] == "collecting"
+                assert all(
+                    gap["recovered_at"] for gap in coverage["gaps"] if gap["id"] in interrupted_ids
+                )
+                snapshots = client.get("/api/baselines?entity_id=ha:fixture").json()["baselines"]
+                assert any(
+                    snapshot["kind"] == "recovery" and snapshot["transition_time"] == "unknown"
+                    for snapshot in snapshots
+                )
+                compose("restart", "api")
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    try:
+                        coverage = client.get("/api/coverage").json()
+                        if coverage["state"] == "collecting" and any(
+                            gap["reason"] == "restart" and gap["recovered_at"]
+                            for gap in coverage["gaps"]
+                        ):
+                            break
+                    except (httpx.HTTPError, ValueError):
+                        pass
+                    time.sleep(0.2)
+                else:
+                    raise AssertionError("API restart did not persist and recover a gap")
             logs = compose("logs", "--no-color", "api", "collector")
             assert "synthetic-compose-token" not in logs
             print(

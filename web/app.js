@@ -84,9 +84,10 @@ function renderMonitored(entities) {
     const baseline = entity.baseline;
     card.append(el("p", baseline ? `${baseline.state} · ${baseline.availability}` : "Pending · state unknown", "state"));
     if (baseline) {
-      const kind = {baseline: "Initial baseline", reconciliation: "Polling reconciliation snapshot", event: "Latest recorded event"}[baseline.kind] || "State snapshot";
+      const kind = {baseline: "Initial baseline", reconciliation: "Polling reconciliation snapshot", event: "Latest recorded event", recovery: "Recovery snapshot; transition time unknown"}[baseline.kind] || "State snapshot";
       card.append(el("small", kind));
       if (baseline.brightness != null) card.append(el("p", `Brightness ${baseline.brightness} / 255`));
+      if (baseline.coverage_gap_ids?.length) card.append(el("small", `Related gap evidence: ${baseline.coverage_gap_ids.join(", ")}. Changes during this gap have unknown timing.`));
       card.append(el("small", `Source: ${baseline.source_id} · Evidence ID: ${baseline.id}`));
       card.append(el("small", `Latest confirmed collection: ${date(entity.confirmed_at)}`));
       card.append(el("small", `Evidence received: ${date(baseline.received_at)} · Stored: ${date(baseline.persisted_at)}`));
@@ -153,10 +154,38 @@ async function loadTimeline(older = false) {
     refresh.disabled = false;
   }
 }
+const gapReasons = {
+  connection: "Connector connection lost", ingestion: "Observations could not be saved",
+  authentication: "Authentication failed", timeout: "Collection timed out",
+  restart: "Application restarted", overflow: "Recovery buffer exceeded its limit",
+  reconciliation: "Snapshot differed from recorded state", heartbeat: "Collector heartbeat missing",
+  selection: "Monitoring selection changed", invalid_data: "Source data was invalid",
+  configuration: "Connector configuration needs attention", tls: "Certificate verification failed",
+  missing: "Selected entity could not be read"
+};
+function renderCoverage(coverage) {
+  document.getElementById("coverage-status").textContent =
+    `Current collection: ${coverage.state}. Last confirmed: ${date(coverage.last_confirmed_at)}. History outside recorded collection windows is unknown.`;
+  const target = document.getElementById("coverage");
+  target.replaceChildren();
+  if (!coverage.gaps.length) target.append(el("p", "No retained interruption records. This does not prove continuous history.", "empty"));
+  for (const gap of coverage.gaps) {
+    const card = el("article", undefined, "observation");
+    card.id = `gap-${gap.id}`;
+    card.append(el("h3", gap.recovered_at ? "Collection resumed" : "Collection interrupted"));
+    card.append(el("p", gapReasons[gap.reason] || "Collection continuity is uncertain"));
+    card.append(el("small", `Possible missing history since: ${date(gap.last_confirmed_at)}. The exact start is unknown.`));
+    card.append(el("small", `Interruption noticed: ${date(gap.detected_at)}`));
+    card.append(el("small", gap.recovered_at ? `Recovery completed: ${date(gap.recovered_at)}` : "Recovery pending. Current evidence may be stale."));
+    card.append(el("small", `Source: ${gap.source_id} · Entities: ${gap.entity_ids.join(", ") || "None selected"}`));
+    card.append(el("small", `Gap evidence ID: ${gap.id}`));
+    target.append(card);
+  }
+}
 async function load() {
   try {
-    const [catalog, selection, monitored, health] = await Promise.all([
-      request("/api/catalog"), request("/api/selection"), request("/api/monitored"), request("/api/health")
+    const [catalog, selection, monitored, health, coverage] = await Promise.all([
+      request("/api/catalog"), request("/api/selection"), request("/api/monitored"), request("/api/health"), request("/api/coverage?limit=20")
     ]);
     document.getElementById("count").textContent = String(catalog.entities.length);
     document.getElementById("selected-count").textContent = String(selection.entity_ids.length);
@@ -176,6 +205,7 @@ async function load() {
       || (refreshPending ? "Discovery refresh requested. The collector checks on its next collection pass." : "");
     renderCatalog(catalog.entities, selection.entity_ids);
     renderMonitored(monitored.entities);
+    renderCoverage(coverage);
     if (!showingOlder) await loadTimeline();
   } catch (_) { document.getElementById("message").textContent = "Cannot reach the observer. Collection freshness is unknown until connection returns."; }
 }
