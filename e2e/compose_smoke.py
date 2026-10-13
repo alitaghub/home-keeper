@@ -5,6 +5,8 @@ Run after `docker compose up --build -d`; it uses no internal credentials.
 
 import argparse
 import json
+import os
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -24,7 +26,9 @@ EXPECTED = {
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument(
+        "--base-url", default=f"http://127.0.0.1:{os.environ.get('OBSERVER_PORT', '8000')}"
+    )
     parser.add_argument("--timeout", type=float, default=45)
     parser.add_argument("--skip-bindings", action="store_true")
     args = parser.parse_args()
@@ -86,8 +90,11 @@ def main() -> None:
         )
 
     wait_until("five-entity catalog and healthy collector", ready)
-    assert "<html" in request("/").lower(), "Dashboard HTML not served"
-    assert "fetch(" in request("/app.js"), "Dashboard JavaScript not served"
+    page = request("/")
+    assert "<html" in page.lower(), "Dashboard HTML not served"
+    script = re.search(r'<script[^>]+src="(/assets/[^"]+\.js)"', page)
+    assert script, "Dashboard script not referenced"
+    assert "/api/" in request(script.group(1)), "Dashboard JavaScript not served"
     entity = "light.hue_desk"
     initially_selected = entity in get("/api/selection")["entity_ids"]
     try:

@@ -184,8 +184,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    # The demo has one fixed API destination, not a user-supplied HTTP passthrough.
-    api_url = "http://api:8000"
+    # The demo has one fixed API host, not a user-supplied HTTP passthrough.
+    api_url = f"http://api:{int(os.environ.get('OBSERVER_PORT', '8000'))}"
     token_path = Path(os.environ.get("OBSERVER_TOKEN_FILE", "/secrets/service-token"))
     interval = int(os.environ.get("OBSERVER_RECONCILIATION_SECONDS", "10"))
     if interval < 1:

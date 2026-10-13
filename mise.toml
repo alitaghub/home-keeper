@@ -5,20 +5,20 @@ pnpm = "12.10.1"
 uv = "0.13.0"
 
 [tasks.lint]
-description = "Lint Python"
-run = "uv run ruff check ."
+description = "Lint Python (ruff) and the web app (Biome)"
+run = ["uv run ruff check .", "pnpm exec biome check ."]
 
 [tasks.fmt]
-description = "Format Python"
-run = "uv run ruff format ."
+description = "Format Python (ruff) and the web app (Biome)"
+run = ["uv run ruff format .", "pnpm exec biome format --write ."]
 
 [tasks.typecheck]
-description = "Type-check Python with basedpyright (strict)"
-run = "uv run basedpyright"
+description = "Type-check Python (basedpyright, strict) and the web app (tsc)"
+run = ["uv run basedpyright", "pnpm -r typecheck"]
 
 [tasks.test]
-description = "Run Python tests with branch coverage"
-run = "uv run pytest -q --cov"
+description = "Run Python and web tests with coverage"
+run = ["uv run pytest -q --cov", "pnpm -r test"]
 
 [tasks.check]
 description = "Run every hardware-free check CI runs"
@@ -27,7 +27,6 @@ run = [
   "uv run ruff format --check .",
   "mise run typecheck",
   "mise run test",
-  "node --check web/app.js",
   "bash -n scripts/start-home.sh scripts/connect-home.sh",
   "mise run check:api",
 ]
@@ -50,5 +49,18 @@ run = [
 ]
 
 [tasks.dev]
-description = "Start the demo stack on 127.0.0.1:8000"
-run = "docker compose up --build --wait"
+description = "Start the demo stack, then the Vite dev server with /api proxied to it"
+run = """
+docker compose up --build --wait
+OBSERVER_API_ORIGIN="http://127.0.0.1:${OBSERVER_PORT:-8000}" pnpm --filter @home-observer/web dev
+"""
+
+[tasks.e2e]
+description = "Run the Compose smoke scripts and the Playwright suite against a fresh stack"
+run = """
+trap 'docker compose down' EXIT
+docker compose up --build --wait
+uv run python e2e/compose_smoke.py
+uv run python e2e/compose_live_smoke.py
+E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${OBSERVER_PORT:-8000}}" pnpm --filter @home-observer/web e2e
+"""
