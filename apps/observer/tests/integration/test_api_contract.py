@@ -89,12 +89,12 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
         client.post("/internal/health", json=health(clock[0]), headers=AUTH)
         client.post("/internal/baselines", json=observation(revision), headers=AUTH)
         for index, (old, new) in enumerate([("off", "on"), ("on", "off"), ("off", "on")], start=1):
-            at = (NOW - timedelta(seconds=40 - 10 * index)).isoformat()
+            at = NOW - timedelta(seconds=40 - 10 * index)
             payload = event(
                 revision,
                 identity=f"change-{index}",
-                event_time=at,
-                received_at=at,
+                event_time=at.isoformat(),
+                received_at=(at + timedelta(seconds=3)).isoformat(),
                 old={"state": old},
                 new={"state": new, "brightness": 50 * index} if new == "on" else {"state": new},
             )
@@ -154,30 +154,8 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
     return result
 
 
-SNAPSHOT_NAMES = [
-    "empty_catalog",
-    "empty_selection",
-    "empty_baselines",
-    "empty_events",
-    "empty_coverage",
-    "empty_health",
-    "empty_monitored",
-    "put_selection",
-    "discovery_refresh",
-    "catalog",
-    "selection",
-    "baselines",
-    "baselines_page_1",
-    "baselines_page_2",
-    "events_page_1",
-    "events_page_2",
-    "coverage",
-    "health",
-    "monitored",
-    "error_unknown_entity",
-    "error_unsupported_entity",
-    "error_invalid_cursor",
-]
+# pytest needs the case names before the responses exist, so the snapshot files name them.
+SNAPSHOT_NAMES = sorted(path.stem for path in SNAPSHOTS.glob("*.json"))
 
 
 @pytest.fixture(scope="module")
@@ -186,17 +164,22 @@ def responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Recorded]:
     return empty_responses(path) | seeded_responses(path)
 
 
-def test_snapshot_list_covers_every_recorded_response(responses: dict[str, Recorded]) -> None:
-    assert sorted(responses) == sorted(SNAPSHOT_NAMES)
+def snapshot_text(recorded: Recorded) -> str:
+    return json.dumps(recorded, indent=2, ensure_ascii=False) + "\n"
+
+
+def test_every_recorded_response_has_a_snapshot(responses: dict[str, Recorded]) -> None:
+    if UPDATE:
+        for path in SNAPSHOTS.glob("*.json"):
+            path.unlink()
+        for name, recorded in responses.items():
+            (SNAPSHOTS / f"{name}.json").write_text(snapshot_text(recorded))
+    assert sorted(responses) == SNAPSHOT_NAMES
 
 
 @pytest.mark.parametrize("name", SNAPSHOT_NAMES)
 def test_public_response_matches_snapshot(responses: dict[str, Recorded], name: str) -> None:
-    path = SNAPSHOTS / f"{name}.json"
-    if UPDATE:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(responses[name], indent=2, ensure_ascii=False) + "\n")
-    assert responses[name] == json.loads(path.read_text())
+    assert responses[name] == json.loads((SNAPSHOTS / f"{name}.json").read_text())
 
 
 def schema_app(tmp_path: Path) -> FastAPI:

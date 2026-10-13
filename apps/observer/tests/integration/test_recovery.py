@@ -314,6 +314,7 @@ def test_authentication_failure_halts_process_and_retains_safe_failure(
             accepted.append(json.loads(request.content))
         return httpx.Response(200, json={})
 
+    # Forwards httpx.Client's own options for every caller; httpx publishes no typed kwargs.
     def client(**kwargs: Any) -> httpx.Client:
         if kwargs.get("base_url") == "http://api:8000":
             return original_client(**kwargs, transport=httpx.MockTransport(api))
@@ -436,6 +437,7 @@ def test_production_retry_backoff_is_capped_and_auth_failure_stops_it(
             return httpx.Response(503)
         return httpx.Response(200, json={})
 
+    # Forwards httpx.Client's own options for every caller; httpx publishes no typed kwargs.
     def client(**kwargs: Any) -> httpx.Client:
         if kwargs.get("base_url") == "http://api:8000":
             return original_client(**kwargs, transport=httpx.MockTransport(api))

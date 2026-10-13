@@ -457,18 +457,27 @@ describe("dashboard behavior", () => {
     await waitFor(() => expect(byId("message")).toHaveTextContent("Request failed. Please retry."));
   });
 
-  it("renders a script-shaped device name as literal text", async () => {
-    const name = "<script>alert('device')</script>";
+  it("renders script-shaped device and entity names as literal text", async () => {
+    const deviceName = "<script>alert('device')</script>";
+    const entityName = "<img src=x onerror=alert('entity')>";
     renderDashboard({
       "GET /api/catalog": {
         ...fixtures.catalog,
-        entities: [{ ...fixtures.desk, device_name: null, name }],
+        entities: [
+          { ...fixtures.desk, device_name: deviceName },
+          { ...fixtures.reading, device_name: null, name: entityName },
+          { ...fixtures.ungroupedSensor, name: entityName },
+        ],
       },
     });
 
-    expect(await screen.findByRole("button", { name: `Monitor ${name}` })).toBeInTheDocument();
-    expect(within(byId("catalog")).getByText(name)).toBeInTheDocument();
-    expect(document.querySelector("script")).toBeNull();
+    expect(
+      await screen.findByRole("button", { name: `Monitor ${deviceName}` }),
+    ).toBeInTheDocument();
+    expect(within(byId("catalog")).getByText(deviceName)).toBeInTheDocument();
+    expect(within(byId("catalog")).getByText(entityName)).toBeInTheDocument();
+    expect(within(byId("other-catalog")).getByText(entityName)).toBeInTheDocument();
+    expect(document.querySelector("script, img")).toBeNull();
   });
 
   it("polls every endpoint again every 3 seconds", async () => {

@@ -253,8 +253,7 @@ class ReadingHeader(WireModel):
     last_reported: Timestamp | None = None
 
 
-# Pydantic orders fields from the last base to the first, so the header fields lead the
-# response body as they always have.
+# Pydantic orders fields from the last base to the first, so the header fields lead the body.
 class LightReading(LightAttributes, ReadingHeader):
     """Light attributes as stored. Event states omit unset attributes, so routes returning
     readings exclude unset fields to keep absent keys absent."""

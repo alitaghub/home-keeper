@@ -41,6 +41,7 @@ run = [
   "uv run ruff format --check .",
   "mise run typecheck",
   "mise run test",
+  "pnpm --filter @home-observer/web build",
   "bash -n scripts/start-home.sh scripts/connect-home.sh",
   "mise run check:api",
   "mise run lint:workflows",
