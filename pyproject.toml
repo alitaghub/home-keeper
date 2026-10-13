@@ -17,6 +17,8 @@ home-observer = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
+# The web app is a pnpm package, not a Python project.
+exclude = ["apps/web"]
 
 [tool.pytest.ini_options]
 testpaths = ["apps/observer/tests"]
