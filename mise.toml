@@ -12,16 +12,21 @@ run = "uv run ruff check ."
 description = "Format Python"
 run = "uv run ruff format ."
 
+[tasks.typecheck]
+description = "Type-check Python with basedpyright (strict)"
+run = "uv run basedpyright"
+
 [tasks.test]
-description = "Run Python tests"
-run = "uv run pytest -q"
+description = "Run Python tests with branch coverage"
+run = "uv run pytest -q --cov"
 
 [tasks.check]
 description = "Run every hardware-free check CI runs"
 run = [
-  "uv run ruff check .",
+  "mise run lint",
   "uv run ruff format --check .",
-  "uv run pytest -q",
+  "mise run typecheck",
+  "mise run test",
   "node --check web/app.js",
   "bash -n scripts/start-home.sh scripts/connect-home.sh",
   "mise run check:api",

@@ -1,7 +1,9 @@
+from pathlib import Path
+
 from home_observer.store import Store
 
 
-def test_global_event_page_does_not_need_a_full_table_sort(tmp_path):
+def test_global_event_page_does_not_need_a_full_table_sort(tmp_path: Path) -> None:
     store = Store(tmp_path / "plan.sqlite")
     with store.transaction() as db:
         plan = [
@@ -14,7 +16,7 @@ def test_global_event_page_does_not_need_a_full_table_sort(tmp_path):
     assert not any("TEMP B-TREE" in detail for detail in plan), plan
 
 
-def test_event_expiry_uses_an_index(tmp_path):
+def test_event_expiry_uses_an_index(tmp_path: Path) -> None:
     store = Store(tmp_path / "expiry.sqlite")
     with store.transaction() as db:
         plan = [

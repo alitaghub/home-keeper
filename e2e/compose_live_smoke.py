@@ -10,10 +10,10 @@ from pathlib import Path
 import httpx
 
 REPO = Path(__file__).resolve().parents[1]
-FAKE_HOME_ASSISTANT = REPO / "apps" / "observer" / "tests" / "fake_home_assistant.py"
+FAKE_HOME_ASSISTANT = Path(__file__).resolve().parent / "fake_home_assistant.py"
 
 
-def main():
+def main() -> None:
     with tempfile.TemporaryDirectory(prefix="observer-live-proof-") as directory:
         root = Path(directory)
         # This is a public fixture value, not a Home Assistant credential.
@@ -56,7 +56,7 @@ def main():
             str(override),
         ]
 
-        def compose(*args):
+        def compose(*args: str) -> str:
             return subprocess.run(
                 command + list(args),
                 env=env,

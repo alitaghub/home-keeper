@@ -2,24 +2,39 @@
 
 import json
 import time
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
+from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry
 from websockets.datastructures import Headers
-from websockets.http11 import Response
-from websockets.sync.server import serve
+from websockets.http11 import Request, Response
+from websockets.sync.server import ServerConnection, serve
 
+from home_observer import live
+from home_observer.api import create_app
 from home_observer.home_assistant import HomeAssistantConnector
 from home_observer.live import CollectionSession
 
+# Requests the mocked API accepted, as (path, decoded JSON body).
+type Accepted = list[tuple[str, Any]]
+type Home = tuple[HomeAssistantConnector, list[str], list[Frame]]
 
-def registry(identity="a", source="light.a"):
+
+def registry(identity: str = "a", source: str = "light.a") -> Frame:
     return {"id": identity, "entity_id": source, "platform": "hue", "translation_key": "hue_light"}
 
 
-def state(brightness, timestamp="2026-10-13T10:00:00Z", source="light.a"):
+def state(
+    brightness: int, timestamp: str = "2026-10-13T10:00:00Z", source: str = "light.a"
+) -> Frame:
     return {
         "entity_id": source,
         "state": "on",
@@ -28,7 +43,7 @@ def state(brightness, timestamp="2026-10-13T10:00:00Z", source="light.a"):
     }
 
 
-def message(brightness):
+def message(brightness: int) -> Frame:
     return {
         "id": 1,
         "type": "event",
@@ -45,16 +60,20 @@ def message(brightness):
 
 
 @contextmanager
-def home(tmp_path, race_count=1, authentication_invalid=False):
+def home(
+    tmp_path: Path,
+    race_count: int = 1,
+    authentication_invalid: bool | Callable[[], bool] = False,
+) -> Generator[Home]:
     token = tmp_path / "ha-token"
     token.write_text("private-recovery-token")
     subscribed = Event()
     race_sent = Event()
     finish = Event()
-    commands = []
+    commands: list[str] = []
     rows = [registry()]
 
-    def request(connection, incoming):
+    def request(_connection: ServerConnection, incoming: Request) -> Response | None:
         if incoming.path.startswith("/api/states/"):
             # A snapshot cannot begin before the event subscription is acknowledged.
             assert subscribed.wait(1)
@@ -68,7 +87,7 @@ def home(tmp_path, race_count=1, authentication_invalid=False):
             )
         return None
 
-    def handler(socket):
+    def handler(socket: ServerConnection) -> None:
         socket.send(json.dumps({"type": "auth_required"}))
         auth = json.loads(socket.recv(timeout=5))
         assert auth["access_token"] == "private-recovery-token"
@@ -110,10 +129,12 @@ def home(tmp_path, race_count=1, authentication_invalid=False):
             assert not worker.is_alive()
 
 
-def test_snapshot_race_is_persisted_before_recovery_and_subscription_survives_poll(tmp_path):
-    accepted = []
+def test_snapshot_race_is_persisted_before_recovery_and_subscription_survives_poll(
+    tmp_path: Path,
+) -> None:
+    accepted: Accepted = []
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content) if request.content else None
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json={"revision": 1, "entity_ids": ["ha:a"]})
@@ -123,7 +144,7 @@ def test_snapshot_race_is_persisted_before_recovery_and_subscription_survives_po
         return httpx.Response(200, json={})
 
     with (
-        home(tmp_path) as (connector, commands, rows),
+        home(tmp_path) as (connector, commands, _),
         httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client,
     ):
         session = CollectionSession(client, connector)
@@ -144,11 +165,13 @@ def test_snapshot_race_is_persisted_before_recovery_and_subscription_survives_po
 
 
 @pytest.mark.parametrize("failed_path", ["/internal/baselines", "/internal/events"])
-def test_failed_ingestion_never_reports_healthy_and_resynchronizes(tmp_path, failed_path):
-    accepted = []
+def test_failed_ingestion_never_reports_healthy_and_resynchronizes(
+    tmp_path: Path, failed_path: str
+) -> None:
+    accepted: Accepted = []
     fail = [True]
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content) if request.content else None
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json={"revision": 1, "entity_ids": ["ha:a"]})
@@ -158,7 +181,7 @@ def test_failed_ingestion_never_reports_healthy_and_resynchronizes(tmp_path, fai
         return httpx.Response(200, json={})
 
     with (
-        home(tmp_path) as (connector, commands, rows),
+        home(tmp_path) as (connector, commands, _),
         httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client,
     ):
         session = CollectionSession(client, connector)
@@ -188,10 +211,12 @@ def test_failed_ingestion_never_reports_healthy_and_resynchronizes(tmp_path, fai
 
 
 @pytest.mark.parametrize("limits", [{"max_events": 2}, {"max_bytes": 100}])
-def test_bounded_buffer_overflow_marks_incomplete_and_requires_new_subscription(tmp_path, limits):
-    accepted = []
+def test_bounded_buffer_overflow_marks_incomplete_and_requires_new_subscription(
+    tmp_path: Path, limits: dict[str, int]
+) -> None:
+    accepted: Accepted = []
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content) if request.content else None
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json={"revision": 1, "entity_ids": ["ha:a"]})
@@ -201,7 +226,7 @@ def test_bounded_buffer_overflow_marks_incomplete_and_requires_new_subscription(
         return httpx.Response(200, json={})
 
     with (
-        home(tmp_path, race_count=4) as (connector, commands, rows),
+        home(tmp_path, race_count=4) as (connector, commands, _),
         httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client,
     ):
         session = CollectionSession(client, connector, **limits)
@@ -227,11 +252,13 @@ def test_bounded_buffer_overflow_marks_incomplete_and_requires_new_subscription(
             session.close()
 
 
-def test_latest_selection_and_registry_identity_are_revalidated_before_state_reads(tmp_path):
-    accepted = []
+def test_latest_selection_and_registry_identity_are_revalidated_before_state_reads(
+    tmp_path: Path,
+) -> None:
+    accepted: Accepted = []
     selected = {"revision": 1, "entity_ids": ["ha:a"]}
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content) if request.content else None
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json=selected)
@@ -239,7 +266,7 @@ def test_latest_selection_and_registry_identity_are_revalidated_before_state_rea
         return httpx.Response(200, json={})
 
     with (
-        home(tmp_path) as (connector, commands, rows),
+        home(tmp_path) as (connector, _, rows),
         httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client,
     ):
         session = CollectionSession(client, connector)
@@ -272,27 +299,27 @@ def test_latest_selection_and_registry_identity_are_revalidated_before_state_rea
             session.close()
 
 
-def test_authentication_failure_halts_process_and_retains_safe_failure(tmp_path, monkeypatch):
-    from home_observer import live
-
-    accepted = []
-    requests = []
+def test_authentication_failure_halts_process_and_retains_safe_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    accepted: list[Any] = []
+    requests: list[str] = []
     service_token = tmp_path / "service-token"
     service_token.write_text("internal-private-token")
     original_client = httpx.Client
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         requests.append(request.url.path)
         if request.content:
             accepted.append(json.loads(request.content))
         return httpx.Response(200, json={})
 
-    def client(**kwargs):
+    def client(**kwargs: Any) -> httpx.Client:
         if kwargs.get("base_url") == "http://api:8000":
             return original_client(**kwargs, transport=httpx.MockTransport(api))
         return original_client(**kwargs)
 
-    with home(tmp_path, authentication_invalid=True) as (connector, commands, rows):
+    with home(tmp_path, authentication_invalid=True) as (connector, _, _):
         monkeypatch.setenv("OBSERVER_TOKEN_FILE", str(service_token))
         monkeypatch.setenv("OBSERVER_HA_TOKEN_FILE", str(tmp_path / "ha-token"))
         monkeypatch.setenv("OBSERVER_HA_URL", connector.origin)
@@ -307,15 +334,11 @@ def test_authentication_failure_halts_process_and_retains_safe_failure(tmp_path,
         assert "private-token" not in json.dumps(accepted)
 
 
-def test_api_detected_gap_closes_after_next_full_pass_without_fabricated_events(tmp_path):
-    from datetime import UTC, datetime
-
-    from fastapi.testclient import TestClient
-
-    from home_observer.api import create_app
-
+def test_api_detected_gap_closes_after_next_full_pass_without_fabricated_events(
+    tmp_path: Path,
+) -> None:
     with (
-        home(tmp_path, race_count=0) as (connector, commands, rows),
+        home(tmp_path, race_count=0) as (connector, _, _),
         TestClient(
             create_app(tmp_path / "recorded.sqlite", "internal-secret", source_id="home_assistant"),
             headers={"Authorization": "Bearer internal-secret"},
@@ -352,12 +375,12 @@ def test_api_detected_gap_closes_after_next_full_pass_without_fabricated_events(
             session.close()
 
 
-def test_obsolete_revision_does_not_close_gap_and_revalidates_new_selection(tmp_path):
-    accepted = []
+def test_obsolete_revision_does_not_close_gap_and_revalidates_new_selection(tmp_path: Path) -> None:
+    accepted: Accepted = []
     selected = {"revision": 1, "entity_ids": ["ha:a"]}
     obsolete = [True]
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content) if request.content else None
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json=selected)
@@ -369,7 +392,7 @@ def test_obsolete_revision_does_not_close_gap_and_revalidates_new_selection(tmp_
         return httpx.Response(200, json={})
 
     with (
-        home(tmp_path) as (connector, commands, rows),
+        home(tmp_path) as (connector, _, rows),
         httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client,
     ):
         rows.append(registry("c", "light.c"))
@@ -391,19 +414,17 @@ def test_obsolete_revision_does_not_close_gap_and_revalidates_new_selection(tmp_
             session.close()
 
 
-def test_production_retry_backoff_is_capped_and_auth_failure_stops_it(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from home_observer import live
-
+def test_production_retry_backoff_is_capped_and_auth_failure_stops_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     clock = [0.0]
-    attempts = []
+    attempts: list[int] = []
     failures = [0]
     service_token = tmp_path / "service-token"
     service_token.write_text("internal-private-token")
     original_client = httpx.Client
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json={"revision": 1, "entity_ids": ["ha:a"]})
         if request.url.path == "/internal/catalog":
@@ -413,18 +434,18 @@ def test_production_retry_backoff_is_capped_and_auth_failure_stops_it(tmp_path, 
             return httpx.Response(503)
         return httpx.Response(200, json={})
 
-    def client(**kwargs):
+    def client(**kwargs: Any) -> httpx.Client:
         if kwargs.get("base_url") == "http://api:8000":
             return original_client(**kwargs, transport=httpx.MockTransport(api))
         return original_client(**kwargs)
 
-    def advance(seconds):
+    def advance(seconds: float) -> None:
         clock[0] += seconds
 
     with home(tmp_path, authentication_invalid=lambda: failures[0] >= 10) as (
         connector,
-        commands,
-        rows,
+        _,
+        _,
     ):
         monkeypatch.setenv("OBSERVER_TOKEN_FILE", str(service_token))
         monkeypatch.setenv("OBSERVER_HA_TOKEN_FILE", str(tmp_path / "ha-token"))
@@ -440,10 +461,10 @@ def test_production_retry_backoff_is_capped_and_auth_failure_stops_it(tmp_path, 
         assert round(clock[0]) == 303
 
 
-def test_missing_selection_keeps_healthy_light_subscription_and_scopes_gap(tmp_path):
-    accepted = []
+def test_missing_selection_keeps_healthy_light_subscription_and_scopes_gap(tmp_path: Path) -> None:
+    accepted: Accepted = []
 
-    def api(request):
+    def api(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content) if request.content else None
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json={"revision": 1, "entity_ids": ["ha:a", "ha:gone"]})
@@ -451,7 +472,7 @@ def test_missing_selection_keeps_healthy_light_subscription_and_scopes_gap(tmp_p
         return httpx.Response(200, json={})
 
     with (
-        home(tmp_path, race_count=0) as (connector, commands, rows),
+        home(tmp_path, race_count=0) as (connector, commands, _),
         httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client,
     ):
         session = CollectionSession(client, connector)
@@ -471,54 +492,75 @@ def test_missing_selection_keeps_healthy_light_subscription_and_scopes_gap(tmp_p
             session.close()
 
 
-def test_large_selection_finishes_with_progress_heartbeats(monkeypatch):
-    from types import SimpleNamespace
+class LiveSocket(FakeSocket):
+    """Keeps answering the validated registry fixture, then idles once subscribed."""
 
-    from home_observer.models import Catalog, Entity, Observation
+    def send(self, value: str) -> None:
+        super().send(value)
+        if self.sent[-1]["type"] == "subscribe_events":
+            self.messages.clear()
+            self.messages.append({"id": 1, "type": "result", "success": True})
 
-    clock = [0.0]
-    selected = [f"ha:light{number}" for number in range(32)]
-    calls = []
-    subscription = SimpleNamespace(key=(), receive=lambda timeout: None, close=lambda: None)
+    def recv(self, timeout: float | None = None) -> str:
+        if not self.messages:
+            time.sleep(min(timeout or 0, 0.01))
+            raise TimeoutError
+        return super().recv(timeout)
 
-    def read(identity, revision):
-        clock[0] += 1
-        return Observation(
-            entity_id=identity,
-            selection_revision=revision,
-            source_id="home_assistant",
-            state="on",
-            availability="available",
-            received_at="2025-01-01T00:00:00Z",
-        )
 
-    connector = SimpleNamespace(
-        discover=lambda: Catalog(
-            source_id="home_assistant",
-            entities=[Entity(id=identity, name=identity, supported=True) for identity in selected],
+def test_initial_missing_baseline_stays_selected_then_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = tmp_path / "token"
+    secret.write_text("review-ha-secret")
+    install_socket(monkeypatch, FakeSocket([registry_entry()]))
+    adapter = HomeAssistantConnector("http://ha.example:8123", secret)
+    adapter.discover()
+    adapter.approve({"ha:registry1": 1})
+    status = [404]
+    adapter._http.close()  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
+    adapter._http = httpx.Client(  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
+        base_url=adapter.origin,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                status[0], json={"entity_id": "light.bulb", "state": "off", "attributes": {}}
+            )
         ),
-        approve=lambda values: None,
-        subscription_key=("fixture",),
-        subscribe_selected=lambda: subscription,
-        read_selected=read,
     )
-    subscription.key = connector.subscription_key
-    monkeypatch.setattr("home_observer.live.time", SimpleNamespace(monotonic=lambda: clock[0]))
 
-    def api(request):
-        if request.url.path == "/internal/selection":
-            return httpx.Response(200, json={"revision": 1, "entity_ids": selected})
-        calls.append((request.url.path, json.loads(request.content)))
-        return httpx.Response(200, json={})
+    def connect(*_args: object, **_kwargs: object) -> LiveSocket:
+        return LiveSocket([registry_entry()])
 
-    with httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client:
-        session = CollectionSession(client, connector)
-        try:
-            assert session.reconcile()
-            assert len([path for path, _ in calls if path == "/internal/baselines"]) == 32
-            assert len([path for path, _ in calls if path == "/internal/health"]) >= 4
-            recovered = [v for path, v in calls if path == "/internal/coverage"][-1]
-            assert recovered["status"] == "recovered"
-            assert recovered["entity_ids"] == selected
-        finally:
+    monkeypatch.setattr("home_observer.home_assistant.connect", connect)
+    session: CollectionSession | None = None
+    try:
+        with TestClient(
+            create_app(tmp_path / "live.sqlite", "review-internal", source_id="home_assistant"),
+            headers={"Authorization": "Bearer review-internal"},
+        ) as api:
+            session = CollectionSession(api, adapter)
+            session.reconcile()
+            api.put(
+                "/api/selection/ha:registry1",
+                json={"selected": True},
+                headers={"X-Home-Observer": "1"},
+            ).raise_for_status()
+            session.reconcile()
+            assert api.get("/api/selection").json()["entity_ids"] == ["ha:registry1"]
+            assert api.get("/api/health").json()["status"] == "healthy"
+            gaps = api.get("/api/coverage").json()
+            assert gaps["state"] == "interrupted"
+            assert gaps["gaps"][0]["entity_ids"] == ["ha:registry1"]
+            monitored = api.get("/api/monitored").json()["entities"][0]
+            assert monitored["baseline"] is None
+            assert monitored["freshness"] == "pending"
+            assert api.get("/api/baselines?entity_id=ha:registry1").json()["baselines"] == []
+            status[0] = 200
+            session.reconcile()
+            assert api.get("/api/health").json()["status"] == "healthy"
+            assert api.get("/api/monitored").json()["entities"][0]["freshness"] == "fresh"
+            assert len(api.get("/api/baselines?entity_id=ha:registry1").json()["baselines"]) == 1
+    finally:
+        if session is not None:
             session.close()
+        adapter.close()

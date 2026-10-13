@@ -1,10 +1,12 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from home_observer.api import create_app
 from home_observer.demo import DemoReplay, reconcile
 
 
-def test_demo_records_selected_repeatable_transitions_and_deduplicates(tmp_path):
+def test_demo_records_selected_repeatable_transitions_and_deduplicates(tmp_path: Path) -> None:
     replay = DemoReplay()
     with TestClient(
         create_app(tmp_path / "demo.sqlite", "service-token"),

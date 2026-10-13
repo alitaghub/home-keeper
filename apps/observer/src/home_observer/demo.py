@@ -4,7 +4,9 @@ import logging
 import os
 import time
 from datetime import UTC, datetime
+from http import HTTPStatus
 from pathlib import Path
+from typing import TypedDict
 
 import httpx
 
@@ -12,56 +14,67 @@ from home_observer.events import change_event
 from home_observer.models import LightState
 from home_observer.runtime import load_token
 
-CATALOG = {
-    "source_id": "demo",
-    "entities": [
-        {
-            "id": "light.hue_desk",
-            "device_id": "hue-desk",
-            "device_name": "Desk lamp",
-            "name": "Desk light",
-            "supported": True,
-            "reason": None,
-        },
-        {
-            "id": "light.hue_reading",
-            "device_id": "hue-reading",
-            "device_name": "Reading lamp",
-            "name": "Reading light <script>alert('untrusted')</script>",
-            "supported": True,
-            "reason": None,
-        },
-        {
-            "id": "light.hue_room",
-            "device_id": "hue-room",
-            "device_name": "Living room group",
-            "name": "All living room lights",
-            "supported": False,
-            "reason": "Room aggregate, not an individual bulb",
-        },
-        {
-            "id": "switch.smart_plug",
-            "device_id": "smart-plug",
-            "device_name": "Smart plug",
-            "name": "Plug",
-            "supported": False,
-            "reason": "Only individual Hue lights supported",
-        },
-        {
-            "id": "sensor.ungrouped",
-            "device_id": None,
-            "device_name": None,
-            "name": "Ungrouped sensor",
-            "supported": False,
-            "reason": "Sensor monitoring is outside this milestone",
-        },
-    ],
-}
+# The replay phase whose events are delivered twice.
+DUPLICATE_PHASE = 3
+
+
+class DemoEntity(TypedDict):
+    id: str
+    device_id: str | None
+    device_name: str | None
+    name: str
+    supported: bool
+    reason: str | None
+
+
+ENTITIES: list[DemoEntity] = [
+    {
+        "id": "light.hue_desk",
+        "device_id": "hue-desk",
+        "device_name": "Desk lamp",
+        "name": "Desk light",
+        "supported": True,
+        "reason": None,
+    },
+    {
+        "id": "light.hue_reading",
+        "device_id": "hue-reading",
+        "device_name": "Reading lamp",
+        "name": "Reading light <script>alert('untrusted')</script>",
+        "supported": True,
+        "reason": None,
+    },
+    {
+        "id": "light.hue_room",
+        "device_id": "hue-room",
+        "device_name": "Living room group",
+        "name": "All living room lights",
+        "supported": False,
+        "reason": "Room aggregate, not an individual bulb",
+    },
+    {
+        "id": "switch.smart_plug",
+        "device_id": "smart-plug",
+        "device_name": "Smart plug",
+        "name": "Plug",
+        "supported": False,
+        "reason": "Only individual Hue lights supported",
+    },
+    {
+        "id": "sensor.ungrouped",
+        "device_id": None,
+        "device_name": None,
+        "name": "Ungrouped sensor",
+        "supported": False,
+        "reason": "Sensor monitoring is outside this milestone",
+    },
+]
+CATALOG = {"source_id": "demo", "entities": ENTITIES}
 
 
 def coverage(
     client: httpx.Client, status: str, reason: str = "connection", revision: int | None = None
-):
+) -> None:
     client.post(
         "/internal/coverage",
         json={
@@ -77,21 +90,23 @@ def coverage(
 class DemoReplay:
     """Repeatable synthetic transitions. Unselected history is never forwarded."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.phase = 0
         self.states = {
-            entity["id"]: LightState(
-                state="on",
-                brightness=180 if entity["id"] == "light.hue_desk" else 100,
-                last_changed="2025-01-01T12:00:00Z",
-                last_updated="2025-01-01T12:00:00Z",
+            entity["id"]: LightState.model_validate(
+                {
+                    "state": "on",
+                    "brightness": 180 if entity["id"] == "light.hue_desk" else 100,
+                    "last_changed": "2025-01-01T12:00:00Z",
+                    "last_updated": "2025-01-01T12:00:00Z",
+                }
             )
-            for entity in CATALOG["entities"]
+            for entity in ENTITIES
             if entity["supported"]
         }
 
-    def advance(self, event_time):
-        sequence = (
+    def advance(self, event_time: datetime) -> dict[str, LightState]:
+        sequence: tuple[dict[str, object], ...] = (
             {"state": "off"},
             {"state": "on", "brightness": 100},
             {"state": "on", "brightness": 40},
@@ -104,18 +119,22 @@ class DemoReplay:
         self.phase += 1
         previous = self.states
         self.states = {
-            identity: LightState(
-                **value,
-                last_changed=(event_time if old.state != value["state"] else old.last_changed),
-                last_updated=event_time,
-                last_reported=event_time,
+            identity: LightState.model_validate(
+                {
+                    **value,
+                    "last_changed": (
+                        event_time if old.state != value["state"] else old.last_changed
+                    ),
+                    "last_updated": event_time,
+                    "last_reported": event_time,
+                }
             )
             for identity, old in previous.items()
         }
         return previous
 
 
-def reconcile(client: httpx.Client, replay: DemoReplay):
+def reconcile(client: httpx.Client, replay: DemoReplay) -> None:
     client.post("/internal/catalog", json=CATALOG).raise_for_status()
     selection = client.get("/internal/selection")
     selection.raise_for_status()
@@ -130,7 +149,7 @@ def reconcile(client: httpx.Client, replay: DemoReplay):
             "received_at": datetime.now(UTC).isoformat(),
         }
         response = client.post("/internal/baselines", json=observation)
-        if response.status_code != 409:
+        if response.status_code != HTTPStatus.CONFLICT:
             response.raise_for_status()
     fired = datetime.now(UTC)
     previous = replay.advance(fired)
@@ -146,9 +165,9 @@ def reconcile(client: httpx.Client, replay: DemoReplay):
         )
         payload = event.model_dump(mode="json", exclude_none=True)
         # Replay one duplicate to demonstrate idempotent delivery without duplicate evidence.
-        for _ in range(2 if replay.phase == 3 else 1):
+        for _ in range(2 if replay.phase == DUPLICATE_PHASE else 1):
             response = client.post("/internal/events", json=payload)
-            if response.status_code != 409:
+            if response.status_code != HTTPStatus.CONFLICT:
                 response.raise_for_status()
     client.post(
         "/internal/health",
@@ -161,7 +180,7 @@ def reconcile(client: httpx.Client, replay: DemoReplay):
     coverage(client, "recovered", revision=selected["revision"])
 
 
-def main():
+def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

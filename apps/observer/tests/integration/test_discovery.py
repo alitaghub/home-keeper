@@ -1,57 +1,12 @@
-from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi.testclient import TestClient
-
-from home_observer.api import create_app
-
-TOKEN = "test-service-credential-sentinel"
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
-BROWSER = {"X-Home-Observer": "1"}
-NOW = datetime(2026, 10, 12, 10, tzinfo=UTC)
-CATALOG = {
-    "source_id": "demo",
-    "entities": [
-        {
-            "id": "bulb-a",
-            "device_id": "device-a",
-            "device_name": "Hue bulb",
-            "name": "<script>alert('device')</script>",
-            "supported": True,
-            "reason": None,
-        },
-        {
-            "id": "bulb-b",
-            "device_id": "device-b",
-            "device_name": "Second bulb",
-            "name": "Second light",
-            "supported": True,
-            "reason": None,
-        },
-        {
-            "id": "room",
-            "device_id": None,
-            "device_name": None,
-            "name": "Living room",
-            "supported": False,
-            "reason": "Room aggregate",
-        },
-        {
-            "id": "plug",
-            "device_id": "device-plug",
-            "device_name": "Plug",
-            "name": "Plug state",
-            "supported": False,
-            "reason": "Not an individual Hue light",
-        },
-    ],
-}
+from support.api import AUTH, BROWSER, CATALOG, CATALOG_ENTITIES, app_for
 
 
-def app_for(path, now=lambda: NOW):
-    return create_app(db_path=path, service_token=TOKEN, now=now, reconciliation_seconds=60)
-
-
-def test_discovery_requires_explicit_selection_and_selection_survives_restart(tmp_path):
+def test_discovery_requires_explicit_selection_and_selection_survives_restart(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "home.sqlite"
     with TestClient(app_for(db)) as client:
         response = client.post("/internal/catalog", json=CATALOG, headers=AUTH)
@@ -59,7 +14,8 @@ def test_discovery_requires_explicit_selection_and_selection_survives_restart(tm
         catalog = client.get("/api/catalog").json()["entities"]
         assert {entry["id"] for entry in catalog} == {"bulb-a", "bulb-b", "room", "plug"}
         room = next(entry for entry in catalog if entry["id"] == "room")
-        assert room["supported"] is False and room["reason"]
+        assert room["supported"] is False
+        assert room["reason"]
         initial = client.get("/api/selection").json()
         assert initial["entity_ids"] == []
         assert client.get("/api/monitored").json()["entities"] == []
@@ -90,7 +46,9 @@ def test_discovery_requires_explicit_selection_and_selection_survives_restart(tm
         assert monitored[0]["freshness"] == "pending"
 
 
-def test_refresh_does_not_silently_revoke_previously_approved_missing_entity(tmp_path):
+def test_refresh_does_not_silently_revoke_previously_approved_missing_entity(
+    tmp_path: Path,
+) -> None:
     with TestClient(app_for(tmp_path / "refresh.sqlite")) as client:
         assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
         selected = client.put(
@@ -98,7 +56,7 @@ def test_refresh_does_not_silently_revoke_previously_approved_missing_entity(tmp
         ).json()
         missing = {
             "source_id": "demo",
-            "entities": [entry for entry in CATALOG["entities"] if entry["id"] != "bulb-a"],
+            "entities": [entry for entry in CATALOG_ENTITIES if entry["id"] != "bulb-a"],
         }
         assert client.post("/internal/catalog", json=missing, headers=AUTH).is_success
         assert client.get("/api/selection").json() == selected

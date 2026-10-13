@@ -1,13 +1,16 @@
 import logging
+from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from test_baselines import observation, select
-from test_discovery import AUTH, BROWSER, CATALOG, NOW, TOKEN, app_for
+from support.api import AUTH, BROWSER, CATALOG, NOW, TOKEN, app_for, observation, select
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong-credential"}])
-def test_every_internal_boundary_rejects_unauthenticated_access(tmp_path, headers, caplog):
+def test_every_internal_boundary_rejects_unauthenticated_access(
+    tmp_path: Path, headers: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
     with TestClient(app_for(tmp_path / "auth.sqlite")) as client:
         with caplog.at_level(logging.DEBUG):
             assert client.get("/internal/selection", headers=headers).status_code in (401, 403)
@@ -26,7 +29,7 @@ def test_every_internal_boundary_rejects_unauthenticated_access(tmp_path, header
         assert TOKEN not in caplog.text
 
 
-def test_cross_site_and_missing_custom_header_cannot_change_selection(tmp_path):
+def test_cross_site_and_missing_custom_header_cannot_change_selection(tmp_path: Path) -> None:
     with TestClient(
         app_for(tmp_path / "origin.sqlite"), base_url="http://127.0.0.1:8000"
     ) as client:
@@ -50,7 +53,9 @@ def test_cross_site_and_missing_custom_header_cannot_change_selection(tmp_path):
         ).is_success
 
 
-def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(tmp_path, caplog):
+def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     with TestClient(app_for(tmp_path / "input.sqlite")) as client:
         assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
         assert "<script>" in client.get("/api/catalog").text
@@ -79,15 +84,15 @@ def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(tmp
         )
 
 
-def test_non_ascii_internal_credentials_are_rejected_without_server_error(tmp_path):
+def test_non_ascii_internal_credentials_are_rejected_without_server_error(tmp_path: Path) -> None:
     with TestClient(app_for(tmp_path / "invalid-auth.sqlite")) as client:
-        response = client.get("/internal/selection", headers={"Authorization": b"Bearer \xff"})
+        response = client.get("/internal/selection", headers={b"Authorization": b"Bearer \xff"})
         assert response.status_code in (401, 403)
 
 
-def test_clock_rollback_does_not_claim_future_collector_heartbeat_is_healthy(tmp_path):
-    from datetime import timedelta
-
+def test_clock_rollback_does_not_claim_future_collector_heartbeat_is_healthy(
+    tmp_path: Path,
+) -> None:
     clock = [NOW]
     with TestClient(app_for(tmp_path / "clock.sqlite", now=lambda: clock[0])) as client:
         assert client.post(
@@ -106,10 +111,8 @@ def test_clock_rollback_does_not_claim_future_collector_heartbeat_is_healthy(tmp
 
 
 def test_delayed_heartbeat_cannot_clear_newer_collection_failure_but_new_heartbeat_recovers(
-    tmp_path,
-):
-    from datetime import timedelta
-
+    tmp_path: Path,
+) -> None:
     clock = [NOW + timedelta(seconds=10)]
     with TestClient(app_for(tmp_path / "health-order.sqlite", now=lambda: clock[0])) as client:
         assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success

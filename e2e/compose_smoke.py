@@ -7,7 +7,9 @@ import argparse
 import json
 import subprocess
 import time
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -20,7 +22,7 @@ EXPECTED = {
 }
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout", type=float, default=45)
@@ -30,7 +32,7 @@ def main():
         parser.error("--timeout must be positive")
     base = args.base_url.rstrip("/")
 
-    def request(path, body=None):
+    def request(path: str, body: dict[str, object] | None = None) -> str:
         data = None if body is None else json.dumps(body).encode()
         headers = (
             {}
@@ -45,10 +47,10 @@ def main():
         ) as response:
             return response.read().decode()
 
-    def get(path):
+    def get(path: str) -> Any:
         return json.loads(request(path))
 
-    def wait_until(description, predicate):
+    def wait_until[T](description: str, predicate: Callable[[], T]) -> T:
         deadline = time.monotonic() + args.timeout
         last_error = None
         while time.monotonic() < deadline:
@@ -67,7 +69,7 @@ def main():
         config = json.loads(
             subprocess.check_output(["docker", "compose", "config", "--format", "json"], timeout=10)
         )
-        published = []
+        published: list[str] = []
         for name, service in config["services"].items():
             for port in service.get("ports", []):
                 assert port.get("host_ip") == "127.0.0.1", f"Non-local published port on {name}"
@@ -75,7 +77,7 @@ def main():
         assert published == ["api"], f"Unexpected published services: {published}"
         assert not config["services"]["collector"].get("ports"), "Collector port published"
 
-    def ready():
+    def ready() -> bool:
         catalog = get("/api/catalog")["entities"]
         return (
             {entry["id"] for entry in catalog} == EXPECTED
@@ -94,20 +96,23 @@ def main():
         selection = json.loads(request(f"/api/selection/{entity}", {"selected": True}))
         assert entity in selection["entity_ids"]
 
-        def confirmed():
+        def confirmed() -> Any:
             for entry in get("/api/monitored")["entities"]:
                 if entry["id"] == entity and entry["freshness"] == "fresh" and entry["baseline"]:
                     return entry["baseline"]
             return None
 
         baseline = wait_until("selected fresh attributed baseline from collector", confirmed)
-        assert baseline["entity_id"] == entity and baseline["source_id"] == "demo"
+        assert baseline["entity_id"] == entity
+        assert baseline["source_id"] == "demo"
         assert baseline["state"] in ("on", "off", "unavailable")
         assert baseline["availability"] == (
             "unavailable" if baseline["state"] == "unavailable" else "available"
         )
         for field in ("received_at", "persisted_at", "last_changed"):
-            assert datetime.fromisoformat(baseline[field]).utcoffset().total_seconds() == 0
+            offset = datetime.fromisoformat(baseline[field]).utcoffset()
+            assert offset is not None
+            assert offset.total_seconds() == 0
         assert baseline["received_at"] != baseline["last_changed"], (
             "Receipt confused with source change"
         )

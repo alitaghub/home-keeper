@@ -1,10 +1,13 @@
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
-from test_discovery import AUTH, BROWSER, NOW, TOKEN
+from support.api import AUTH, BROWSER, NOW, TOKEN
 
 from home_observer.api import create_app
 
 
-def test_live_catalog_is_source_bound_and_refresh_requires_browser_boundary(tmp_path):
+def test_live_catalog_is_source_bound_and_refresh_requires_browser_boundary(tmp_path: Path) -> None:
     with TestClient(
         create_app(tmp_path / "live.sqlite", TOKEN, now=lambda: NOW, source_id="home_assistant")
     ) as client:
@@ -47,9 +50,7 @@ def test_live_catalog_is_source_bound_and_refresh_requires_browser_boundary(tmp_
         assert client.get("/api/selection").json()["entity_ids"] == ["ha:registry1"]
 
 
-def test_database_cannot_switch_source_or_accept_foreign_observations(tmp_path):
-    import pytest
-
+def test_database_cannot_switch_source_or_accept_foreign_observations(tmp_path: Path) -> None:
     path = tmp_path / "home.sqlite"
     with TestClient(create_app(path, TOKEN, now=lambda: NOW, source_id="home_assistant")) as client:
         assert (
@@ -65,7 +66,9 @@ def test_database_cannot_switch_source_or_accept_foreign_observations(tmp_path):
         create_app(path, TOKEN)
 
 
-def test_registry_identity_preserves_selection_on_rename_without_granting_replacement(tmp_path):
+def test_registry_identity_preserves_selection_on_rename_without_granting_replacement(
+    tmp_path: Path,
+) -> None:
     with TestClient(
         create_app(tmp_path / "rename.sqlite", TOKEN, now=lambda: NOW, source_id="home_assistant")
     ) as client:

@@ -1,5 +1,9 @@
 """Trusted, fixed-read Home Assistant adapter. Raw registry data never leaves it."""
 
+# SelectedSubscription is the connector's companion and reuses its private session state.
+# pyright: reportPrivateUsage=false
+
+import contextlib
 import ipaddress
 import json
 import logging
@@ -7,25 +11,44 @@ import re
 import ssl
 import time
 from datetime import UTC, datetime
+from http import HTTPStatus
 from pathlib import Path
-from typing import Protocol
+from typing import Any, NoReturn, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError
 from websockets.exceptions import WebSocketException
-from websockets.sync.client import connect
+from websockets.sync.client import ClientConnection, connect
 
-from home_observer.events import change_event, light_state
+from home_observer.events import change_event, is_json_object, light_state
 from home_observer.models import Catalog, ChangeEvent, Entity, Observation
 
 MAX_PAYLOAD = 2 * 1024 * 1024
+MAX_REGISTRY_ROWS = 500
+MAX_SOURCE_ENTITY_ID_LENGTH = 128
+MAX_TOKEN_LENGTH = 4096
+MAX_TIMEOUT_SECONDS = 30
+MAX_RECEIVE_TIMEOUT_SECONDS = 5
+# Visible ASCII only: no spaces, control characters or non-ASCII in origins and credentials.
+VISIBLE_ASCII = range(33, 127)
 _REGISTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,120}$")
 _LIGHT_ID = re.compile(r"^light\.[a-z0-9_]{1,120}$")
 _WS_LOGGER = logging.getLogger("home_observer.transport.private")
 _WS_LOGGER.addHandler(logging.NullHandler())
 _WS_LOGGER.propagate = False
 _WS_LOGGER.setLevel(logging.CRITICAL + 1)
+
+
+# Approved (identity, revision, source entity) triples a subscription was opened for.
+type SubscriptionKey = tuple[tuple[str, int, str], ...]
+
+
+class WebSocket(Protocol):
+    """The part of a websockets sync connection the adapter uses."""
+
+    def send(self, message: str, /) -> None: ...
+    def recv(self, timeout: float | None = None) -> str | bytes: ...
 
 
 class ConnectorError(Exception):
@@ -37,7 +60,7 @@ class ConnectorError(Exception):
 
 
 class Subscription(Protocol):
-    key: tuple[tuple[str, int, str], ...]
+    key: SubscriptionKey
 
     def receive(self, timeout: float = 1) -> ChangeEvent | None: ...
     def close(self) -> None: ...
@@ -48,7 +71,7 @@ class Connector(Protocol):
     def approve(self, selected: dict[str, int]) -> None: ...
     def read_selected(self, identity: str, revision: int) -> Observation: ...
     @property
-    def subscription_key(self) -> tuple[tuple[str, int, str], ...]: ...
+    def subscription_key(self) -> SubscriptionKey: ...
     def subscribe_selected(self) -> Subscription | None: ...
     def close(self) -> None: ...
 
@@ -62,7 +85,7 @@ class HomeAssistantConnector:
         redaction_values: tuple[str, ...] = (),
     ):
         try:
-            if any(not 33 <= ord(character) <= 126 for character in origin):
+            if any(ord(character) not in VISIBLE_ASCII for character in origin):
                 raise ValueError
             parsed = urlsplit(origin)
             if (
@@ -75,10 +98,10 @@ class HomeAssistantConnector:
                 or parsed.path not in {"", "/"}
                 or parsed.query
                 or parsed.fragment
-                or not 0 < timeout_seconds <= 30
+                or not 0 < timeout_seconds <= MAX_TIMEOUT_SECONDS
             ):
                 raise ValueError
-            parsed.port
+            _ = parsed.port  # Raises ValueError for an out-of-range or non-numeric port.
             if ":" in parsed.hostname:
                 ipaddress.ip_address(parsed.hostname)
             elif not re.fullmatch(r"[a-zA-Z0-9.-]+", parsed.hostname):
@@ -86,9 +109,9 @@ class HomeAssistantConnector:
             token = token_file.read_text().strip()
             if (
                 not token
-                or len(token) > 4096
+                or len(token) > MAX_TOKEN_LENGTH
                 or not token.isascii()
-                or any(not 33 <= ord(character) <= 126 for character in token)
+                or any(ord(character) not in VISIBLE_ASCII for character in token)
             ):
                 raise ValueError
         except (ValueError, OSError):
@@ -113,7 +136,7 @@ class HomeAssistantConnector:
         self._approved: dict[str, int] = {}
         self._validated = False
 
-    def close(self):
+    def close(self) -> None:
         self._http.close()
 
     def discover(self) -> Catalog:
@@ -155,16 +178,16 @@ class HomeAssistantConnector:
         self._validated = True
         return catalog
 
-    def _receive(self, socket) -> dict:
+    def _receive(self, socket: WebSocket) -> dict[str, Any]:
         raw = socket.recv(timeout=self._timeout)
         if len(raw) > MAX_PAYLOAD:
             raise ConnectorError("invalid_data")
         data = json.loads(raw)
-        if not isinstance(data, dict):
+        if not is_json_object(data):
             raise ConnectorError("invalid_data")
         return data
 
-    def _registry(self, socket, request_id: int, command: str) -> list:
+    def _registry(self, socket: WebSocket, request_id: int, command: str) -> list[Any]:
         # This private helper is also guarded: future callers cannot add write commands.
         if command not in {"config/entity_registry/list", "config/device_registry/list"}:
             raise ConnectorError("configuration")
@@ -174,33 +197,33 @@ class HomeAssistantConnector:
             raise ConnectorError("invalid_data")
         if response.get("success") is not True:
             raise ConnectorError("discovery")
-        result = response.get("result")
+        result: object = response.get("result")
         if not isinstance(result, list):
             raise ConnectorError("invalid_data")
-        return result
+        return result  # pyright: ignore[reportUnknownVariableType] -- raw registry rows; _project validates each
 
-    def _name(self, value, fallback: str) -> str:
+    def _name(self, value: object, fallback: str) -> str:
         name = value if isinstance(value, str) and value else fallback
         for secret in self._redactions:
             if secret:
                 name = name.replace(secret, "[redacted]")
         return name[:256]
 
-    def _project(self, entities: list, devices: list) -> tuple[Catalog, dict[str, str]]:
-        if len(entities) > 500 or len(devices) > 500:
+    def _project(self, entities: list[Any], devices: list[Any]) -> tuple[Catalog, dict[str, str]]:
+        if len(entities) > MAX_REGISTRY_ROWS or len(devices) > MAX_REGISTRY_ROWS:
             raise ConnectorError("invalid_data")
-        device_names = {}
+        device_names: dict[str, str] = {}
         for device in devices:
-            identity = device.get("id") if isinstance(device, dict) else None
+            identity = device.get("id") if is_json_object(device) else None
             if not isinstance(identity, str) or not _REGISTRY_ID.fullmatch(identity):
                 raise ConnectorError("invalid_data")
             device_names[identity] = self._name(
                 device.get("name_by_user") or device.get("name"), "Unnamed device"
             )
-        projected = []
-        mapping = {}
+        projected: list[Entity] = []
+        mapping: dict[str, str] = {}
         for entity in entities:
-            if not isinstance(entity, dict):
+            if not is_json_object(entity):
                 raise ConnectorError("invalid_data")
             registry_id = entity.get("id")
             entity_id = entity.get("entity_id")
@@ -208,7 +231,7 @@ class HomeAssistantConnector:
                 not isinstance(registry_id, str)
                 or not _REGISTRY_ID.fullmatch(registry_id)
                 or not isinstance(entity_id, str)
-                or len(entity_id) > 128
+                or len(entity_id) > MAX_SOURCE_ENTITY_ID_LENGTH
             ):
                 raise ConnectorError("invalid_data")
             identity = f"ha:{registry_id}"
@@ -229,7 +252,7 @@ class HomeAssistantConnector:
                         entity.get("name") or entity.get("original_name"), "Unnamed entity"
                     ),
                     device_id=f"ha:{device_id}" if device_id else None,
-                    device_name=device_names.get(device_id),
+                    device_name=device_names.get(device_id) if device_id else None,
                     supported=supported,
                     reason=None if supported else "Only enabled individual Hue V2 lights supported",
                 )
@@ -239,14 +262,17 @@ class HomeAssistantConnector:
 
     def approve(self, selected: dict[str, int]) -> None:
         if not self._validated or any(
-            identity not in self._supported or not isinstance(revision, int) or revision < 0
+            identity not in self._supported
+            # Defense in depth: approvals must be integer revisions even from untyped callers.
+            or not isinstance(revision, int)  # pyright: ignore[reportUnnecessaryIsInstance]
+            or revision < 0
             for identity, revision in selected.items()
         ):
             raise ConnectorError("configuration")
         self._approved = dict(selected)
 
     @property
-    def subscription_key(self):
+    def subscription_key(self) -> SubscriptionKey:
         if not self._validated:
             return ()
         return tuple(
@@ -256,7 +282,7 @@ class HomeAssistantConnector:
             )
         )
 
-    def subscribe_selected(self):
+    def subscribe_selected(self) -> "SelectedSubscription | None":
         if not self.subscription_key:
             return None
         return SelectedSubscription(self)
@@ -275,9 +301,9 @@ class HomeAssistantConnector:
             with self._http.stream("GET", f"/api/states/{entity_id}") as response:
                 if response.status_code in {401, 403}:
                     raise ConnectorError("authentication")
-                if response.status_code == 404:
+                if response.status_code == HTTPStatus.NOT_FOUND:
                     raise ConnectorError("missing")
-                if response.status_code != 200:
+                if response.status_code != HTTPStatus.OK:
                     raise ConnectorError("connection")
                 payload = bytearray()
                 for chunk in response.iter_bytes():
@@ -325,7 +351,7 @@ class SelectedSubscription:
         if not self.key:
             raise ConnectorError("configuration")
         self._mapping = {source: (identity, revision) for identity, revision, source in self.key}
-        self._socket = None
+        self._socket: ClientConnection | None = None
         try:
             self._socket = connect(
                 connector._websocket_url,
@@ -357,7 +383,7 @@ class SelectedSubscription:
             self._raise_safe(error)
 
     @staticmethod
-    def _raise_safe(error):
+    def _raise_safe(error: Exception) -> NoReturn:
         if isinstance(error, ConnectorError):
             raise error
         if isinstance(error, ssl.SSLError):
@@ -368,13 +394,15 @@ class SelectedSubscription:
             raise ConnectorError("connection") from None
         raise ConnectorError("invalid_data") from None
 
-    def receive(self, timeout: float = 1):
-        if not 0 < timeout <= 5:
+    def receive(self, timeout: float = 1) -> ChangeEvent | None:
+        if not 0 < timeout <= MAX_RECEIVE_TIMEOUT_SECONDS:
             raise ConnectorError("configuration")
         # Approvals are refreshed by the collector. Do not drain old permissions.
         if self._connector._validated and self.key != self._connector.subscription_key:
             return None
         try:
+            if self._socket is None:
+                raise ConnectorError("invalid_data")
             try:
                 raw = self._socket.recv(timeout=timeout)
             except TimeoutError:
@@ -383,16 +411,16 @@ class SelectedSubscription:
                 raise ConnectorError("invalid_data")
             message = json.loads(raw)
             if (
-                not isinstance(message, dict)
+                not is_json_object(message)
                 or message.get("type") != "event"
                 or message.get("id") != 1
             ):
                 raise ConnectorError("invalid_data")
             envelope = message.get("event")
-            if not isinstance(envelope, dict) or envelope.get("event_type") != "state_changed":
+            if not is_json_object(envelope) or envelope.get("event_type") != "state_changed":
                 raise ConnectorError("invalid_data")
             data = envelope.get("data")
-            if not isinstance(data, dict):
+            if not is_json_object(data):
                 raise ConnectorError("invalid_data")
             source_entity_id = data.get("entity_id")
             if not isinstance(source_entity_id, str) or source_entity_id not in self._mapping:
@@ -415,10 +443,8 @@ class SelectedSubscription:
         except Exception as error:
             self._raise_safe(error)
 
-    def close(self):
+    def close(self) -> None:
         if self._socket is not None:
-            try:
+            with contextlib.suppress(OSError, WebSocketException):
                 self._socket.close()
-            except (OSError, WebSocketException):
-                pass
             self._socket = None

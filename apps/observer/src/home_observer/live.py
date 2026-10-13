@@ -1,21 +1,30 @@
 """Live collector process: credentials remain here, outside API and dashboard."""
 
+import contextlib
 import logging
 import os
 import time
 from collections import deque
 from datetime import UTC, datetime
+from http import HTTPStatus
 from pathlib import Path
 from threading import Event, Lock, Thread
 
 import httpx
+from pydantic import BaseModel
 
-from home_observer.home_assistant import Connector, ConnectorError, HomeAssistantConnector
-from home_observer.models import SelectionSnapshot
+from home_observer.home_assistant import (
+    VISIBLE_ASCII,
+    Connector,
+    ConnectorError,
+    HomeAssistantConnector,
+    Subscription,
+)
+from home_observer.models import ChangeEvent, SelectionSnapshot
 from home_observer.runtime import load_token
 
 
-def _health(client: httpx.Client, error: str | None):
+def _health(client: httpx.Client, error: str | None) -> None:
     response = client.post(
         "/internal/health",
         json={
@@ -28,7 +37,7 @@ def _health(client: httpx.Client, error: str | None):
     _check_response(response)
 
 
-def _failure_reason(error):
+def _failure_reason(error: Exception) -> str:
     if isinstance(error, ConnectorError):
         return error.code
     if isinstance(error, httpx.HTTPStatusError) and error.response.status_code in {401, 403}:
@@ -38,39 +47,42 @@ def _failure_reason(error):
     return "ingestion"
 
 
-def _check_response(response):
-    if response.status_code == 409:
+def _check_response(response: httpx.Response) -> None:
+    if response.status_code == HTTPStatus.CONFLICT:
         try:
             code = response.json()["detail"]["code"]
         except (ValueError, KeyError, TypeError):
             code = None
-        reason = {"selection_changed": "selection", "source_mismatch": "configuration"}.get(
-            code, "invalid_data"
-        )
-        raise ConnectorError(reason)
+        reasons: dict[object, str] = {
+            "selection_changed": "selection",
+            "source_mismatch": "configuration",
+        }
+        raise ConnectorError(reasons.get(code, "invalid_data"))
     response.raise_for_status()
 
 
 MAX_BUFFER_EVENTS = 256
 MAX_BUFFER_BYTES = 1024 * 1024
+HEARTBEAT_SECONDS = 10
+MAX_INTERVAL_SECONDS = 3600
 
 
 class _EventBuffer:
     """One bounded reader drains the selected stream while HTTP snapshots run."""
 
-    def __init__(self, subscription, max_events, max_bytes):
+    def __init__(self, subscription: Subscription, max_events: int, max_bytes: int) -> None:
         self.subscription = subscription
         self._max_events = max_events
         self._max_bytes = max_bytes
-        self._queue = deque()
+        self._queue: deque[tuple[ChangeEvent, int]] = deque()
         self._bytes = 0
-        self._failure = None
+        self._failure: str | None = None
         self._lock = Lock()
         self._stop = Event()
         self._reader = Thread(target=self._read, name="selected-event-buffer", daemon=True)
         self._reader.start()
 
-    def _read(self):
+    def _read(self) -> None:
         while not self._stop.is_set():
             try:
                 event = self.subscription.receive(0.1)
@@ -89,12 +101,12 @@ class _EventBuffer:
                     self._failure = error.code
                 return
 
-    def check(self):
+    def check(self) -> None:
         with self._lock:
             if self._failure:
                 raise ConnectorError(self._failure)
 
-    def drain(self):
+    def drain(self) -> list[ChangeEvent]:
         with self._lock:
             if self._failure:
                 raise ConnectorError(self._failure)
@@ -103,10 +115,10 @@ class _EventBuffer:
             self._bytes = 0
         return events
 
-    def wait(self, timeout):
+    def wait(self, timeout: float) -> None:
         self._stop.wait(timeout)
 
-    def close(self):
+    def close(self) -> None:
         self._stop.set()
         self.subscription.close()
         self._reader.join(timeout=6)
@@ -119,22 +131,29 @@ class CollectionSession:
 
     def __init__(
         self,
-        client,
+        client: httpx.Client,
         connector: Connector,
         *,
-        max_events=MAX_BUFFER_EVENTS,
-        max_bytes=MAX_BUFFER_BYTES,
-    ):
+        max_events: int = MAX_BUFFER_EVENTS,
+        max_bytes: int = MAX_BUFFER_BYTES,
+    ) -> None:
         if not 1 <= max_events <= MAX_BUFFER_EVENTS or not 1 <= max_bytes <= MAX_BUFFER_BYTES:
             raise ValueError("Invalid recovery buffer limits")
         self.client = client
         self.connector = connector
-        self._buffer = None
+        self._buffer: _EventBuffer | None = None
         self._max_events = max_events
         self._max_bytes = max_bytes
-        self.last_error = None
+        self.last_error: str | None = None
 
-    def _coverage(self, status, reason, revision=None, entity_id=None, entity_ids=None):
+    def _coverage(
+        self,
+        status: str,
+        reason: str,
+        revision: int | None = None,
+        entity_id: str | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> None:
         response = self.client.post(
             "/internal/coverage",
             json={
@@ -149,12 +168,12 @@ class CollectionSession:
         )
         _check_response(response)
 
-    def close(self):
+    def close(self) -> None:
         if self._buffer is not None:
             buffer, self._buffer = self._buffer, None
             buffer.close()
 
-    def interrupt(self, reason):
+    def interrupt(self, reason: str) -> None:
         self.last_error = reason
         logging.warning("Collection interrupted: %s", reason)
         self.close()
@@ -168,11 +187,11 @@ class CollectionSession:
             # Log only a fixed operation/reason, never exception text or response bodies.
             logging.warning("Interruption reporting failed: %s", reason)
 
-    def _persist(self, path, value):
+    def _persist(self, path: str, value: BaseModel) -> None:
         response = self.client.post(path, json=value.model_dump(mode="json", exclude_none=True))
         _check_response(response)
 
-    def receive(self, timeout=0, *, deadline=None):
+    def receive(self, timeout: float = 0, *, deadline: float | None = None) -> None:
         if self._buffer is None:
             if timeout:
                 time.sleep(timeout)
@@ -185,7 +204,7 @@ class CollectionSession:
                 raise ConnectorError("timeout")
             self._persist("/internal/events", event)
 
-    def reconcile(self):
+    def reconcile(self) -> bool:
         deadline = time.monotonic() + 30
         try:
             catalog = self.connector.discover()
@@ -194,11 +213,11 @@ class CollectionSession:
             )
             response = self.client.get("/internal/selection")
             response.raise_for_status()
-            selection = SelectionSnapshot.model_validate(response.json()).model_dump()
+            selection = SelectionSnapshot.model_validate(response.json())
             supported = {entity.id for entity in catalog.entities if entity.supported}
             selected = {
-                identity: selection["revision"]
-                for identity in selection["entity_ids"]
+                identity: selection.revision
+                for identity in selection.entity_ids
                 if identity in supported
             }
             self.connector.approve(selected)
@@ -206,13 +225,15 @@ class CollectionSession:
             if self._buffer is not None and self._buffer.subscription.key != key:
                 self.interrupt("selection")
             if self._buffer is None and key:
-                self._buffer = _EventBuffer(
-                    self.connector.subscribe_selected(), self._max_events, self._max_bytes
-                )
+                subscription = self.connector.subscribe_selected()
+                # An approved, non-empty key always yields a subscription.
+                if subscription is None:
+                    raise ConnectorError("configuration")
+                self._buffer = _EventBuffer(subscription, self._max_events, self._max_bytes)
             deadline = time.monotonic() + max(30, 5 * len(selected) + 10)
             heartbeat = time.monotonic()
-            recovered = []
-            for identity in set(selection["entity_ids"]) - supported:
+            recovered: list[str] = []
+            for identity in set(selection.entity_ids) - supported:
                 self._coverage("interrupted", "missing", entity_id=identity)
             for identity, revision in selected.items():
                 if time.monotonic() >= deadline:
@@ -230,7 +251,7 @@ class CollectionSession:
                 observation.kind = "reconciliation"
                 self._persist("/internal/baselines", observation)
                 recovered.append(identity)
-                if time.monotonic() - heartbeat >= 10:
+                if time.monotonic() - heartbeat >= HEARTBEAT_SECONDS:
                     _health(self.client, None)
                     heartbeat = time.monotonic()
             self.receive(deadline=deadline)
@@ -238,19 +259,20 @@ class CollectionSession:
             # Every successful full pass is an explicit, revision-bound recovery proof.
             if self._buffer is not None:
                 self._buffer.check()
-            self._coverage("recovered", "connection", selection["revision"], entity_ids=recovered)
+            self._coverage("recovered", "connection", selection.revision, entity_ids=recovered)
             if self._buffer is not None:
                 self._buffer.check()
             _health(self.client, None)
-            self.last_error = None
-            return True
         except (ConnectorError, httpx.HTTPError, ValueError, KeyError, TypeError) as error:
             reason = _failure_reason(error)
             self.interrupt(reason)
             return False
+        else:
+            self.last_error = None
+            return True
 
 
-def main():
+def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     # Library debug output can include request headers or authentication frames.
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -260,7 +282,7 @@ def main():
         time.sleep(1)
     try:
         token = load_token(service_token_path)
-        if not token or not token.isascii() or any(not 33 <= ord(c) <= 126 for c in token):
+        if not token or not token.isascii() or any(ord(c) not in VISIBLE_ASCII for c in token):
             raise ValueError
     except (OSError, ValueError):
         logging.error("Live collector internal credential invalid; check service token file")
@@ -274,7 +296,7 @@ def main():
     ) as client:
         try:
             interval = int(os.environ.get("OBSERVER_RECONCILIATION_SECONDS", "10"))
-            if not 1 <= interval <= 3600:
+            if not 1 <= interval <= MAX_INTERVAL_SECONDS:
                 raise ValueError
             connector = HomeAssistantConnector(
                 os.environ.get("OBSERVER_HA_URL", ""),
@@ -283,10 +305,8 @@ def main():
             )
         except (ConnectorError, ValueError):
             logging.error("Home Assistant configuration invalid; check origin and token file")
-            try:
+            with contextlib.suppress(httpx.HTTPError):
                 _health(client, "configuration")
-            except httpx.HTTPError:
-                pass
             raise SystemExit(1) from None
         session = CollectionSession(client, connector)
         backoff = 1.0

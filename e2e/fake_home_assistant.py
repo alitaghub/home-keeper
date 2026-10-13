@@ -5,14 +5,15 @@ from datetime import UTC, datetime
 
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
-from websockets.http11 import Response
-from websockets.sync.server import serve
+from websockets.http11 import Request, Response
+from websockets.sync.server import ServerConnection, serve
 
 TOKEN = "synthetic-compose-token"
-BRIGHTNESS = 120
+# Each subscription toggles the fixture light's brightness, so consecutive events differ.
+light = {"brightness": 120}
 
 
-def http_response(connection, request):
+def http_response(_connection: ServerConnection, request: Request) -> Response | None:
     if request.path.startswith("/api/states/"):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return Response(401, "Unauthorized", Headers(), b"")
@@ -22,7 +23,7 @@ def http_response(connection, request):
             "entity_id": "light.fixture",
             "state": "off",
             "last_changed": "2026-01-01T00:00:00Z",
-            "attributes": {"brightness": BRIGHTNESS},
+            "attributes": {"brightness": light["brightness"]},
         }
         return Response(
             200, "OK", Headers({"Content-Type": "application/json"}), json.dumps(data).encode()
@@ -30,7 +31,7 @@ def http_response(connection, request):
     return None
 
 
-def websocket(socket):
+def websocket(socket: ServerConnection) -> None:
     socket.send(json.dumps({"type": "auth_required"}))
     auth = json.loads(socket.recv(timeout=5))
     if auth != {"type": "auth", "access_token": TOKEN}:
@@ -63,7 +64,6 @@ def websocket(socket):
             }
         ],
     }
-    global BRIGHTNESS
     command = json.loads(socket.recv(timeout=5))
     if command["type"] == "subscribe_events":
         assert command["event_type"] == "state_changed"
@@ -74,10 +74,10 @@ def websocket(socket):
         old = {
             "entity_id": "light.fixture",
             "state": "off",
-            "attributes": {"brightness": BRIGHTNESS},
+            "attributes": {"brightness": light["brightness"]},
         }
-        BRIGHTNESS = 180 if BRIGHTNESS == 120 else 120
-        new = old | {"attributes": {"brightness": BRIGHTNESS}, "last_updated": fired}
+        light["brightness"] = 180 if light["brightness"] == 120 else 120
+        new = old | {"attributes": {"brightness": light["brightness"]}, "last_updated": fired}
         socket.send(
             json.dumps(
                 {
@@ -113,5 +113,6 @@ def websocket(socket):
 
 
 if __name__ == "__main__":
-    with serve(websocket, "0.0.0.0", 8123, process_request=http_response) as server:
+    # Listens on all interfaces inside its isolated Compose network only.
+    with serve(websocket, "0.0.0.0", 8123, process_request=http_response) as server:  # noqa: S104
         server.serve_forever()
