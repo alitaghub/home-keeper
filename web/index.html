@@ -17,11 +17,16 @@
       <section><span>Discovered entities</span><strong id="count">—</strong><small>Entities grouped by device below</small></section>
       <section><span>Monitoring</span><strong id="selected-count">0</strong><small>You choose what gets recorded</small></section></div>
     <p id="message" role="status" aria-live="polite"></p>
+    <section class="panel" aria-labelledby="coverage-heading">
+      <div class="section-heading"><div><h2 id="coverage-heading">Collection gaps</h2><p>Missing collection is separate from a light reporting unavailable.</p></div></div>
+      <p id="coverage-status" role="status" aria-live="polite">Waiting for coverage records.</p>
+      <div id="coverage"></div>
+    </section>
     <section class="panel"><div class="section-heading"><div><h2>Monitored lights</h2><p>Latest observed state and collection freshness. Evidence type is shown below.</p></div><span class="tag">READ ONLY</span></div>
       <div id="monitored"></div></section>
     <section class="panel" aria-labelledby="timeline-heading"><div class="section-heading"><div><h2 id="timeline-heading">Recorded changes</h2><p>Selected lights' observed transitions, newest source event first. Earlier selections' history stays visible.</p></div><button id="timeline-refresh">Refresh history</button></div>
       <p id="timeline-status" class="history-status" role="status" aria-live="polite">Waiting for recorded history.</p>
-      <p class="history-status">Missing entries do not prove nothing changed. Collection gaps are not yet accounted for. Times use your browser's local timezone.</p>
+      <p class="history-status">Missing entries do not prove nothing changed. Review collection gaps above for missing intervals. Times use your browser's local timezone.</p>
       <div id="timeline"></div><button id="timeline-more" hidden>Load older changes</button></section>
     <section class="panel"><div class="section-heading"><div><h2>Discovered devices</h2><p>Discovery does not enable monitoring. Select individual Hue lights.</p></div></div><div id="catalog"></div></section>
     <footer>Stored on this machine · Change records are evidence, not explanations of cause · No agent in this milestone</footer>

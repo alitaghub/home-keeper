@@ -105,7 +105,26 @@ def test_initial_missing_baseline_stays_selected_then_recovers(adapter, tmp_path
     import home_observer.home_assistant as ha
 
     original_connect = ha.connect
-    ha.connect = lambda *args, **kwargs: Socket([row()])
+
+    class LiveSocket(Socket):
+        def send(self, value):
+            super().send(value)
+            if self.sent[-1]["type"] == "subscribe_events":
+                self.messages.clear()
+                self.messages.append({"id": 1, "type": "result", "success": True})
+
+        def recv(self, timeout):
+            if not self.messages:
+                import time
+
+                time.sleep(min(timeout, 0.01))
+                raise TimeoutError
+            return super().recv(timeout)
+
+        def close(self):
+            pass
+
+    ha.connect = lambda *args, **kwargs: LiveSocket([row()])
     try:
         with TestClient(
             create_app(tmp_path / "live.sqlite", "review-internal", source_id="home_assistant"),

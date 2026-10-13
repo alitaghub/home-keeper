@@ -178,8 +178,82 @@ reports what Home Assistant observed. There is no Recorder history import,
 historical backfill, automation attribution or cause inference. Earlier events
 and changes during a connection interruption may be absent. Polling snapshots
 can reconcile the current state but cannot reconstruct those missing changes.
-Connection-gap accounting is a later milestone. There is no anomaly detector or
+Collection gaps and recovery are recorded locally. There is no anomaly detector or
 AI investigation yet.
+
+
+## Collection gaps and recovery
+
+The **Collection gaps** panel records interruptions separately from a bulb
+reporting `unavailable`. Losing the connector does not create unavailable events
+for every light. Each gap has an evidence ID, selected entity scope, last
+confirmed collection, detection time and eventual recovery time. The exact start
+is uncertain. A restart records a gap from the last persisted collection point.
+A missed heartbeat is detected when the API is read after twice the configured
+collection interval. If the API cannot accept a failure record, missing heartbeats
+or the next application startup still expose interrupted collection.
+
+On reconnect, the live collector refreshes the registry and current selection,
+installs the selected event subscription, and reads current snapshots. A bounded
+reader holds events arriving during those reads. It saves snapshots and events
+before reporting recovery. Removing or adding a selection invalidates an older
+collector revision, including a delayed recovery signal. Renamed identities keep
+history; a replacement entity never inherits permission.
+
+Recovery snapshots link to gap evidence and mark transition time as unknown.
+For example, if the saved state was off and the recovered state is on, the app
+shows the new snapshot without inventing an off-to-on event during the gap.
+A normal polling snapshot that contradicts recorded state also marks incomplete
+collection. Genuine Home Assistant events remain separate timeline entries.
+
+The recovery buffer is limited to 256 projected events and 1 MiB. Overflow,
+invalid data or failed ingestion interrupts collection and requires a new
+subscription and fresh snapshots. Transient retries use exponential delays
+capped at 60 seconds. Authentication or configuration failures stop the live
+collector. Fix the local configuration and restart it. A successful connection
+or heartbeat alone does not close a gap.
+
+The read-only `GET /api/coverage?limit=20` endpoint returns at most 100 gaps,
+current collection status, last confirmation and retention cutoff. Closed gaps
+expire after the retention period measured from recovery. Active gaps remain until recovery. History outside
+recorded collection windows remains unknown; no view claims uninterrupted history.
+
+To test a gap without hardware, select a demo light and wait for fresh evidence:
+
+```sh
+docker compose stop collector
+# Leave it stopped for more than 20 seconds at the default interval.
+# Read the dashboard: collection should become stale and show a gap.
+docker compose start collector
+# After the next collection pass, the gap should show recovery.
+```
+
+`docker compose restart api` verifies persisted restart gaps. For live mode use
+both Compose files with these commands. The synthetic home resets its sequence
+when the collector starts; that reset is a recovery snapshot, not inferred
+historical device activity.
+
+
+## Phase 1 live test checklist
+
+Once you are home, use the live setup above and test one individual Hue light:
+
+1. Confirm the bulb appears and responds in Home Assistant first.
+2. Open Home Observer, check the **HOME ASSISTANT** label, and select that bulb.
+   Wait for fresh evidence and an initial baseline.
+3. Change on/off and brightness through the Hue app, leaving each setting for
+   about 20 seconds. Confirm attributed entries in **Recorded changes**.
+4. Stop the live collector with both Compose files. Wait more than twice the
+   configured interval. Confirm stale evidence and an open collection gap.
+   Change the bulb through the Hue app while collection is stopped.
+5. Start the live collector. Confirm a recovery snapshot and closed gap. The app
+   must not invent the transition that happened while it was stopped.
+6. Restart the API. Confirm selections and history remain, with a persisted
+   restart gap that closes after recovery.
+
+Do not share the token or raw registry payloads when reporting a failure.
+Share the safe dashboard error and Home Assistant version. Phase 1 implements
+monitoring and evidence collection. Real home hardware validation remains pending.
 
 ## Architecture
 
@@ -293,7 +367,17 @@ brightness event and passed outage/recovery checks in 25.842 seconds, including
 image build time. Ruff, JavaScript syntax and a headless browser check passed.
 The browser displayed attributed events, no injected script nodes and no
 horizontal overflow. These checks use synthetic devices. Real Hue validation,
-explicit collection-gap records and hosted CI remain unverified or unfinished.
+hosted CI and real hardware were not verified in that milestone.
+
+Story 04 completed the Phase 1 collection implementation. Final local verification
+passed 73 tests, including three independent coverage probes. The reviewer found
+one entity-attribution bug in gap timestamps; it was reproduced and fixed.
+Synthetic live Compose passed subscription, outage/recovery and API restart-gap
+checks in 28.485 seconds, including image build time. Stopping the demo collector
+also produced a heartbeat gap without new device events, then recovered in a
+25.402-second check. These durations are test execution times, not Hue latency.
+Ruff, JavaScript syntax, demo Compose smoke and browser DOM checks passed.
+Real Hue hardware, hosted CI and the other platforms listed above remain untested.
 
 ## License
 

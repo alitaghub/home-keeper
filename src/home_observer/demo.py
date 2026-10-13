@@ -59,6 +59,21 @@ CATALOG = {
 }
 
 
+def coverage(
+    client: httpx.Client, status: str, reason: str = "connection", revision: int | None = None
+):
+    client.post(
+        "/internal/coverage",
+        json={
+            "source_id": "demo",
+            "status": status,
+            "reason": reason,
+            "selection_revision": revision,
+            "received_at": datetime.now(UTC).isoformat(),
+        },
+    ).raise_for_status()
+
+
 class DemoReplay:
     """Repeatable synthetic transitions. Unselected history is never forwarded."""
 
@@ -143,6 +158,7 @@ def reconcile(client: httpx.Client, replay: DemoReplay):
             "received_at": datetime.now(UTC).isoformat(),
         },
     ).raise_for_status()
+    coverage(client, "recovered", revision=selected["revision"])
 
 
 def main():
@@ -169,6 +185,7 @@ def main():
                 # Never log request headers, responses or exception strings.
                 logging.warning("Demo collection failed; retrying on next reconciliation")
                 try:
+                    coverage(client, "interrupted", "ingestion")
                     client.post(
                         "/internal/health",
                         json={

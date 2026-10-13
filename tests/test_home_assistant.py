@@ -354,6 +354,16 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path):
         socket.send(json.dumps({"type": "auth_invalid" if fail[0] else "auth_ok"}))
         if fail[0]:
             return
+        command = json.loads(socket.recv(timeout=5))
+        if command["type"] == "subscribe_events":
+            socket.send(json.dumps({"id": 1, "type": "result", "success": True}))
+            from websockets.exceptions import ConnectionClosed
+
+            try:
+                socket.recv(timeout=10)
+            except (ConnectionClosed, TimeoutError):
+                pass
+            return
         for result in (
             entities,
             [
@@ -364,12 +374,13 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path):
                 }
             ],
         ):
-            command = json.loads(socket.recv())
             socket.send(
                 json.dumps(
                     {"id": command["id"], "type": "result", "success": True, "result": result}
                 )
             )
+            if command["id"] == 1:
+                command = json.loads(socket.recv(timeout=5))
 
     db = tmp_path / "live.sqlite"
     app = create_app(

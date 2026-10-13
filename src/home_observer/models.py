@@ -130,7 +130,7 @@ class Observation(LightState):
     entity_id: Identity
     selection_revision: int = Field(ge=0)
     source_id: Literal["demo", "home_assistant"]
-    kind: Literal["baseline", "reconciliation"] = "baseline"
+    kind: Literal["baseline", "reconciliation", "recovery"] = "baseline"
     received_at: datetime
 
     @field_validator("received_at")
@@ -184,3 +184,31 @@ class Health(WireModel):
     @classmethod
     def utc_timestamp(cls, value):
         return Observation.utc_timestamp(value)
+
+
+class Coverage(WireModel):
+    source_id: Literal["demo", "home_assistant"]
+    status: Literal["interrupted", "recovered"]
+    reason: Literal[
+        "connection",
+        "ingestion",
+        "authentication",
+        "timeout",
+        "restart",
+        "overflow",
+        "reconciliation",
+        "heartbeat",
+        "selection",
+        "invalid_data",
+        "configuration",
+        "tls",
+        "missing",
+    ] = "connection"
+    received_at: datetime
+    entity_id: Identity | None = None
+    selection_revision: int | None = Field(default=None, ge=0)
+
+    @field_validator("received_at")
+    @classmethod
+    def utc_timestamp(cls, value):
+        return LightState.utc_timestamp(value)

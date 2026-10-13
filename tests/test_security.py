@@ -140,4 +140,19 @@ def test_delayed_heartbeat_cannot_clear_newer_collection_failure_but_new_heartbe
             json={"source_id": "demo", "status": "healthy", "received_at": clock[0].isoformat()},
         ).is_success
         assert client.get("/api/health").json()["status"] == "healthy"
+        # Heartbeat recovery alone is not proof that missing observations were saved.
+        assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "stale"
+        client.post(
+            "/internal/baselines", json=observation(revision, clock[0].isoformat()), headers=AUTH
+        ).raise_for_status()
+        client.post(
+            "/internal/coverage",
+            json={
+                "source_id": "demo",
+                "status": "recovered",
+                "selection_revision": revision,
+                "received_at": clock[0].isoformat(),
+            },
+            headers=AUTH,
+        ).raise_for_status()
         assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "fresh"

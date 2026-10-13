@@ -104,6 +104,9 @@ class HomeAssistantConnector:
         self._validated = False
 
     def close(self):
+        session = getattr(self, "_collection_session", None)
+        if session is not None:
+            session.close()
         self._http.close()
 
     def discover(self) -> Catalog:
@@ -367,7 +370,7 @@ class SelectedSubscription:
         if not 0 < timeout <= 5:
             raise ConnectorError("configuration")
         # Approvals are refreshed by the collector. Do not drain old permissions.
-        if self.key != self._connector.subscription_key:
+        if self._connector._validated and self.key != self._connector.subscription_key:
             return None
         try:
             try:
