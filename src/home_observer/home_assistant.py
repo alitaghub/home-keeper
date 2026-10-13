@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
+from home_observer.events import COLOR_FIELDS, change_event, light_state
 from home_observer.models import Catalog, Entity, Observation
 
 MAX_PAYLOAD = 2 * 1024 * 1024
@@ -39,6 +40,7 @@ class Connector(Protocol):
     def discover(self) -> Catalog: ...
     def approve(self, selected: dict[str, int]) -> None: ...
     def read_selected(self, identity: str, revision: int) -> Observation: ...
+    def subscribe_selected(self): ...
 
 
 class HomeAssistantConnector:
@@ -233,6 +235,22 @@ class HomeAssistantConnector:
             raise ConnectorError("configuration")
         self._approved = dict(selected)
 
+    @property
+    def subscription_key(self):
+        if not self._validated:
+            return ()
+        return tuple(
+            sorted(
+                (identity, revision, self._entities[identity])
+                for identity, revision in self._approved.items()
+            )
+        )
+
+    def subscribe_selected(self):
+        if not self.subscription_key:
+            return None
+        return SelectedSubscription(self)
+
     def read_selected(self, identity: str, revision: int) -> Observation:
         if (
             not self._validated
@@ -275,10 +293,7 @@ class HomeAssistantConnector:
                 availability=(state if state in {"unknown", "unavailable"} else "available"),
                 received_at=datetime.now(UTC),
                 **{key: data.get(key) for key in ("last_changed", "last_updated", "last_reported")},
-                **{
-                    key: attributes.get(key)
-                    for key in ("brightness", "color_temp_kelvin", "rgb_color")
-                },
+                **{key: attributes.get(key) for key in COLOR_FIELDS},
             )
         except ConnectorError:
             raise
@@ -294,3 +309,111 @@ class HomeAssistantConnector:
             raise ConnectorError("connection") from None
         except (ValueError, TypeError, ValidationError):
             raise ConnectorError("invalid_data") from None
+
+
+class SelectedSubscription:
+    """Only fixed state_changed subscriptions, with filtering before projection."""
+
+    def __init__(self, connector: HomeAssistantConnector):
+        self._connector = connector
+        self.key = connector.subscription_key
+        if not self.key:
+            raise ConnectorError("configuration")
+        self._mapping = {source: (identity, revision) for identity, revision, source in self.key}
+        self._socket = None
+        try:
+            self._socket = connect(
+                connector._websocket_url,
+                open_timeout=connector._timeout,
+                close_timeout=connector._timeout,
+                max_size=MAX_PAYLOAD,
+                max_queue=16,
+                proxy=None,
+                logger=_WS_LOGGER,
+            )
+            if connector._receive(self._socket).get("type") != "auth_required":
+                raise ConnectorError("invalid_data")
+            self._socket.send(json.dumps({"type": "auth", "access_token": connector._token}))
+            auth = connector._receive(self._socket).get("type")
+            if auth == "auth_invalid":
+                raise ConnectorError("authentication")
+            if auth != "auth_ok":
+                raise ConnectorError("invalid_data")
+            self._socket.send(
+                json.dumps({"id": 1, "type": "subscribe_events", "event_type": "state_changed"})
+            )
+            result = connector._receive(self._socket)
+            if result.get("type") != "result" or result.get("id") != 1:
+                raise ConnectorError("invalid_data")
+            if result.get("success") is not True:
+                raise ConnectorError("discovery")
+        except Exception as error:
+            self.close()
+            self._raise_safe(error)
+
+    @staticmethod
+    def _raise_safe(error):
+        if isinstance(error, ConnectorError):
+            raise error
+        if isinstance(error, ssl.SSLError):
+            raise ConnectorError("tls") from None
+        if isinstance(error, TimeoutError):
+            raise ConnectorError("timeout") from None
+        if isinstance(error, (OSError, WebSocketException)):
+            raise ConnectorError("connection") from None
+        raise ConnectorError("invalid_data") from None
+
+    def receive(self, timeout: float = 1):
+        if not 0 < timeout <= 5:
+            raise ConnectorError("configuration")
+        # Approvals are refreshed by the collector. Do not drain old permissions.
+        if self.key != self._connector.subscription_key:
+            return None
+        try:
+            try:
+                raw = self._socket.recv(timeout=timeout)
+            except TimeoutError:
+                return None
+            if len(raw) > MAX_PAYLOAD:
+                raise ConnectorError("invalid_data")
+            message = json.loads(raw)
+            if (
+                not isinstance(message, dict)
+                or message.get("type") != "event"
+                or message.get("id") != 1
+            ):
+                raise ConnectorError("invalid_data")
+            envelope = message.get("event")
+            if not isinstance(envelope, dict) or envelope.get("event_type") != "state_changed":
+                raise ConnectorError("invalid_data")
+            data = envelope.get("data")
+            if not isinstance(data, dict):
+                raise ConnectorError("invalid_data")
+            source_entity_id = data.get("entity_id")
+            if not isinstance(source_entity_id, str) or source_entity_id not in self._mapping:
+                return None
+            identity, revision = self._mapping[source_entity_id]
+            old = light_state(data.get("old_state"), source_entity_id)
+            new = light_state(data.get("new_state"), source_entity_id)
+            fired = datetime.fromisoformat(envelope["time_fired"])
+            if fired.tzinfo is None or fired.utcoffset() is None:
+                raise ConnectorError("invalid_data")
+            return change_event(
+                source_id="home_assistant",
+                entity_id=identity,
+                source_entity_id=source_entity_id,
+                revision=revision,
+                event_time=fired.astimezone(UTC),
+                old=old,
+                new=new,
+            )
+        except Exception as error:
+            self._raise_safe(error)
+
+    def close(self):
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            except (OSError, WebSocketException):
+                pass
+            self._socket = None

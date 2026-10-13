@@ -102,7 +102,10 @@ def main():
 
         baseline = wait_until("selected fresh attributed baseline from collector", confirmed)
         assert baseline["entity_id"] == entity and baseline["source_id"] == "demo"
-        assert baseline["state"] == "on" and baseline["availability"] == "available"
+        assert baseline["state"] in ("on", "off", "unavailable")
+        assert baseline["availability"] == (
+            "unavailable" if baseline["state"] == "unavailable" else "available"
+        )
         for field in ("received_at", "persisted_at", "last_changed"):
             assert datetime.fromisoformat(baseline[field]).utcoffset().total_seconds() == 0
         assert baseline["received_at"] != baseline["last_changed"], (
@@ -111,7 +114,10 @@ def main():
         json.loads(request(f"/api/selection/{entity}", {"selected": False}))
         assert entity not in {entry["id"] for entry in get("/api/monitored")["entities"]}
         history = get(f"/api/baselines?entity_id={entity}")["baselines"]
-        assert baseline["id"] in {record["id"] for record in history}, "Removed baseline lost"
+        events = get(f"/api/events?entity_id={entity}")["events"]
+        assert baseline["id"] in {record["id"] for record in history + events}, (
+            "Removed evidence lost"
+        )
     finally:
         request(f"/api/selection/{entity}", {"selected": initially_selected})
     print(

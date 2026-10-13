@@ -102,6 +102,16 @@ def main():
                     raise AssertionError("Selected live state never confirmed")
                 assert monitored[0]["baseline"]["source_entity_id"] == "light.fixture"
                 assert monitored[0]["baseline"]["state"] == "off"
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    events = client.get("/api/events").json()["events"]
+                    if events:
+                        break
+                    time.sleep(0.2)
+                else:
+                    raise AssertionError("Subscribed live brightness event not recorded")
+                assert events[0]["old"]["brightness"] != events[0]["new"]["brightness"]
+                assert events[0]["source_entity_id"] == "light.fixture"
                 for endpoint in ("catalog", "monitored", "health", "selection"):
                     content = client.get(f"/api/{endpoint}").text
                     assert "synthetic-compose-token" not in content

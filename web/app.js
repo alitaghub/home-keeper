@@ -10,6 +10,10 @@ let busy = false;
 let refreshPending = false;
 let lastCatalogRefresh = null;
 let requestedAfter = null;
+let timelineBusy = false;
+let timelineCursor = null;
+let showingOlder = false;
+let timelineEvents = [];
 const collectionErrors = {
   authentication: "Home Assistant rejected authentication. Check the connector token and its user permissions.",
   connection: "The connector cannot reach Home Assistant. Check its address and container networking.",
@@ -80,13 +84,73 @@ function renderMonitored(entities) {
     const baseline = entity.baseline;
     card.append(el("p", baseline ? `${baseline.state} · ${baseline.availability}` : "Pending · state unknown", "state"));
     if (baseline) {
+      const kind = {baseline: "Initial baseline", reconciliation: "Polling reconciliation snapshot", event: "Latest recorded event"}[baseline.kind] || "State snapshot";
+      card.append(el("small", kind));
       if (baseline.brightness != null) card.append(el("p", `Brightness ${baseline.brightness} / 255`));
       card.append(el("small", `Source: ${baseline.source_id} · Evidence ID: ${baseline.id}`));
       card.append(el("small", `Latest confirmed collection: ${date(entity.confirmed_at)}`));
-      card.append(el("small", `Baseline received: ${date(baseline.received_at)} · Stored: ${date(baseline.persisted_at)}`));
+      card.append(el("small", `Evidence received: ${date(baseline.received_at)} · Stored: ${date(baseline.persisted_at)}`));
       card.append(el("small", `Source last changed: ${date(baseline.last_changed)}`));
     } else card.append(el("p", "The collector has not confirmed a selected observation yet."));
     target.append(card);
+  }
+}
+const changeFields = ["state", "availability", "brightness", "color_mode", "color_temp_kelvin", "hs_color", "xy_color", "rgb_color", "rgbw_color", "rgbww_color"];
+const valueText = (value) => value == null ? "Not captured" : Array.isArray(value) ? value.join(", ") : String(value);
+function renderTimeline(events) {
+  const target = document.getElementById("timeline");
+  target.replaceChildren();
+  if (!events.length) target.append(el("p", "No recorded changes in retained history. Select a light and wait for a change. Earlier changes may be missing.", "empty"));
+  for (const event of events) {
+    const card = el("article", undefined, "observation recorded-event");
+    card.append(el("h3", event.source_entity_id || event.entity_id));
+    const changes = el("ul", undefined, "change-values");
+    for (const field of changeFields) {
+      const before = event.old?.[field];
+      const after = event.new?.[field];
+      if (JSON.stringify(before ?? null) !== JSON.stringify(after ?? null)) {
+        changes.append(el("li", `${field.replaceAll("_", " ")}: ${valueText(before)} → ${valueText(after)}`));
+      }
+    }
+    if (!changes.childElementCount) changes.append(el("li", "No changed field captured."));
+    card.append(changes);
+    card.append(el("small", `Source: ${event.source_id} · Entity identity: ${event.entity_id}`));
+    card.append(el("small", `Evidence ID: ${event.id}`, "evidence-id"));
+    card.append(el("small", `Source event: ${date(event.event_time)}`));
+    card.append(el("small", `Connector received: ${date(event.received_at)} · Stored: ${date(event.persisted_at)}`));
+    for (const field of ["last_changed", "last_updated", "last_reported"]) {
+      if (event.new?.[field]) card.append(el("small", `New state source ${field.replaceAll("_", " ")}: ${date(event.new[field])}`));
+    }
+    target.append(card);
+  }
+}
+async function loadTimeline(older = false) {
+  if (timelineBusy) return;
+  timelineBusy = true;
+  const more = document.getElementById("timeline-more");
+  const refresh = document.getElementById("timeline-refresh");
+  more.disabled = true;
+  refresh.disabled = true;
+  try {
+    const params = new URLSearchParams({limit: "50"});
+    if (older && timelineCursor) params.set("cursor", timelineCursor);
+    const history = await request(`/api/events?${params}`);
+    if (!older) {
+      timelineEvents = [];
+      showingOlder = false;
+    } else showingOlder = true;
+    const ids = new Set(timelineEvents.map((event) => event.id));
+    timelineEvents.push(...history.events.filter((event) => !ids.has(event.id)));
+    timelineCursor = history.next_cursor;
+    more.hidden = !timelineCursor;
+    renderTimeline(timelineEvents);
+    document.getElementById("timeline-status").textContent = `${timelineEvents.length} changes shown. Retention cutoff: ${date(history.retained_since)}. This cutoff does not establish continuous coverage.${showingOlder ? " Older history is open; refresh to see new changes." : " New changes refresh automatically."}`;
+  } catch (_) {
+    document.getElementById("timeline-status").textContent = "Cannot load recorded history. Previously displayed entries may be out of date.";
+  } finally {
+    timelineBusy = false;
+    more.disabled = false;
+    refresh.disabled = false;
   }
 }
 async function load() {
@@ -112,6 +176,7 @@ async function load() {
       || (refreshPending ? "Discovery refresh requested. The collector checks on its next collection pass." : "");
     renderCatalog(catalog.entities, selection.entity_ids);
     renderMonitored(monitored.entities);
+    if (!showingOlder) await loadTimeline();
   } catch (_) { document.getElementById("message").textContent = "Cannot reach the observer. Collection freshness is unknown until connection returns."; }
 }
 document.getElementById("refresh").addEventListener("click", async () => {
@@ -125,5 +190,7 @@ document.getElementById("refresh").addEventListener("click", async () => {
   } catch (error) { document.getElementById("message").textContent = error.message; }
   finally { busy = false; }
 });
+document.getElementById("timeline-refresh").addEventListener("click", () => loadTimeline());
+document.getElementById("timeline-more").addEventListener("click", () => loadTimeline(true));
 load();
 setInterval(load, 3000);

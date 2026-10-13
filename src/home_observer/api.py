@@ -1,15 +1,24 @@
 import json
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from home_observer.models import Catalog, Health, Observation, SelectionChange
+from home_observer.models import (
+    Catalog,
+    ChangeEvent,
+    Health,
+    Identity,
+    LightState,
+    Observation,
+    SelectionChange,
+)
 from home_observer.store import Store
 
 
@@ -19,9 +28,16 @@ def create_app(
     now=lambda: datetime.now(UTC),
     reconciliation_seconds: int = 60,
     source_id: str = "demo",
+    retention_days: int = 30,
     allowed_hosts: tuple[str, ...] = ("testserver", "127.0.0.1:8000", "localhost:8000"),
     allowed_origins: tuple[str, ...] = ("http://127.0.0.1:8000", "http://localhost:8000"),
 ):
+    if (
+        isinstance(retention_days, bool)
+        or not isinstance(retention_days, int)
+        or retention_days < 1
+    ):
+        raise ValueError("Retention must be a positive number of days")
     if reconciliation_seconds < 1 or not service_token:
         raise ValueError("Positive reconciliation interval and service credential required")
     if source_id not in ("demo", "home_assistant"):
@@ -43,6 +59,17 @@ def create_app(
             raise ValueError("Use an empty database for live mode")
         db.execute("INSERT OR IGNORE INTO metadata VALUES('source_id', ?)", (source_id,))
         db.execute("INSERT OR IGNORE INTO metadata VALUES('refresh_revision', '0')")
+        # Migrate retained snapshots to a separate cache before retention removes history.
+        for row in db.execute(
+            "SELECT entity_id, data FROM baselines ORDER BY rowid DESC"
+        ).fetchall():
+            if db.execute(
+                "SELECT 1 FROM current_state WHERE entity_id=?", (row["entity_id"],)
+            ).fetchone():
+                continue
+            value = json.loads(row["data"])
+            source_time = value.get("last_updated") or value["received_at"]
+            store.update_current(db, row["entity_id"], source_time, value)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -59,6 +86,16 @@ def create_app(
                 )
             ):
                 return JSONResponse({"detail": "Request origin denied"}, status_code=403)
+        if request.method in ("POST", "PUT"):
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > 1024 * 1024:
+                    return JSONResponse({"detail": "Request too large"}, status_code=413)
+                body.extend(chunk)
+            # Starlette's middleware replays the cached body to downstream validation.
+            request._body = bytes(body)
+        with store.transaction() as db:
+            store.cleanup(db, (now().astimezone(UTC) - timedelta(days=retention_days)).isoformat())
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -139,6 +176,7 @@ def create_app(
                     db.execute("INSERT INTO selection VALUES(?)", (entity_id,))
                     # A fresh selection awaits a new confirmation, even if history exists.
                     db.execute("DELETE FROM confirmed WHERE entity_id=?", (entity_id,))
+                    db.execute("DELETE FROM current_state WHERE entity_id=?", (entity_id,))
                 else:
                     db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
                 db.execute(
@@ -186,12 +224,15 @@ def create_app(
             if confirmed and payload.received_at < datetime.fromisoformat(confirmed[0]):
                 raise HTTPException(409, "Observation is older than latest confirmation")
             data = payload.model_dump(mode="json", exclude={"selection_revision"})
+            data["kind"] = "reconciliation" if confirmed else "baseline"
             previous = db.execute(
                 "SELECT data FROM baselines WHERE entity_id=? ORDER BY rowid DESC LIMIT 1",
                 (payload.entity_id,),
             ).fetchone()
             baseline = json.loads(previous[0]) if previous else None
-            comparable = {key: value for key, value in data.items() if key != "received_at"}
+            comparable = {
+                key: value for key, value in data.items() if key not in ("received_at", "kind")
+            }
             old = {key: baseline.get(key) for key in comparable} if baseline else None
             if comparable != old:
                 baseline = {**data, "id": str(uuid4()), "persisted_at": persisted.isoformat()}
@@ -199,6 +240,8 @@ def create_app(
                     "INSERT INTO baselines VALUES(?, ?, ?)",
                     (baseline["id"], payload.entity_id, json.dumps(baseline)),
                 )
+            source_time = payload.last_updated or payload.received_at
+            store.update_current(db, payload.entity_id, source_time.isoformat(), baseline)
             db.execute(
                 "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
                 (payload.entity_id, payload.received_at.isoformat(), persisted.isoformat()),
@@ -216,6 +259,139 @@ def create_app(
                     )
                 ]
             }
+
+    @app.post("/internal/events", dependencies=[Depends(internal_auth)])
+    def ingest_event(payload: ChangeEvent):
+        if payload.source_id != source_id:
+            raise HTTPException(409, "Collection source mismatch")
+        persisted = now().astimezone(UTC)
+        if payload.received_at > persisted or payload.event_time > payload.received_at:
+            raise HTTPException(422, "Future event or receipt timestamp")
+        with store.transaction() as db:
+            current = store.selection(db)
+            entity = store.entity(db, payload.entity_id)
+            if (
+                payload.selection_revision != current["revision"]
+                or payload.entity_id not in current["entity_ids"]
+                or entity is None
+                or not entity["supported"]
+            ):
+                raise HTTPException(409, "Selection no longer permits this event")
+            previous = db.execute(
+                "SELECT data FROM events WHERE source_id=? AND id=?", (source_id, payload.id)
+            ).fetchone()
+            data = payload.model_dump(mode="json")
+            for key in ("old", "new"):
+                state = getattr(payload, key)
+                data[key] = state.model_dump(mode="json", exclude_none=True) if state else None
+            if previous:
+                stored = json.loads(previous[0])
+                # A stable source ID cannot silently refer to different evidence.
+                comparable = {
+                    key: value
+                    for key, value in stored.items()
+                    if key not in ("persisted_at", "received_at")
+                }
+                if comparable != {
+                    key: value for key, value in data.items() if key not in ("received_at", "kind")
+                }:
+                    raise HTTPException(409, "Event identity conflict")
+                return {"accepted": True, "recorded": False, "duplicate": True}
+            old = payload.old.meaningful() if payload.old else None
+            new = payload.new.meaningful() if payload.new else None
+            if old == new:
+                return {"accepted": True, "recorded": False, "duplicate": False}
+            data["persisted_at"] = persisted.isoformat()
+            db.execute(
+                "INSERT INTO events VALUES(?, ?, ?, ?, ?, ?)",
+                (
+                    source_id,
+                    payload.id,
+                    payload.entity_id,
+                    payload.event_time.isoformat(),
+                    persisted.isoformat(),
+                    json.dumps(data),
+                ),
+            )
+            current_value = payload.new or LightState(state="unknown")
+            if current_value:
+                value = current_value.model_dump(mode="json", exclude_none=True) | {
+                    "id": payload.id,
+                    "entity_id": payload.entity_id,
+                    "source_entity_id": payload.source_entity_id,
+                    "source_id": source_id,
+                    "kind": "event",
+                    "event_time": payload.event_time.isoformat(),
+                    "received_at": payload.received_at.isoformat(),
+                    "persisted_at": persisted.isoformat(),
+                }
+                store.update_current(db, payload.entity_id, payload.event_time.isoformat(), value)
+            # Older deliveries may add evidence but cannot refresh a newer confirmation backwards.
+            confirmed = db.execute(
+                "SELECT received_at FROM confirmed WHERE entity_id=?", (payload.entity_id,)
+            ).fetchone()
+            if confirmed is None or payload.received_at.isoformat() >= confirmed[0]:
+                db.execute(
+                    "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
+                    (payload.entity_id, payload.received_at.isoformat(), persisted.isoformat()),
+                )
+            return {"accepted": True, "recorded": True, "duplicate": False}
+
+    @app.get("/api/events")
+    def events(
+        source_id: Literal["demo", "home_assistant"] | None = None,
+        entity_id: Identity | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: Annotated[str | None, Query(max_length=200)] = None,
+    ):
+        try:
+            start = Observation.utc_timestamp(start)
+            end = Observation.utc_timestamp(end)
+            if start and end and start > end:
+                raise ValueError("Reversed range")
+            position = None
+            if cursor is not None:
+                timestamp, identity = cursor.split("|", 1)
+                position = (
+                    Observation.utc_timestamp(datetime.fromisoformat(timestamp)).isoformat(),
+                    identity,
+                )
+                # Reuse the boundary type rather than accepting arbitrary cursor identifiers.
+                from pydantic import TypeAdapter
+
+                position = (position[0], TypeAdapter(Identity).validate_python(identity))
+        except (ValueError, TypeError):
+            raise HTTPException(422, "Invalid event scope") from None
+        clauses, parameters = [], []
+        for column, value in (("source_id", source_id), ("entity_id", entity_id)):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        for operator, value in ((">=", start), ("<=", end)):
+            if value is not None:
+                clauses.append(f"event_time {operator} ?")
+                parameters.append(value.isoformat())
+        if position:
+            clauses.append("(event_time < ? OR (event_time=? AND id < ?))")
+            parameters.extend((position[0], position[0], position[1]))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with store.transaction() as db:
+            rows = db.execute(
+                "SELECT data FROM events" + where + " ORDER BY event_time DESC, id DESC LIMIT ?",
+                (*parameters, limit + 1),
+            ).fetchall()
+        values = [json.loads(row[0]) for row in rows[:limit]]
+        next_cursor = None
+        if len(rows) > limit:
+            next_cursor = values[-1]["event_time"] + "|" + values[-1]["id"]
+        return {
+            "events": values,
+            "next_cursor": next_cursor,
+            "retained_since": (now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
+            "coverage": "unknown",
+        }
 
     @app.post("/internal/health", dependencies=[Depends(internal_auth)])
     def ingest_health(payload: Health):
@@ -271,7 +447,7 @@ def create_app(
                         "reason": "Entity missing from latest discovery",
                     }
                 row = db.execute(
-                    "SELECT data FROM baselines WHERE entity_id=? ORDER BY rowid DESC LIMIT 1",
+                    "SELECT data FROM current_state WHERE entity_id=?",
                     (entity_id,),
                 ).fetchone()
                 confirmed = db.execute(

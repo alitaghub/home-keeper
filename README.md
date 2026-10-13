@@ -16,7 +16,11 @@ docker compose up --build --wait
 Open <http://127.0.0.1:8000>. The collector discovers five synthetic entities:
 two individual Hue lights, a room aggregate, a non-Hue plug, and an ungrouped
 sensor. Only individual lights can be selected. Click **Monitor** to establish a
-baseline. Nothing is monitored automatically.
+baseline. Nothing is monitored automatically. After selection, the demo emits a
+repeatable sequence of on/off, brightness, color-temperature, XY color,
+unavailability and recovery changes, one step per collection pass. The timeline
+shows only events recorded after selection. Restarting the collector starts the
+sequence again; it does not erase retained history.
 
 Selection takes effect on the next collection pass, normally within 10 seconds.
 The old source change date is deliberate. A recent collection can confirm a
@@ -36,7 +40,7 @@ docker compose down
 SQLite data and the internal service credential persist in named volumes.
 `docker compose down --volumes` deletes those volumes. Changing selection never
 requires a restart. **Stop monitoring** rejects later observation ingestion.
-Previously recorded baselines stay stored.
+Previously recorded events stay visible until retention expires.
 
 ## Connect Home Assistant and Hue
 
@@ -48,7 +52,8 @@ Create a dedicated Home Assistant user with permission to read the required
 registries and selected entities, then generate a long-lived access token from
 that user's profile. Home Assistant tokens do not provide a per-token read-only
 entity scope. Treat the token as a powerful credential. The connector restricts
-its own operations to fixed discovery and selected-state reads.
+its own operations to fixed discovery, selected-state reads and a read-only
+state-change subscription.
 
 Save the token alone in a local file outside this repository. Do not put it in
 `.env`, a URL, a shell command argument, the dashboard, or a Compose environment
@@ -106,7 +111,10 @@ Use both Compose files for live start, restart and stop commands. Adding
 ## Collection and evidence limits
 
 The collector refreshes discovery and polls selected current states in each
-collection pass. It waits ten seconds between passes by default. Slow requests
+collection pass. Live mode also subscribes to Home Assistant state-change events
+while at least one light is selected. The trusted connector discards unselected
+events before forwarding them to the API. An empty selection opens no event
+subscription. It waits ten seconds between passes by default. Slow requests
 can lengthen the interval. Change the interval without storing a secret:
 
 ```sh
@@ -120,29 +128,65 @@ errors appear as safe status messages. A failed refresh retains the previous
 catalog marked stale. A missing or unreadable selected entity remains selected,
 with unknown or stale evidence. This does not prove the bulb is disconnected.
 
-Each accepted baseline records its stable ID, registry identity, current entity
+Each accepted snapshot records its stable ID, registry identity, current entity
 ID, source, state, availability, receipt time and server-owned persistence time.
-Source change, update and report timestamps remain separate. Unchanged polling
-updates collection confirmation without duplicating the baseline. Freshness
+Source change, update and report timestamps remain separate. Initial baselines
+and polling reconciliation snapshots update the current state, but do not create
+change entries. Unchanged polling updates collection confirmation. Freshness
 means Home Assistant answered recently, not that the bulb itself answered then.
 
-Home Assistant's [Hue integration](https://www.home-assistant.io/integrations/hue/)
-receives pushed updates from Hue V2 bridges and polls V1 bridges. Our connector
-polls Home Assistant current state. It does not subscribe to an event stream,
-import Recorder history, recover changes between polls, or attribute changes to
-automations. Earlier or short-lived changes may therefore be absent.
+The **Recorded changes** timeline stores observed state, availability, brightness
+and color transitions. Each entry includes its evidence ID, source entity and
+stable registry identity, old and new values, Home Assistant's `time_fired`,
+connector receipt time and API persistence time. Recorded changes use the
+[Home Assistant WebSocket `state_changed` subscription](https://developers.home-assistant.io/docs/api/websocket/#subscribe-to-events).
+The connector keeps only approved light fields. It drops unrelated attributes,
+account identifiers and raw logs. Duplicate delivery creates one event. A late
+event remains in history without replacing a newer current state.
 
-There is no event timeline, retention cleanup, investigation or recovery-gap
-accounting yet. Baselines remain until the data volume is removed. Use this
-milestone for connection and baseline verification; long-term history collection
-needs the planned retention milestone.
+Allowed color fields are `color_mode`, `color_temp_kelvin`, `hs_color`, `xy_color`,
+`rgb_color`, `rgbw_color` and `rgbww_color`. Brightness uses integers from 0 to
+255. Color temperature uses integer kelvin values from 1000 to 10000. Hue/saturation uses
+two finite numbers within 0..360 and 0..100; XY uses two finite numbers within
+0..1. RGB, RGBW and RGBWW use three, four or five integer channels within 0..255.
+Missing fields stay absent, rather than being inferred from another color format.
+
+History refreshes automatically until you load older entries. **Load older
+changes** requests another bounded page; **Refresh history** returns to the newest
+records. Events from removed selections remain readable until retention expires.
+The read-only `GET /api/events` endpoint accepts optional `source_id`, stable
+`entity_id`, timezone-aware `start` and `end` timestamps, a `cursor`, and a `limit` from 1 to
+100, default 50. It returns `events`, `next_cursor` and `retained_since`. The
+retention cutoff is not proof that collection covered that period continuously.
+
+Retention defaults to 30 days. Set a positive number of days on the API service:
+
+```sh
+OBSERVER_RETENTION_DAYS=7 docker compose up --build --wait
+```
+
+For live mode, add `-f compose.yaml -f compose.live.yaml`. Retention uses the API
+persistence time. Requests trigger cleanup of expired historical records.
+Active selections and their latest known state stay available in a separate
+current-state cache. That cache does not establish recent device availability.
+Expired current-state caches for removed selections are deleted too. An empty
+timeline means no retained changes were recorded, not that nothing changed.
+
+Home Assistant's [Hue integration](https://www.home-assistant.io/integrations/hue/)
+receives pushed updates from Hue V2 bridges and polls V1 bridges. Our event stream
+reports what Home Assistant observed. There is no Recorder history import,
+historical backfill, automation attribution or cause inference. Earlier events
+and changes during a connection interruption may be absent. Polling snapshots
+can reconcile the current state but cannot reconstruct those missing changes.
+Connection-gap accounting is a later milestone. There is no anomaly detector or
+AI investigation yet.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     H[Hue lights and bridge] --> HA[External Home Assistant]
-    HA -->|Fixed registry and selected-state reads| C[Live collector]
+    HA -->|Registry reads, selected-state reads and state-change events| C[Live collector]
     D[Synthetic home] --> DC[Demo collector]
     C -->|Authenticated typed ingestion| A[FastAPI]
     DC -->|Authenticated typed ingestion| A
@@ -173,8 +217,8 @@ Delayed collection cannot bypass a removal or a new selection revision.
 - Device names render as text under a restrictive Content Security Policy.
   Schema validation limits fields and restricts source identity. Error status
   and logs omit submitted secrets and raw connector responses.
-- Home Assistant operations are fixed registry reads and approved entity-state
-  reads. There is no arbitrary HTTP passthrough, shell tool, router
+- Home Assistant operations are fixed registry reads, approved entity-state
+  reads and a state-change subscription filtered inside the connector. There is no arbitrary HTTP passthrough, shell tool, router
   administration endpoint, service call or device-write operation.
 - The demo collector uses an internal Docker network. The live collector also
   has an ordinary bridge network to reach Home Assistant. It has network access
@@ -241,6 +285,15 @@ including image build time. This is test duration, not measured Hue latency.
 Demo Compose smoke, Ruff, JavaScript syntax and browser DOM checks also passed.
 Hosted CI has not run. No Python static typechecker or TypeScript checks are
 claimed. Model calls and model cost are zero.
+
+Story 03 passed 55 local tests, including three independent adversarial probes
+and a regression check for upgrading existing databases. Demo Compose smoke
+passed. Live Compose against a synthetic Home Assistant recorded a subscribed
+brightness event and passed outage/recovery checks in 25.842 seconds, including
+image build time. Ruff, JavaScript syntax and a headless browser check passed.
+The browser displayed attributed events, no injected script nodes and no
+horizontal overflow. These checks use synthetic devices. Real Hue validation,
+explicit collection-gap records and hosted CI remain unverified or unfinished.
 
 ## License
 

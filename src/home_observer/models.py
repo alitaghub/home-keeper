@@ -50,22 +50,49 @@ class SelectionChange(WireModel):
     selected: bool
 
 
-class Observation(WireModel):
-    source_entity_id: Identity | None = None
-    entity_id: Identity
-    selection_revision: int = Field(ge=0)
-    source_id: Literal["demo", "home_assistant"]
-    state: Annotated[str, StringConstraints(min_length=1, max_length=64)]
-    availability: Literal["available", "unavailable", "unknown"]
-    received_at: datetime
+Channel = Annotated[int, Field(strict=True, ge=0, le=255)]
+Coordinate = Annotated[float, Field(strict=True, allow_inf_nan=False)]
+
+
+class LightState(WireModel):
+    state: Literal["on", "off", "unavailable", "unknown"]
     last_changed: datetime | None = None
     last_updated: datetime | None = None
     last_reported: datetime | None = None
-    brightness: int | None = Field(default=None, ge=0, le=255)
-    color_temp_kelvin: int | None = Field(default=None, ge=1000, le=10000)
-    rgb_color: tuple[int, int, int] | None = None
+    brightness: int | None = Field(default=None, strict=True, ge=0, le=255)
+    color_mode: (
+        Literal[
+            "unknown",
+            "onoff",
+            "brightness",
+            "color_temp",
+            "hs",
+            "xy",
+            "rgb",
+            "rgbw",
+            "rgbww",
+            "white",
+        ]
+        | None
+    ) = None
+    color_temp_kelvin: int | None = Field(default=None, strict=True, ge=1000, le=10000)
+    hs_color: tuple[Coordinate, Coordinate] | None = None
+    xy_color: tuple[Coordinate, Coordinate] | None = None
+    rgb_color: tuple[Channel, Channel, Channel] | None = None
+    rgbw_color: tuple[Channel, Channel, Channel, Channel] | None = None
+    rgbww_color: tuple[Channel, Channel, Channel, Channel, Channel] | None = None
 
-    @field_validator("received_at", "last_changed", "last_updated", "last_reported")
+    availability: Literal["available", "unavailable", "unknown"] | None = None
+
+    @model_validator(mode="after")
+    def state_availability(self):
+        expected = "available" if self.state in ("on", "off") else self.state
+        if self.availability is not None and self.availability != expected:
+            raise ValueError("Availability contradicts state")
+        self.availability = expected
+        return self
+
+    @field_validator("last_changed", "last_updated", "last_reported", check_fields=False)
     @classmethod
     def utc_timestamp(cls, value):
         if value is not None:
@@ -74,12 +101,65 @@ class Observation(WireModel):
             return value.astimezone(UTC)
         return value
 
-    @field_validator("rgb_color")
+    @field_validator("rgb_color", "rgbw_color", "rgbww_color")
     @classmethod
     def rgb_range(cls, value):
         if value is not None and any(channel < 0 or channel > 255 for channel in value):
             raise ValueError("RGB channels must be between 0 and 255")
         return value
+
+    @field_validator("hs_color", "xy_color")
+    @classmethod
+    def coordinate_range(cls, value, info):
+        if value is not None:
+            bounds = (360, 100) if info.field_name == "hs_color" else (1, 1)
+            if any(not 0 <= channel <= bound for channel, bound in zip(value, bounds, strict=True)):
+                raise ValueError("Color coordinate outside supported range")
+        return value
+
+    def meaningful(self):
+        return self.model_dump(
+            exclude={"last_changed", "last_updated", "last_reported"}, exclude_none=True
+        )
+
+
+class Observation(LightState):
+    # Availability is explicit on the existing snapshot protocol.
+    availability: Literal["available", "unavailable", "unknown"]
+    source_entity_id: Identity | None = None
+    entity_id: Identity
+    selection_revision: int = Field(ge=0)
+    source_id: Literal["demo", "home_assistant"]
+    kind: Literal["baseline", "reconciliation"] = "baseline"
+    received_at: datetime
+
+    @field_validator("received_at")
+    @classmethod
+    def receipt_timestamp(cls, value):
+        return cls.utc_timestamp(value)
+
+
+class ChangeEvent(WireModel):
+    id: Identity
+    entity_id: Identity
+    source_entity_id: Identity | None = None
+    source_id: Literal["demo", "home_assistant"]
+    selection_revision: int = Field(ge=0)
+    event_time: datetime
+    received_at: datetime
+    old: LightState | None = None
+    new: LightState | None = None
+
+    @field_validator("event_time", "received_at")
+    @classmethod
+    def utc_timestamp(cls, value):
+        return LightState.utc_timestamp(value)
+
+    @model_validator(mode="after")
+    def has_state(self):
+        if self.old is None and self.new is None:
+            raise ValueError("An event needs an old or new state")
+        return self
 
 
 class Health(WireModel):
