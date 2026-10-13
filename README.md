@@ -125,7 +125,9 @@ collection. HTTP is supported for a trusted local network, but does not encrypt
 the token in transit.
 
 Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
-lists minimal device/entity metadata exposed by Home Assistant. Only enabled
+shows supported lamps by default, using their device names. Room groups, scenes,
+sensors and other entities stay in the collapsed **Show other entities** section.
+Discovery retains minimal device/entity metadata exposed by Home Assistant. Only enabled
 individual Hue V2 lights with recognized registry metadata can be monitored.
 Hue groups, other integrations, disabled entities and unknown metadata remain
 unsupported. This classification uses the released Home Assistant

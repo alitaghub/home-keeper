@@ -41,12 +41,32 @@ async function toggle(id, selected) {
   } catch (error) { document.getElementById("message").textContent = error.message; }
   finally { busy = false; }
 }
+const lightName = (entity) => entity.device_name || entity.name;
 function renderCatalog(entities, selected) {
+  const lights = entities.filter((entity) => entity.supported);
+  const others = entities.filter((entity) => !entity.supported);
   const target = document.getElementById("catalog");
   target.replaceChildren();
-  if (!entities.length) target.append(el("p", "Waiting for the collector to publish discovery.", "empty"));
+  if (!lights.length) target.append(el("p", entities.length
+    ? "No supported lamps found. Check the Hue integration in Home Assistant."
+    : "Waiting for discovery.", "empty"));
+  for (const entity of lights) {
+    const row = el("div", undefined, "entity-row lamp-card");
+    const name = lightName(entity);
+    const checked = selected.includes(entity.id);
+    row.append(el("strong", name));
+    const button = el("button", checked ? "Stop monitoring" : "Monitor", checked ? "secondary" : "primary");
+    button.setAttribute("aria-label", `${checked ? "Stop monitoring" : "Monitor"} ${name}`);
+    button.addEventListener("click", () => toggle(entity.id, !checked));
+    row.append(button);
+    target.append(row);
+  }
+  document.getElementById("other-summary").textContent = `Show other entities (${others.length})`;
+  document.getElementById("other-entities").hidden = !others.length;
+  const otherTarget = document.getElementById("other-catalog");
+  otherTarget.replaceChildren();
   const groups = new Map();
-  for (const entity of entities) {
+  for (const entity of others) {
     const key = entity.device_id || "__ungrouped";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(entity);
@@ -58,18 +78,11 @@ function renderCatalog(entities, selected) {
       const row = el("div", undefined, "entity-row");
       const text = el("div");
       text.append(el("strong", entity.name), el("small", entity.id));
-      if (!entity.supported) text.append(el("small", entity.reason, "unsupported"));
-      row.append(text);
-      if (entity.supported) {
-        const checked = selected.includes(entity.id);
-        const button = el("button", checked ? "Stop monitoring" : "Monitor", checked ? "secondary" : "primary");
-        button.setAttribute("aria-label", `${checked ? "Stop monitoring" : "Monitor"} ${entity.name}`);
-        button.addEventListener("click", () => toggle(entity.id, !checked));
-        row.append(button);
-      } else row.append(el("span", "Unsupported", "tag"));
+      text.append(el("small", entity.reason, "unsupported"));
+      row.append(text, el("span", "Unsupported", "tag"));
       card.append(row);
     }
-    target.append(card);
+    otherTarget.append(card);
   }
 }
 function renderMonitored(entities) {
@@ -79,9 +92,9 @@ function renderMonitored(entities) {
   for (const entity of entities) {
     const card = el("article", undefined, "observation");
     const title = el("div", undefined, "section-heading");
-    title.append(el("h3", entity.name), el("span", entity.freshness, `tag ${entity.freshness}`));
+    title.append(el("h3", lightName(entity)), el("span", entity.freshness, `tag ${entity.freshness}`));
     const stop = el("button", "Stop monitoring", "secondary");
-    stop.setAttribute("aria-label", `Stop monitoring ${entity.name}`);
+    stop.setAttribute("aria-label", `Stop monitoring ${lightName(entity)}`);
     stop.addEventListener("click", () => toggle(entity.id, false));
     title.append(stop);
     card.append(title);
@@ -191,7 +204,7 @@ async function load() {
     const [catalog, selection, monitored, health, coverage] = await Promise.all([
       request("/api/catalog"), request("/api/selection"), request("/api/monitored"), request("/api/health"), request("/api/coverage?limit=20")
     ]);
-    document.getElementById("count").textContent = String(catalog.entities.length);
+    document.getElementById("count").textContent = String(catalog.entities.filter((entity) => entity.supported).length);
     document.getElementById("selected-count").textContent = String(selection.entity_ids.length);
     document.getElementById("health").textContent = health.status;
     document.getElementById("heartbeat").textContent = `Last collection: ${date(health.received_at)}`;

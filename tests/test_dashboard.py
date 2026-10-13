@@ -53,7 +53,11 @@ const tree = (node) => [node, ...node.children.flatMap(tree)];
     .filter((node) => node.tag === "button" && node.textContent === "Stop monitoring");
   for (const button of buttons) await button.listeners.click();
   const texts = [...roots.values()].flatMap(tree).map((node) => node.textContent);
-  console.log(JSON.stringify({writes, texts}));
+  const catalogTexts = tree(roots.get("catalog")).map((node) => node.textContent);
+  const otherTexts = roots.has("other-catalog")
+    ? tree(roots.get("other-catalog")).map((node) => node.textContent) : [];
+  console.log(JSON.stringify({writes, texts, catalogTexts, otherTexts,
+    lightCount: roots.get("count").textContent}));
 })();
 """
 
@@ -91,6 +95,19 @@ def test_dashboard_can_stop_monitoring_unsupported_and_missing_selections(tmp_pa
         "/api/coverage": {"gaps": [], "state": "unknown", "last_confirmed_at": None},
         "/api/events": {"events": [], "next_cursor": None, "retained_since": None},
     }
+    rendered = render_dashboard(tmp_path, fixtures)
+    assert disabled["name"] in rendered["texts"]
+    writes = rendered["writes"]
+    assert {path for method, path in writes if method == "PUT"} == {
+        "/api/selection/ha%3Adisabled",
+        "/api/selection/ha%3Agone",
+    }
+
+
+def render_dashboard(tmp_path, fixtures):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is needed to run the dashboard script")
     harness = tmp_path / "harness.cjs"
     harness.write_text(HARNESS)
     result = subprocess.run(
@@ -100,10 +117,58 @@ def test_dashboard_can_stop_monitoring_unsupported_and_missing_selections(tmp_pa
         check=True,
         timeout=30,
     )
-    rendered = json.loads(result.stdout)
-    assert disabled["name"] in rendered["texts"]
-    writes = rendered["writes"]
-    assert {path for method, path in writes if method == "PUT"} == {
-        "/api/selection/ha%3Adisabled",
-        "/api/selection/ha%3Agone",
+    return json.loads(result.stdout)
+
+
+def test_discovery_focuses_on_lamps_and_uses_device_names(tmp_path):
+    lights = [
+        {
+            "id": "ha:desk",
+            "name": "Unnamed entity",
+            "device_id": "ha:device1",
+            "device_name": "Desk lamp",
+            "supported": True,
+        },
+        {
+            "id": "ha:hall",
+            "name": "Unnamed entity",
+            "device_id": "ha:device2",
+            "device_name": "Hall lamp",
+            "supported": True,
+        },
+    ]
+    others = [
+        {
+            "id": "ha:room",
+            "name": "Room group",
+            "device_id": "ha:room-device",
+            "device_name": "Room",
+            "supported": False,
+            "reason": "Unsupported",
+        },
+        {
+            "id": "ha:sensor",
+            "name": "Temperature",
+            "device_id": None,
+            "device_name": None,
+            "supported": False,
+            "reason": "Unsupported",
+        },
+    ]
+    fixtures = {
+        "/api/catalog": {"source_id": "home_assistant", "entities": lights + others},
+        "/api/selection": {"entity_ids": []},
+        "/api/monitored": {"entities": []},
+        "/api/health": {"status": "healthy"},
+        "/api/coverage": {"gaps": [], "state": "collecting"},
+        "/api/events": {"events": [], "next_cursor": None},
     }
+    rendered = render_dashboard(tmp_path, fixtures)
+    assert rendered["lightCount"] == "2"
+    assert "Desk lamp" in rendered["catalogTexts"]
+    assert "Hall lamp" in rendered["catalogTexts"]
+    assert "Unnamed entity" not in rendered["catalogTexts"]
+    assert "Room group" not in rendered["catalogTexts"]
+    assert "Temperature" not in rendered["catalogTexts"]
+    assert "Room group" in rendered["otherTexts"]
+    assert "Temperature" in rendered["otherTexts"]
