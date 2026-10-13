@@ -14,9 +14,18 @@
     <p id="source-notice" class="notice">Waiting for the configured collector. No model or device controls are connected.</p>
     <p id="catalog-status" role="status" aria-live="polite"></p>
     <div class="stats"><section><span>Collector</span><strong id="health">Connecting…</strong><small id="heartbeat">Waiting for collection</small></section>
-      <section><span>Discovered entities</span><strong id="count">—</strong><small>Entities grouped by device below</small></section>
+      <section><span>Supported lamps</span><strong id="count">—</strong><small>Individual Hue lamps, without room groups</small></section>
       <section><span>Monitoring</span><strong id="selected-count">0</strong><small>You choose what gets recorded</small></section></div>
     <p id="message" role="status" aria-live="polite"></p>
+    <section class="panel" aria-labelledby="lights-heading">
+      <div class="section-heading"><div><h2 id="lights-heading">Your lamps</h2><p>Choose which individual lamps to monitor.</p></div></div>
+      <div id="catalog" class="light-grid"></div>
+      <details id="other-entities" class="other-entities" hidden>
+        <summary id="other-summary">Show other entities</summary>
+        <p class="history-status">Home Assistant also exposes room groups, scenes, sensors and settings. These are not additional lamps and cannot be monitored here yet.</p>
+        <div id="other-catalog"></div>
+      </details>
+    </section>
     <section class="panel" aria-labelledby="coverage-heading">
       <div class="section-heading"><div><h2 id="coverage-heading">Collection gaps</h2><p>Missing collection is separate from a light reporting unavailable.</p></div></div>
       <p id="coverage-status" role="status" aria-live="polite">Waiting for coverage records.</p>
@@ -28,7 +37,7 @@
       <p id="timeline-status" class="history-status" role="status" aria-live="polite">Waiting for recorded history.</p>
       <p class="history-status">Missing entries do not prove nothing changed. Review collection gaps above for missing intervals. Times use your browser's local timezone.</p>
       <div id="timeline"></div><button id="timeline-more" hidden>Load older changes</button></section>
-    <section class="panel"><div class="section-heading"><div><h2>Discovered devices</h2><p>Discovery does not enable monitoring. Select individual Hue lights.</p></div></div><div id="catalog"></div></section>
+
     <footer>Stored on this machine · Change records are evidence, not explanations of cause · No agent in this milestone</footer>
   </main>
 </body>
