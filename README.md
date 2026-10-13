@@ -388,18 +388,23 @@ Assistant instance have not been tested.
 `mise.toml` pins the development tools (Python 3.13, `uv`, Node.js 24, pnpm) and
 defines the tasks. The Python service lives in `apps/observer` inside a uv
 workspace; its dependencies are pinned in the root `uv.lock`. The dashboard in
-`web/` has no package dependencies or TypeScript; Node checks its static
-JavaScript syntax. The Compose smoke scripts live in `e2e/`.
+`apps/web` is a Vite + React + TypeScript app in the pnpm workspace; the image
+builds it in a Node stage and FastAPI serves the result. The Compose smoke
+scripts and the Playwright suite live in `e2e/`.
 
 ```sh
 mise install
-mise run check      # Ruff, basedpyright, pytest with coverage, JS and script syntax
-mise run typecheck  # basedpyright (strict)
-mise run test       # pytest (unit and integration) with branch coverage
-mise run fmt        # Ruff format
-mise run dev        # docker compose up --build --wait
-uv run python e2e/compose_smoke.py
+pnpm install
+mise run check      # Ruff, Biome, basedpyright, tsc, pytest and Vitest with coverage, script syntax
+mise run typecheck  # basedpyright (strict) and tsc
+mise run test       # pytest (unit and integration) and Vitest, with coverage
+mise run fmt        # Ruff format and Biome format
+mise run dev        # Compose demo stack, then the Vite dev server with /api proxied
+mise run e2e        # Compose smoke scripts and Playwright, then docker compose down
 ```
+
+Set `OBSERVER_PORT` to publish the API on another loopback port when 8000 is
+taken, for example `OBSERVER_PORT=18000 mise run e2e`.
 
 CI uses hardware-free checks and a Compose demo smoke test. Live connector tests
 use synthetic Home Assistant responses, not home credentials. They distinguish

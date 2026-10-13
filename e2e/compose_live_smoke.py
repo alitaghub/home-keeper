@@ -42,6 +42,8 @@ def main() -> None:
             "OBSERVER_HA_URL": "http://fake-ha:8123",
             "OBSERVER_HA_TOKEN_FILE": str(token),
             "OBSERVER_RECONCILIATION_SECONDS": "1",
+            # The proof publishes its own port, so ignore a caller's OBSERVER_PORT.
+            "OBSERVER_PORT": "8000",
         }
         command = [
             "docker",

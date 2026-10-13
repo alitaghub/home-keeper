@@ -13,3 +13,10 @@ dist
 .coverage
 .coverage.*
 htmlcov
+**/coverage
+**/test-results
+**/playwright-report
+# The image build typechecks and bundles app code only.
+apps/web/src/test
+apps/web/src/**/*.test.ts
+apps/web/src/**/*.test.tsx

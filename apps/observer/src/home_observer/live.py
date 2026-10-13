@@ -288,7 +288,7 @@ def main() -> None:
         logging.error("Live collector internal credential invalid; check service token file")
         raise SystemExit(1) from None
     with httpx.Client(
-        base_url="http://api:8000",
+        base_url=f"http://api:{int(os.environ.get('OBSERVER_PORT', '8000'))}",
         headers={"Authorization": f"Bearer {token}"},
         timeout=5,
         trust_env=False,
