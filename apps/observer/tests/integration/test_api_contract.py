@@ -1,9 +1,6 @@
 """Public API contract: response bodies stay stable and every route publishes a schema.
 
-Snapshots in tests/integration/snapshots/api/ hold the exact parsed JSON each public route
-returned for a seeded state. Regenerate them only when a response change is intended:
-
-    UPDATE_SNAPSHOTS=1 uv run pytest apps/observer/tests/integration/test_api_contract.py
+Snapshots in snapshots/api/ hold the parsed JSON each public route returns for a seeded state.
 """
 
 import json
@@ -42,11 +39,9 @@ type Recorded = dict[str, Any]
 
 
 def normalize(body: object) -> Any:
-    """Replace random uuid4 identifiers (baseline and gap IDs) with stable placeholders.
+    """Replace random uuid4 IDs with placeholders numbered in key-sorted JSON order.
 
-    Placeholders are numbered by first appearance in key-sorted JSON, so references
-    between fields (a recovery baseline's coverage_gap_ids pointing at a gap) still
-    have to match, while key order, which parsed-JSON equality ignores, does not.
+    Sorting makes numbering ignore key order while cross-field ID references still must match.
     """
     seen: dict[str, str] = {}
     text = UUID.sub(

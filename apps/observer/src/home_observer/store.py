@@ -4,11 +4,12 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple, TypedDict
+from typing import NamedTuple, TypedDict
 from uuid import uuid4
 
-# Stored records are JSON this API wrote itself, so they are trusted on the way back out.
-type Record = dict[str, Any]
+from pydantic import TypeAdapter
+
+from home_observer.models import CurrentReading, Entity, EventReading, HealthReport
 
 
 class SelectionState(TypedDict):
@@ -26,6 +27,10 @@ class GapRecord(TypedDict):
     detected_at: str
     recovered_at: str | None
     reason: str
+
+
+gap_record = TypeAdapter(GapRecord)
+current_reading: TypeAdapter[CurrentReading] = TypeAdapter(CurrentReading)
 
 
 class SnapshotRead(NamedTuple):
@@ -107,9 +112,21 @@ class Store:
         }
 
     @staticmethod
-    def entity(db: sqlite3.Connection, entity_id: str) -> Record | None:
+    def entity(db: sqlite3.Connection, entity_id: str) -> Entity | None:
         row = db.execute("SELECT data FROM catalog WHERE id=?", (entity_id,)).fetchone()
-        return json.loads(row[0]) if row else None
+        return Entity.model_validate_json(row[0]) if row else None
+
+    @staticmethod
+    def current(db: sqlite3.Connection, entity_id: str) -> CurrentReading | None:
+        row = db.execute(
+            "SELECT data FROM current_state WHERE entity_id=?", (entity_id,)
+        ).fetchone()
+        return current_reading.validate_json(row[0]) if row else None
+
+    @staticmethod
+    def health(db: sqlite3.Connection) -> HealthReport | None:
+        row = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
+        return HealthReport.model_validate_json(row[0]) if row else None
 
     @staticmethod
     def cleanup(db: sqlite3.Connection, cutoff: str) -> None:
@@ -140,13 +157,13 @@ class Store:
         ).fetchone()
         if previous is None:
             return True
-        value = json.loads(previous["data"])
-        receipt = datetime.fromisoformat(value["received_at"])
+        value = current_reading.validate_json(previous["data"])
+        receipt = datetime.fromisoformat(value.received_at)
         if received_at < receipt:
             return False
         # Events captured during the HTTP read may be newer than its sampled state.
         return not (
-            value.get("kind") == "event"
+            isinstance(value, EventReading)
             and receipt >= started_at
             and datetime.fromisoformat(previous["source_time"]) > source_time
         )
@@ -157,7 +174,7 @@ class Store:
         db: sqlite3.Connection,
         entity_id: str,
         source_time: str,
-        data: Record,
+        data: CurrentReading,
         *,
         snapshot: SnapshotRead | None = None,
     ) -> None:
@@ -179,8 +196,8 @@ class Store:
             # Keep delayed observations in history without crossing a newer HTTP read boundary.
             if (
                 boundary
-                and data.get("kind") == "event"
-                and datetime.fromisoformat(data["received_at"]) < datetime.fromisoformat(boundary)
+                and isinstance(data, EventReading)
+                and datetime.fromisoformat(data.received_at) < datetime.fromisoformat(boundary)
             ):
                 return
             if previous and instant < datetime.fromisoformat(previous["source_time"]):
@@ -188,7 +205,7 @@ class Store:
         db.execute(
             "INSERT OR REPLACE INTO current_state "
             "(entity_id,source_time,data,snapshot_started_at) VALUES(?,?,?,?)",
-            (entity_id, instant.isoformat(), json.dumps(data), boundary),
+            (entity_id, instant.isoformat(), data.model_dump_json(exclude_unset=True), boundary),
         )
 
     @staticmethod
@@ -200,14 +217,12 @@ class Store:
             return row[0] if row else None
         row = db.execute("SELECT MAX(persisted_at) FROM confirmed").fetchone()
         retained = db.execute("SELECT value FROM metadata WHERE key='last_healthy_at'").fetchone()
-        health = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
+        health = Store.health(db)
         timestamps: list[str] = [row[0]] if row[0] else []
         if retained:
             timestamps.append(retained[0])
-        if health:
-            value = json.loads(health[0])
-            if value["status"] == "healthy":
-                timestamps.append(value["persisted_at"])
+        if health and health.status == "healthy":
+            timestamps.append(health.persisted_at)
         return max(timestamps) if timestamps else None
 
     @classmethod
@@ -224,7 +239,7 @@ class Store:
             "SELECT data FROM coverage WHERE scope=? AND recovered_at IS NULL", (scope,)
         ).fetchone()
         if existing:
-            return json.loads(existing[0])
+            return gap_record.validate_json(existing[0])
         data: GapRecord = {
             "id": str(uuid4()),
             "source_id": source_id,
@@ -250,4 +265,4 @@ class Store:
                 "SELECT data FROM coverage WHERE recovered_at IS NULL AND scope IN ('*', ?)",
                 (entity_id,),
             )
-        return [json.loads(row[0]) for row in rows]
+        return [gap_record.validate_json(row[0]) for row in rows]

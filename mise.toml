@@ -9,7 +9,14 @@ lefthook = "2.2.1"
 
 [tasks.setup]
 description = "Install tools and dependencies, then the lefthook pre-commit hook"
-run = ["mise install", "pnpm install", "uv sync", "lefthook install"]
+# Chromium for `mise run e2e`. System libraries need sudo, so only CI passes --with-deps.
+run = [
+  "mise install",
+  "pnpm install",
+  "uv sync",
+  "pnpm --filter @home-observer/web exec playwright install chromium",
+  "lefthook install",
+]
 
 [tasks.lint]
 description = "Lint Python (ruff) and the web app (Biome)"

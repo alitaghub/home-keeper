@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -74,11 +74,9 @@ Availability = Literal["available", "unavailable", "unknown"]
 Coordinate = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
 
-class LightState(WireModel):
-    state: LightStateValue
-    last_changed: datetime | None = None
-    last_updated: datetime | None = None
-    last_reported: datetime | None = None
+class LightAttributes(WireModel):
+    """Light attributes shared by incoming states and stored readings."""
+
     brightness: int | None = Field(default=None, strict=True, ge=0, le=255)
     color_mode: ColorMode | None = None
     color_temp_kelvin: int | None = Field(default=None, strict=True, ge=1000, le=10000)
@@ -87,21 +85,6 @@ class LightState(WireModel):
     rgb_color: tuple[Channel, Channel, Channel] | None = None
     rgbw_color: tuple[Channel, Channel, Channel, Channel] | None = None
     rgbww_color: tuple[Channel, Channel, Channel, Channel, Channel] | None = None
-
-    availability: Availability | None = None
-
-    @model_validator(mode="after")
-    def state_availability(self) -> Self:
-        expected = "available" if self.state in ("on", "off") else self.state
-        if self.availability is not None and self.availability != expected:
-            raise ValueError("Availability contradicts state")
-        self.availability = expected
-        return self
-
-    @field_validator("last_changed", "last_updated", "last_reported", check_fields=False)
-    @classmethod
-    def utc_timestamp(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else to_utc(value)
 
     @field_validator("rgb_color", "rgbw_color", "rgbww_color")
     @classmethod
@@ -121,7 +104,28 @@ class LightState(WireModel):
                 raise ValueError("Color coordinate outside supported range")
         return value
 
-    def meaningful(self) -> dict[str, Any]:
+
+class LightState(LightAttributes):
+    state: LightStateValue
+    last_changed: datetime | None = None
+    last_updated: datetime | None = None
+    last_reported: datetime | None = None
+    availability: Availability | None = None
+
+    @model_validator(mode="after")
+    def state_availability(self) -> Self:
+        expected = "available" if self.state in ("on", "off") else self.state
+        if self.availability is not None and self.availability != expected:
+            raise ValueError("Availability contradicts state")
+        self.availability = expected
+        return self
+
+    @field_validator("last_changed", "last_updated", "last_reported", check_fields=False)
+    @classmethod
+    def utc_timestamp(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else to_utc(value)
+
+    def meaningful(self) -> dict[str, object]:
         return self.model_dump(
             exclude={"last_changed", "last_updated", "last_reported"}, exclude_none=True
         )
@@ -241,23 +245,19 @@ class DiscoveryRefresh(WireModel):
     refresh_revision: int
 
 
-class LightReading(WireModel):
-    """Light attributes as stored. Event states omit unset attributes, so routes returning
-    readings exclude unset fields to keep absent keys absent."""
-
+class ReadingHeader(WireModel):
     state: LightStateValue
     availability: Availability
     last_changed: Timestamp | None = None
     last_updated: Timestamp | None = None
     last_reported: Timestamp | None = None
-    brightness: int | None = None
-    color_mode: ColorMode | None = None
-    color_temp_kelvin: int | None = None
-    hs_color: tuple[float, float] | None = None
-    xy_color: tuple[float, float] | None = None
-    rgb_color: tuple[int, int, int] | None = None
-    rgbw_color: tuple[int, int, int, int] | None = None
-    rgbww_color: tuple[int, int, int, int, int] | None = None
+
+
+# Pydantic orders fields from the last base to the first, so the header fields lead the
+# response body as they always have.
+class LightReading(LightAttributes, ReadingHeader):
+    """Light attributes as stored. Event states omit unset attributes, so routes returning
+    readings exclude unset fields to keep absent keys absent."""
 
 
 class BaselineRecord(LightReading):
@@ -285,6 +285,10 @@ class EventReading(LightReading):
     event_time: Timestamp
     received_at: Timestamp
     persisted_at: Timestamp
+
+
+# The newest state of a monitored light: a snapshot or a recorded change event.
+CurrentReading = Annotated[BaselineRecord | EventReading, Field(discriminator="kind")]
 
 
 class BaselinesPage(WireModel):
@@ -349,7 +353,7 @@ HealthStatus = Annotated[HealthPending | HealthReport, Field(discriminator="stat
 
 
 class MonitoredEntity(Entity):
-    baseline: Annotated[BaselineRecord | EventReading, Field(discriminator="kind")] | None
+    baseline: CurrentReading | None
     freshness: Freshness
     confirmed_at: Timestamp | None
 
