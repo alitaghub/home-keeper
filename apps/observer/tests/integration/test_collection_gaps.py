@@ -2,12 +2,14 @@
 
 import json
 import time
+from pathlib import Path
 from threading import Event, Thread
 
 from fastapi.testclient import TestClient
+from support.home_assistant import Frame
 from websockets.datastructures import Headers
-from websockets.http11 import Response
-from websockets.sync.server import serve
+from websockets.http11 import Request, Response
+from websockets.sync.server import ServerConnection, serve
 
 from home_observer.api import create_app
 from home_observer.home_assistant import HomeAssistantConnector
@@ -16,7 +18,7 @@ from home_observer.live import CollectionSession
 REGISTRY = [{"id": "a", "entity_id": "light.a", "platform": "hue", "translation_key": "hue_light"}]
 
 
-def light(brightness, updated):
+def light(brightness: int, updated: str) -> Frame:
     return {
         "entity_id": "light.a",
         "state": "on",
@@ -25,7 +27,7 @@ def light(brightness, updated):
     }
 
 
-def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path):
+def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path: Path) -> None:
     token = tmp_path / "ha-token"
     token.write_text("synthetic-ha-token")
     current = [light(100, "2025-01-01T10:00:00Z")]
@@ -33,7 +35,7 @@ def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path):
     emit = Event()
     finish = Event()
 
-    def request(connection, incoming):
+    def request(_connection: ServerConnection, incoming: Request) -> Response | None:
         if not incoming.path.startswith("/api/states/"):
             return None
         if change_during_read[0]:
@@ -44,7 +46,7 @@ def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path):
         body = json.dumps(current[0]).encode()
         return Response(200, "OK", Headers({"Content-Type": "application/json"}), body)
 
-    def handler(socket):
+    def handler(socket: ServerConnection) -> None:
         socket.send(json.dumps({"type": "auth_required"}))
         socket.recv(timeout=5)
         socket.send(json.dumps({"type": "auth_ok"}))

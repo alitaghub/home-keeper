@@ -4,10 +4,11 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-APP = Path(__file__).parents[3] / "web" / "app.js"
+APP = Path(__file__).parents[4] / "web" / "app.js"
 HARNESS = """
 const fs = require("node:fs");
 const vm = require("node:vm");
@@ -62,7 +63,7 @@ const tree = (node) => [node, ...node.children.flatMap(tree)];
 """
 
 
-def test_dashboard_can_stop_monitoring_unsupported_and_missing_selections(tmp_path):
+def test_dashboard_can_stop_monitoring_unsupported_and_missing_selections(tmp_path: Path) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is needed to run the dashboard script")
@@ -78,7 +79,7 @@ def test_dashboard_can_stop_monitoring_unsupported_and_missing_selections(tmp_pa
         "reason": "Entity missing from latest discovery",
     }
     pending = {"baseline": None, "freshness": "stale", "confirmed_at": None}
-    fixtures = {
+    fixtures: dict[str, object] = {
         "/api/catalog": {
             "source_id": "home_assistant",
             "refreshed_at": None,
@@ -104,13 +105,13 @@ def test_dashboard_can_stop_monitoring_unsupported_and_missing_selections(tmp_pa
     }
 
 
-def render_dashboard(tmp_path, fixtures):
+def render_dashboard(tmp_path: Path, fixtures: dict[str, object]) -> Any:
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is needed to run the dashboard script")
     harness = tmp_path / "harness.cjs"
     harness.write_text(HARNESS)
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 -- fixed argv: resolved node, our harness and fixtures
         [node, str(harness), str(APP), json.dumps(fixtures)],
         capture_output=True,
         text=True,
@@ -120,7 +121,7 @@ def render_dashboard(tmp_path, fixtures):
     return json.loads(result.stdout)
 
 
-def test_discovery_focuses_on_lamps_and_uses_device_names(tmp_path):
+def test_discovery_focuses_on_lamps_and_uses_device_names(tmp_path: Path) -> None:
     lights = [
         {
             "id": "ha:desk",
@@ -155,7 +156,7 @@ def test_discovery_focuses_on_lamps_and_uses_device_names(tmp_path):
             "reason": "Unsupported",
         },
     ]
-    fixtures = {
+    fixtures: dict[str, object] = {
         "/api/catalog": {"source_id": "home_assistant", "entities": lights + others},
         "/api/selection": {"entity_ids": []},
         "/api/monitored": {"entities": []},

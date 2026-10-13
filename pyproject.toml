@@ -7,7 +7,12 @@ requires-python = ">=3.13"
 dependencies = ["home-observer"]
 
 [dependency-groups]
-dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
+dev = [
+    "basedpyright>=1.40,<2",
+    "pytest>=8,<9",
+    "pytest-cov>=7.1,<8",
+    "ruff>=0.11,<1",
+]
 
 [tool.uv]
 package = false
@@ -21,7 +26,26 @@ members = ["apps/*", "packages/*"]
 exclude = ["apps/web"]
 
 [tool.pytest.ini_options]
-testpaths = ["apps/observer/tests"]
+testpaths = ["apps/observer/tests/unit", "apps/observer/tests/integration"]
+# Shared test helpers live in apps/observer/tests/support.
+pythonpath = ["apps/observer/tests"]
+addopts = ["--strict-markers"]
+# Every warning fails the run. Ignore only known third-party warnings, each with a reason.
+filterwarnings = [
+    "error",
+    # Starlette's TestClient asks for httpx2; the workspace stays on httpx, which it supports.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["home_observer"]
+
+[tool.coverage.report]
+# Measured 86.43% branch coverage when the gate was added; keep a small buffer below it.
+fail_under = 83
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 target-version = "py313"
@@ -30,4 +54,40 @@ line-length = 100
 src = [".", "apps/*/src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = [
+    "E", "W", "F", "I", "UP", "B", "SIM", "RUF", "PT", "PL", "S", "ASYNC", "DTZ", "TRY",
+    "PERF", "C4", "RET", "PTH", "N",
+]
+
+ignore = [
+    # Adapters raise inside `try` so one handler maps every failure to a fixed, safe code.
+    "TRY301",
+    # Exception messages are fixed, secret-free strings; a class per message adds nothing.
+    "TRY003",
+    # logging.exception prints exception text, which can carry credentials; logs stay fixed.
+    "TRY400",
+    # The app factory registers every route as a closure; scenario tests read top to bottom.
+    "PLR0915",
+    # The app factory, FastAPI routes and change_event take their inputs as named parameters.
+    "PLR0913",
+    # Boundary validation reads best as one flat chain of explicit checks.
+    "PLR0912",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: pytest's assert rewriting is the idiom, literal expected values read best inline,
+# and every credential is a synthetic fixture.
+"apps/observer/tests/**" = ["S101", "PLR2004", "S105", "S106"]
+# Smoke scripts assert like tests, use synthetic credentials, and drive docker and HTTP.
+"e2e/**" = ["S101", "PLR2004", "S105", "S310", "S603", "S607"]
+# Type stubs re-export whole modules.
+"typings/**" = ["F403"]
+
+[tool.basedpyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+include = ["apps/observer/src", "apps/observer/tests", "e2e"]
+# Resolve the workspace package and the shared test helpers as local source.
+extraPaths = ["apps/observer/src", "apps/observer/tests"]
+# Local stubs; see typings/httpx2/__init__.pyi.
+stubPath = "typings"

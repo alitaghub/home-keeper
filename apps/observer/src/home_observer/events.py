@@ -3,6 +3,7 @@
 import hashlib
 import json
 from datetime import UTC, datetime
+from typing import Any, TypeIs
 
 from home_observer.models import ChangeEvent, LightState
 
@@ -19,13 +20,18 @@ COLOR_FIELDS = (
 SOURCE_TIMES = ("last_changed", "last_updated", "last_reported")
 
 
-def light_state(payload: dict | None, source_entity_id: str) -> LightState | None:
+def is_json_object(value: object) -> TypeIs[dict[str, Any]]:
+    """Narrow decoded JSON to an object. Its values stay untrusted until validated."""
+    return isinstance(value, dict)
+
+
+def light_state(payload: object, source_entity_id: str) -> LightState | None:
     if payload is None:
         return None
-    if not isinstance(payload, dict) or payload.get("entity_id") != source_entity_id:
+    if not is_json_object(payload) or payload.get("entity_id") != source_entity_id:
         raise ValueError("Invalid state identity")
     attributes = payload.get("attributes", {})
-    if not isinstance(attributes, dict):
+    if not is_json_object(attributes):
         raise ValueError("Invalid light attributes")
     return LightState.model_validate(
         {
@@ -47,7 +53,7 @@ def change_event(
     new: LightState | None,
     received_at: datetime | None = None,
 ) -> ChangeEvent:
-    identity_data = {
+    identity_data: dict[str, object] = {
         "source_id": source_id,
         "entity_id": entity_id,
         "source_entity_id": source_entity_id,
@@ -58,9 +64,11 @@ def change_event(
     event_id = hashlib.sha256(
         json.dumps(identity_data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    return ChangeEvent(
-        id=event_id,
-        selection_revision=revision,
-        received_at=received_at or datetime.now(UTC),
-        **identity_data,
+    return ChangeEvent.model_validate(
+        {
+            "id": event_id,
+            "selection_revision": revision,
+            "received_at": received_at or datetime.now(UTC),
+            **identity_data,
+        }
     )

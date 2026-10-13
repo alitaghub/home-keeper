@@ -1,15 +1,19 @@
 import json
 import secrets
+import sqlite3
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import TypeAdapter
+from starlette.middleware.base import RequestResponseEndpoint
 
 from home_observer.models import (
     BaselinesPage,
@@ -28,23 +32,26 @@ from home_observer.models import (
     Observation,
     SelectionChange,
     SelectionSnapshot,
+    to_utc,
 )
-from home_observer.store import Store
+from home_observer.store import Record, SnapshotRead, Store
 
 
 def create_app(
     db_path: Path,
     service_token: str,
-    now=lambda: datetime.now(UTC),
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
     reconciliation_seconds: int = 60,
     source_id: str = "demo",
     retention_days: int = 30,
     allowed_hosts: tuple[str, ...] = ("testserver", "127.0.0.1:8000", "localhost:8000"),
     allowed_origins: tuple[str, ...] = ("http://127.0.0.1:8000", "http://localhost:8000"),
-):
+) -> FastAPI:
     if (
         isinstance(retention_days, bool)
-        or not isinstance(retention_days, int)
+        # Runtime guard for configuration parsed outside the type checker's view.
+        or not isinstance(retention_days, int)  # pyright: ignore[reportUnnecessaryIsInstance]
         or retention_days < 1
     ):
         raise ValueError("Retention must be a positive number of days")
@@ -62,7 +69,7 @@ def create_app(
             not existing
             and source_id != "demo"
             and any(
-                db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608 -- fixed table names
                 for table in ("catalog", "selection", "baselines", "confirmed")
             )
         ):
@@ -88,26 +95,29 @@ def create_app(
 
     next_cleanup = 0.0
 
-    def retention_cutoff():
+    def retention_cutoff() -> str:
         return (now().astimezone(UTC) - timedelta(days=retention_days)).isoformat()
 
-    def conflict(code, message):
+    def conflict(code: str, message: str) -> HTTPException:
         return HTTPException(409, {"code": code, "message": message})
 
     @app.middleware("http")
-    async def browser_boundary(request: Request, call_next):
+    async def browser_boundary(request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.headers.get("host", "") not in allowed_hosts:
             return JSONResponse({"detail": "Host not allowed"}, status_code=400)
-        if request.url.path.startswith("/api/") and request.method not in ("GET", "HEAD"):
-            if (
-                request.headers.get("x-home-observer") != "1"
-                or request.headers.get("sec-fetch-site") == "cross-site"
-                or (
-                    request.headers.get("origin") is not None
-                    and request.headers["origin"] not in allowed_origins
-                )
-            ):
-                return JSONResponse({"detail": "Request origin denied"}, status_code=403)
+        browser_write = request.url.path.startswith("/api/") and request.method not in (
+            "GET",
+            "HEAD",
+        )
+        if browser_write and (
+            request.headers.get("x-home-observer") != "1"
+            or request.headers.get("sec-fetch-site") == "cross-site"
+            or (
+                request.headers.get("origin") is not None
+                and request.headers["origin"] not in allowed_origins
+            )
+        ):
+            return JSONResponse({"detail": "Request origin denied"}, status_code=403)
         if request.method in ("POST", "PUT"):
             body = bytearray()
             async for chunk in request.stream():
@@ -115,7 +125,7 @@ def create_app(
                     return JSONResponse({"detail": "Request too large"}, status_code=413)
                 body.extend(chunk)
             # Starlette's middleware replays the cached body to downstream validation.
-            request._body = bytes(body)
+            request._body = bytes(body)  # pyright: ignore[reportPrivateUsage] -- no public setter
         nonlocal next_cleanup
         if time.monotonic() >= next_cleanup:
             with store.transaction() as db:
@@ -130,7 +140,7 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    def internal_auth(request: Request):
+    def internal_auth(request: Request) -> None:
         supplied = request.headers.get("authorization", "")
         if not secrets.compare_digest(supplied.encode("utf-8"), f"Bearer {service_token}".encode()):
             raise HTTPException(401, "Service authentication required")
@@ -138,7 +148,7 @@ def create_app(
     # Validation details may contain arbitrary incoming text. Keep responses generic.
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error(request, exc):
+    async def validation_error(_request: Request, _exc: RequestValidationError) -> JSONResponse:
         return JSONResponse({"detail": "Invalid request"}, status_code=422)
 
     @app.get("/api/catalog", response_model=CatalogResponse)
@@ -198,7 +208,7 @@ def create_app(
             current = store.selection(db)
             if entity is None and (change.selected or entity_id not in current["entity_ids"]):
                 raise HTTPException(404, "Unknown entity")
-            if change.selected and not entity["supported"]:
+            if change.selected and entity is not None and not entity["supported"]:
                 raise HTTPException(422, "Entity is unsupported")
             current = store.selection(db)
             if change.selected != (entity_id in current["entity_ids"]):
@@ -276,8 +286,10 @@ def create_app(
                         db,
                         payload.entity_id,
                         snapshot_time,
-                        payload.collection_started_at or payload.received_at,
-                        payload.received_at,
+                        SnapshotRead(
+                            payload.collection_started_at or payload.received_at,
+                            payload.received_at,
+                        ),
                     )
                     and not store.open_gaps(db, payload.entity_id)
                 ):
@@ -296,7 +308,7 @@ def create_app(
                 "SELECT data FROM baselines WHERE entity_id=? ORDER BY rowid DESC LIMIT 1",
                 (payload.entity_id,),
             ).fetchone()
-            baseline = json.loads(previous[0]) if previous else None
+            baseline: Record | None = json.loads(previous[0]) if previous else None
             comparable = {
                 key: value
                 for key, value in data.items()
@@ -313,7 +325,8 @@ def create_app(
             new_recovery = bool(gaps) and (
                 not baseline or baseline.get("coverage_gap_ids") != data.get("coverage_gap_ids")
             )
-            if comparable != old or new_recovery:
+            # A first snapshot (no previous baseline) always records.
+            if baseline is None or comparable != old or new_recovery:
                 baseline = {**data, "id": str(uuid4()), "persisted_at": persisted.isoformat()}
                 db.execute(
                     "INSERT INTO baselines(id,entity_id,data,persisted_at) VALUES(?, ?, ?, ?)",
@@ -330,8 +343,9 @@ def create_app(
                 payload.entity_id,
                 source_time.isoformat(),
                 baseline,
-                snapshot_started_at=payload.collection_started_at or payload.received_at,
-                snapshot_received_at=payload.received_at,
+                snapshot=SnapshotRead(
+                    payload.collection_started_at or payload.received_at, payload.received_at
+                ),
             )
             db.execute(
                 "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
@@ -348,7 +362,8 @@ def create_app(
     ):
         with store.transaction() as db:
             rows = db.execute(
-                "SELECT rowid,data FROM baselines WHERE entity_id=? AND persisted_at>=? "
+                # Only fixed SQL fragments are concatenated; values are bound parameters.
+                "SELECT rowid,data FROM baselines WHERE entity_id=? AND persisted_at>=? "  # noqa: S608
                 + ("AND rowid<? " if cursor is not None else "")
                 + "ORDER BY rowid DESC LIMIT ?",
                 (
@@ -451,6 +466,7 @@ def create_app(
 
     @app.get("/api/events", response_model=EventsPage, response_model_exclude_unset=True)
     def events(
+        *,
         source_id: Literal["demo", "home_assistant"] | None = None,
         entity_id: Identity | None = None,
         start: datetime | None = None,
@@ -466,13 +482,8 @@ def create_app(
             position = None
             if cursor is not None:
                 timestamp, identity = cursor.split("|", 1)
-                position = (
-                    Observation.utc_timestamp(datetime.fromisoformat(timestamp)).isoformat(),
-                    identity,
-                )
+                position = (to_utc(datetime.fromisoformat(timestamp)).isoformat(), identity)
                 # Reuse the boundary type rather than accepting arbitrary cursor identifiers.
-                from pydantic import TypeAdapter
-
                 position = (position[0], TypeAdapter(Identity).validate_python(identity))
         except (ValueError, TypeError):
             raise HTTPException(422, "Invalid event scope") from None
@@ -491,7 +502,8 @@ def create_app(
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with store.transaction() as db:
             rows = db.execute(
-                "SELECT data FROM events" + where + " ORDER BY event_time DESC, id DESC LIMIT ?",
+                # Only fixed SQL fragments are concatenated; values are bound parameters.
+                "SELECT data FROM events" + where + " ORDER BY event_time DESC, id DESC LIMIT ?",  # noqa: S608
                 (*parameters, limit + 1),
             ).fetchall()
         values = [json.loads(row[0]) for row in rows[:limit]]
@@ -538,7 +550,7 @@ def create_app(
             db.execute("INSERT OR REPLACE INTO metadata VALUES('health', ?)", (json.dumps(data),))
         return {"accepted": True}
 
-    def get_health(db):
+    def get_health(db: sqlite3.Connection) -> Record:
         row = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
         if not row:
             return {"status": "pending", "source_id": source_id}
@@ -643,12 +655,12 @@ def create_app(
     @app.get("/api/monitored", response_model=MonitoredEntities, response_model_exclude_unset=True)
     def monitored():
         with store.transaction() as db:
-            results = []
+            results: list[Record] = []
             health = get_health(db)
             for entity_id in store.selection(db)["entity_ids"]:
                 entity = store.entity(db, entity_id)
                 missing = entity is None
-                if missing:
+                if entity is None:
                     entity = {
                         "id": entity_id,
                         "name": entity_id,
@@ -685,7 +697,7 @@ def create_app(
                         "confirmed_at": confirmed["received_at"] if confirmed else None,
                     }
                 )
-            return MonitoredEntities(entities=results)
+            return MonitoredEntities.model_validate({"entities": results})
 
     web_path = Path.cwd() / "web"
     if web_path.exists():

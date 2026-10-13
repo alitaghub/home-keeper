@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -6,7 +7,9 @@ from home_observer.api import create_app
 from home_observer.demo import CATALOG, DemoReplay, coverage, reconcile
 
 
-def test_demo_gap_resumes_with_snapshot_without_inventing_missing_transition(tmp_path):
+def test_demo_gap_resumes_with_snapshot_without_inventing_missing_transition(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "demo.sqlite"
     replay = DemoReplay()
     entity = "light.hue_desk"

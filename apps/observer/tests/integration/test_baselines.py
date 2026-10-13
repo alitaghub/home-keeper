@@ -1,35 +1,13 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi.testclient import TestClient
-from test_discovery import AUTH, BROWSER, CATALOG, NOW, app_for
+from support.api import AUTH, CATALOG, NOW, app_for, baseline_list, observation, select
 
 
-def observation(revision, received_at=NOW.isoformat(), **changes):
-    return {
-        "entity_id": "bulb-a",
-        "selection_revision": revision,
-        "source_id": "demo",
-        "state": "on",
-        "availability": "available",
-        "received_at": received_at,
-        "last_changed": "2020-01-01T00:00:00Z",
-        "last_updated": "2020-01-01T00:00:00Z",
-        "last_reported": None,
-        **changes,
-    }
-
-
-def select(client, entity="bulb-a", selected=True):
-    response = client.put(f"/api/selection/{entity}", json={"selected": selected}, headers=BROWSER)
-    assert response.is_success, response.text
-    return response.json()["revision"]
-
-
-def baseline_list(client, entity="bulb-a"):
-    return client.get("/api/baselines", params={"entity_id": entity}).json()["baselines"]
-
-
-def test_baseline_is_attributed_retained_and_delayed_observations_cannot_bypass_selection(tmp_path):
+def test_baseline_is_attributed_retained_and_delayed_observations_cannot_bypass_selection(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "history.sqlite"
     with TestClient(app_for(db)) as client:
         assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
@@ -42,7 +20,8 @@ def test_baseline_is_attributed_retained_and_delayed_observations_cannot_bypass_
         assert baseline["id"]
         assert baseline["entity_id"] == "bulb-a"
         assert baseline["source_id"] == "demo"
-        assert baseline["state"] == "on" and baseline["availability"] == "available"
+        assert baseline["state"] == "on"
+        assert baseline["availability"] == "available"
         assert baseline["received_at"] != baseline["last_changed"]
         assert datetime.fromisoformat(baseline["persisted_at"]) == NOW
         assert datetime.fromisoformat(baseline["received_at"]) == NOW
@@ -74,8 +53,8 @@ def test_baseline_is_attributed_retained_and_delayed_observations_cannot_bypass_
 
 
 def test_freshness_uses_confirmed_receipt_not_old_change_time_and_unchanged_snapshots_deduplicate(
-    tmp_path,
-):
+    tmp_path: Path,
+) -> None:
     clock = [NOW]
     with TestClient(app_for(tmp_path / "freshness.sqlite", now=lambda: clock[0])) as client:
         assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
@@ -106,7 +85,7 @@ def test_freshness_uses_confirmed_receipt_not_old_change_time_and_unchanged_snap
         assert baseline_list(client) == records
 
 
-def test_reselecting_requires_new_confirmation_before_showing_old_state(tmp_path):
+def test_reselecting_requires_new_confirmation_before_showing_old_state(tmp_path: Path) -> None:
     with TestClient(app_for(tmp_path / "reselect.sqlite")) as client:
         assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
         revision = select(client)
@@ -126,7 +105,7 @@ def test_reselecting_requires_new_confirmation_before_showing_old_state(tmp_path
         assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "fresh"
 
 
-def test_history_pages_are_bounded_and_retention_filters_before_cleanup(tmp_path):
+def test_history_pages_are_bounded_and_retention_filters_before_cleanup(tmp_path: Path) -> None:
     clock = [NOW]
     with TestClient(app_for(tmp_path / "pages.sqlite", now=lambda: clock[0])) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH).raise_for_status()

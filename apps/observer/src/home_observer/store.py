@@ -1,12 +1,42 @@
 import json
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, NamedTuple, TypedDict
+from uuid import uuid4
+
+# Stored records are JSON this API wrote itself, so they are trusted on the way back out.
+type Record = dict[str, Any]
+
+
+class SelectionState(TypedDict):
+    revision: int
+    refresh_revision: int
+    entity_ids: list[str]
+
+
+class GapRecord(TypedDict):
+    id: str
+    source_id: str
+    entity_ids: list[str]
+    last_confirmed_at: str | None
+    uncertain_start: bool
+    detected_at: str
+    recovered_at: str | None
+    reason: str
+
+
+class SnapshotRead(NamedTuple):
+    """When an authoritative HTTP state read started and when its result arrived."""
+
+    started_at: datetime
+    received_at: datetime
 
 
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         with self.transaction() as db:
@@ -51,7 +81,7 @@ class Store:
             db.execute("CREATE INDEX IF NOT EXISTS baseline_expiration ON baselines(persisted_at)")
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Generator[sqlite3.Connection]:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         try:
@@ -65,7 +95,7 @@ class Store:
             db.close()
 
     @staticmethod
-    def selection(db):
+    def selection(db: sqlite3.Connection) -> SelectionState:
         return {
             "revision": int(
                 db.execute("SELECT value FROM metadata WHERE key='revision'").fetchone()[0]
@@ -77,12 +107,12 @@ class Store:
         }
 
     @staticmethod
-    def entity(db, entity_id):
+    def entity(db: sqlite3.Connection, entity_id: str) -> Record | None:
         row = db.execute("SELECT data FROM catalog WHERE id=?", (entity_id,)).fetchone()
         return json.loads(row[0]) if row else None
 
     @staticmethod
-    def cleanup(db, cutoff):
+    def cleanup(db: sqlite3.Connection, cutoff: str) -> None:
         db.execute("DELETE FROM events WHERE persisted_at < ?", (cutoff,))
         db.execute(
             "DELETE FROM coverage WHERE recovered_at IS NOT NULL AND recovered_at < ?", (cutoff,)
@@ -101,7 +131,10 @@ class Store:
         db.execute("DELETE FROM baselines WHERE persisted_at < ?", (cutoff,))
 
     @staticmethod
-    def snapshot_can_replace(db, entity_id, source_time, started_at, received_at):
+    def snapshot_can_replace(
+        db: sqlite3.Connection, entity_id: str, source_time: datetime, snapshot: SnapshotRead
+    ) -> bool:
+        started_at, received_at = snapshot
         previous = db.execute(
             "SELECT source_time, data FROM current_state WHERE entity_id=?", (entity_id,)
         ).fetchone()
@@ -121,30 +154,27 @@ class Store:
     @classmethod
     def update_current(
         cls,
-        db,
-        entity_id,
-        source_time,
-        data,
+        db: sqlite3.Connection,
+        entity_id: str,
+        source_time: str,
+        data: Record,
         *,
-        snapshot_started_at=None,
-        snapshot_received_at=None,
-    ):
+        snapshot: SnapshotRead | None = None,
+    ) -> None:
         previous = db.execute(
             "SELECT source_time, snapshot_started_at FROM current_state WHERE entity_id=?",
             (entity_id,),
         ).fetchone()
         instant = datetime.fromisoformat(source_time).astimezone(UTC)
         boundary = previous["snapshot_started_at"] if previous else None
-        if snapshot_started_at is not None:
-            if not cls.snapshot_can_replace(
-                db, entity_id, instant, snapshot_started_at, snapshot_received_at
-            ):
+        if snapshot is not None:
+            if not cls.snapshot_can_replace(db, entity_id, instant, snapshot):
                 db.execute(
                     "UPDATE current_state SET snapshot_started_at=? WHERE entity_id=?",
-                    (snapshot_started_at.isoformat(), entity_id),
+                    (snapshot.started_at.isoformat(), entity_id),
                 )
                 return
-            boundary = snapshot_started_at.isoformat()
+            boundary = snapshot.started_at.isoformat()
         else:
             # Keep delayed observations in history without crossing a newer HTTP read boundary.
             if (
@@ -162,7 +192,7 @@ class Store:
         )
 
     @staticmethod
-    def last_confirmed(db, entity_id=None):
+    def last_confirmed(db: sqlite3.Connection, entity_id: str | None = None) -> str | None:
         if entity_id is not None:
             row = db.execute(
                 "SELECT persisted_at FROM confirmed WHERE entity_id=?", (entity_id,)
@@ -171,7 +201,7 @@ class Store:
         row = db.execute("SELECT MAX(persisted_at) FROM confirmed").fetchone()
         retained = db.execute("SELECT value FROM metadata WHERE key='last_healthy_at'").fetchone()
         health = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
-        timestamps = [row[0]] if row[0] else []
+        timestamps: list[str] = [row[0]] if row[0] else []
         if retained:
             timestamps.append(retained[0])
         if health:
@@ -181,25 +211,30 @@ class Store:
         return max(timestamps) if timestamps else None
 
     @classmethod
-    def interrupt(cls, db, source_id, detected_at, reason, entity_id=None):
-        from uuid import uuid4
-
+    def interrupt(
+        cls,
+        db: sqlite3.Connection,
+        source_id: str,
+        detected_at: str,
+        reason: str,
+        entity_id: str | None = None,
+    ) -> GapRecord:
         scope = entity_id or "*"
         existing = db.execute(
             "SELECT data FROM coverage WHERE scope=? AND recovered_at IS NULL", (scope,)
         ).fetchone()
         if existing:
             return json.loads(existing[0])
-        data = dict(
-            id=str(uuid4()),
-            source_id=source_id,
-            entity_ids=[entity_id] if entity_id else cls.selection(db)["entity_ids"],
-            last_confirmed_at=cls.last_confirmed(db, entity_id),
-            uncertain_start=True,
-            detected_at=detected_at,
-            recovered_at=None,
-            reason=reason,
-        )
+        data: GapRecord = {
+            "id": str(uuid4()),
+            "source_id": source_id,
+            "entity_ids": [entity_id] if entity_id else cls.selection(db)["entity_ids"],
+            "last_confirmed_at": cls.last_confirmed(db, entity_id),
+            "uncertain_start": True,
+            "detected_at": detected_at,
+            "recovered_at": None,
+            "reason": reason,
+        }
         db.execute(
             "INSERT INTO coverage VALUES(?, ?, ?, NULL, ?)",
             (data["id"], scope, detected_at, json.dumps(data)),
@@ -207,7 +242,7 @@ class Store:
         return data
 
     @staticmethod
-    def open_gaps(db, entity_id=None):
+    def open_gaps(db: sqlite3.Connection, entity_id: str | None = None) -> list[GapRecord]:
         if entity_id is None:
             rows = db.execute("SELECT data FROM coverage WHERE recovered_at IS NULL")
         else:

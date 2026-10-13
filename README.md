@@ -393,9 +393,11 @@ JavaScript syntax. The Compose smoke scripts live in `e2e/`.
 
 ```sh
 mise install
-mise run check   # Ruff lint and format check, pytest, JS syntax, script syntax
-mise run fmt     # Ruff format
-mise run dev     # docker compose up --build --wait
+mise run check      # Ruff, basedpyright, pytest with coverage, JS and script syntax
+mise run typecheck  # basedpyright (strict)
+mise run test       # pytest (unit and integration) with branch coverage
+mise run fmt        # Ruff format
+mise run dev        # docker compose up --build --wait
 uv run python e2e/compose_smoke.py
 ```
 

@@ -1,32 +1,21 @@
-from datetime import timedelta
+"""Change events: idempotent ingestion, ordering, scope, retention and paging."""
 
+import sqlite3
+from contextlib import closing
+from datetime import timedelta, timezone
+from pathlib import Path
+
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from test_baselines import observation, select
-from test_discovery import AUTH, CATALOG, NOW, TOKEN
+from support.api import AUTH, CATALOG, NOW, TOKEN, event, observation, select
 
 from home_observer.api import create_app
 
 
-def event(revision, identity="change-1", **changes):
-    return (
-        dict(
-            id=identity,
-            entity_id="bulb-a",
-            source_id="demo",
-            selection_revision=revision,
-            event_time=NOW.isoformat(),
-            received_at=NOW.isoformat(),
-            old={"state": "off"},
-            new={"state": "on", "brightness": 100},
-        )
-        | changes
-    )
-
-
-def test_event_replay_ordering_selection_and_restart(tmp_path):
+def test_event_replay_ordering_selection_and_restart(tmp_path: Path) -> None:
     path = tmp_path / "events.sqlite"
 
-    def app():
+    def app() -> FastAPI:
         return create_app(path, TOKEN, now=lambda: NOW)
 
     with TestClient(app()) as client:
@@ -62,7 +51,7 @@ def test_event_replay_ordering_selection_and_restart(tmp_path):
         assert client.get("/api/events").json()["events"] == events
 
 
-def test_retention_preserves_selection_current_state_and_validates_scope(tmp_path):
+def test_retention_preserves_selection_current_state_and_validates_scope(tmp_path: Path) -> None:
     clock = [NOW]
     with TestClient(
         create_app(tmp_path / "retention.sqlite", TOKEN, now=lambda: clock[0], retention_days=1)
@@ -73,7 +62,8 @@ def test_retention_preserves_selection_current_state_and_validates_scope(tmp_pat
         client.post("/internal/events", json=event(revision), headers=AUTH)
         clock[0] += timedelta(days=2)
         result = client.get("/api/events").json()
-        assert result["events"] == [] and result["coverage"] == "unknown"
+        assert result["events"] == []
+        assert result["coverage"] == "unknown"
         assert result["retained_since"] == (clock[0] - timedelta(days=1)).isoformat()
         assert client.get("/api/selection").json()["entity_ids"] == ["bulb-a"]
         assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "on"
@@ -90,7 +80,7 @@ def test_retention_preserves_selection_current_state_and_validates_scope(tmp_pat
             assert client.get("/api/events", params=params).status_code == 422
 
 
-def test_bounded_pagination_and_invalid_event_fields(tmp_path):
+def test_bounded_pagination_and_invalid_event_fields(tmp_path: Path) -> None:
     with TestClient(create_app(tmp_path / "pages.sqlite", TOKEN, now=lambda: NOW)) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         revision = select(client)
@@ -99,11 +89,13 @@ def test_bounded_pagination_and_invalid_event_fields(tmp_path):
                 "/internal/events", json=event(revision, identity), headers=AUTH
             ).is_success
         page = client.get("/api/events", params={"limit": 2}).json()
-        assert len(page["events"]) == 2 and page["next_cursor"]
+        assert len(page["events"]) == 2
+        assert page["next_cursor"]
         second = client.get(
             "/api/events", params={"limit": 2, "cursor": page["next_cursor"]}
         ).json()
-        assert len(second["events"]) == 1 and second["next_cursor"] is None
+        assert len(second["events"]) == 1
+        assert second["next_cursor"] is None
         for new in (
             {"state": "<script>"},
             {"state": "on", "rgb_color": [1, 2, 999]},
@@ -120,7 +112,7 @@ def test_bounded_pagination_and_invalid_event_fields(tmp_path):
         assert client.post("/internal/events", json=event(revision), headers={}).status_code == 401
 
 
-def test_attribute_only_events_and_source_ordering_against_reconciliation(tmp_path):
+def test_attribute_only_events_and_source_ordering_against_reconciliation(tmp_path: Path) -> None:
     clock = [NOW]
     with TestClient(create_app(tmp_path / "order.sqlite", TOKEN, now=lambda: clock[0])) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
@@ -176,7 +168,7 @@ def test_attribute_only_events_and_source_ordering_against_reconciliation(tmp_pa
             )
 
 
-def test_oversized_event_is_rejected_before_validation_without_echo(tmp_path):
+def test_oversized_event_is_rejected_before_validation_without_echo(tmp_path: Path) -> None:
     with TestClient(create_app(tmp_path / "large.sqlite", TOKEN, now=lambda: NOW)) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         revision = select(client)
@@ -188,7 +180,9 @@ def test_oversized_event_is_rejected_before_validation_without_echo(tmp_path):
         assert client.post("/internal/events", json=event(revision), headers=AUTH).is_success
 
 
-def test_observed_removal_makes_current_state_unknown_and_numeric_fields_are_strict(tmp_path):
+def test_observed_removal_makes_current_state_unknown_and_numeric_fields_are_strict(
+    tmp_path: Path,
+) -> None:
     with TestClient(create_app(tmp_path / "removal.sqlite", TOKEN, now=lambda: NOW)) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         revision = select(client)
@@ -196,7 +190,8 @@ def test_observed_removal_makes_current_state_unknown_and_numeric_fields_are_str
         removed = event(revision, "removed", old={"state": "on"}, new=None)
         assert client.post("/internal/events", json=removed, headers=AUTH).json()["recorded"]
         current = client.get("/api/monitored").json()["entities"][0]["baseline"]
-        assert current["state"] == "unknown" and current["kind"] == "event"
+        assert current["state"] == "unknown"
+        assert current["kind"] == "event"
         assert client.get("/api/events").json()["events"][0]["new"] is None
         for attributes in (
             {"brightness": True},
@@ -211,9 +206,7 @@ def test_observed_removal_makes_current_state_unknown_and_numeric_fields_are_str
             assert client.post("/internal/events", json=payload, headers=AUTH).status_code == 422
 
 
-def test_legacy_snapshot_migration_compares_timestamp_instants(tmp_path):
-    import sqlite3
-
+def test_legacy_snapshot_migration_compares_timestamp_instants(tmp_path: Path) -> None:
     path = tmp_path / "legacy.sqlite"
     with TestClient(create_app(path, TOKEN, now=lambda: NOW)) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
@@ -224,7 +217,7 @@ def test_legacy_snapshot_migration_compares_timestamp_instants(tmp_path):
             headers=AUTH,
         ).raise_for_status()
     # Removing the current-state cache exercises migration from a snapshot-only database.
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("DROP TABLE current_state")
     with TestClient(create_app(path, TOKEN, now=lambda: NOW)) as client:
         payload = event(revision, "migration-change", old={"state": "on"}, new={"state": "off"})
@@ -232,7 +225,7 @@ def test_legacy_snapshot_migration_compares_timestamp_instants(tmp_path):
         assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
 
 
-def test_newer_poll_replaces_event_state_after_source_clock_steps_back(tmp_path):
+def test_newer_poll_replaces_event_state_after_source_clock_steps_back(tmp_path: Path) -> None:
     clock = [NOW]
     with TestClient(create_app(tmp_path / "clock.sqlite", TOKEN, now=lambda: clock[0])) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
@@ -250,3 +243,66 @@ def test_newer_poll_replaces_event_state_after_source_clock_steps_back(tmp_path)
         client.post("/internal/baselines", json=snapshot, headers=AUTH).raise_for_status()
         current = client.get("/api/monitored").json()["entities"][0]["baseline"]
         assert current["state"] == "off"
+
+
+def test_offset_ordering_and_timestamp_only_snapshots(tmp_path: Path) -> None:
+    clock = [NOW + timedelta(seconds=5)]
+    with TestClient(create_app(tmp_path / "review.sqlite", TOKEN, now=lambda: clock[0])) as client:
+        assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
+        revision = select(client)
+        latest = NOW + timedelta(microseconds=100)
+        payload = event(
+            revision,
+            "newest",
+            event_time=latest.isoformat(),
+            old={"state": "on"},
+            new={"state": "off"},
+        )
+        assert client.post("/internal/events", json=payload, headers=AUTH).status_code == 422
+        payload["received_at"] = clock[0].isoformat()
+        assert client.post("/internal/events", json=payload, headers=AUTH).is_success
+        older = event(
+            revision,
+            "older-offset",
+            event_time=NOW.astimezone(timezone(timedelta(hours=2))).isoformat(),
+            received_at=clock[0].isoformat(),
+        )
+        assert client.post("/internal/events", json=older, headers=AUTH).is_success
+        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+        # An event captured during a snapshot read must retain its newer source state.
+        clock[0] += timedelta(seconds=1)
+        snapshot = observation(
+            revision,
+            clock[0].isoformat(),
+            last_updated=NOW.isoformat(),
+            collection_started_at=(NOW + timedelta(seconds=4)).isoformat(),
+        )
+        assert client.post("/internal/baselines", json=snapshot, headers=AUTH).is_success
+        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+        assert [x["id"] for x in client.get("/api/events").json()["events"]] == [
+            "newest",
+            "older-offset",
+        ]
+
+
+def test_scope_pages_and_repeated_receipts(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "scope.sqlite", TOKEN, now=lambda: NOW)) as client:
+        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
+        select(client)
+        revision = select(client, "bulb-b")
+        for identity, entity in (("a-first", "bulb-a"), ("b", "bulb-b"), ("a-last", "bulb-a")):
+            payload = event(revision, identity, entity_id=entity)
+            assert client.post("/internal/events", json=payload, headers=AUTH).is_success
+            repeat = payload | {"received_at": (NOW - timedelta(seconds=1)).isoformat()}
+            # Receipt must still follow event time; retry at the same receipt is sufficient.
+            repeat["event_time"] = payload["event_time"]
+            assert client.post("/internal/events", json=repeat, headers=AUTH).status_code == 422
+            assert client.post("/internal/events", json=payload, headers=AUTH).json()["duplicate"]
+        params = {"entity_id": "bulb-a", "source_id": "demo", "limit": 1}
+        first = client.get("/api/events", params=params).json()
+        second = client.get("/api/events", params=params | {"cursor": first["next_cursor"]}).json()
+        assert [x["id"] for x in first["events"] + second["events"]] == ["a-last", "a-first"]
+        assert second["next_cursor"] is None
+        assert (
+            client.get("/api/events", params={"source_id": "home_assistant"}).json()["events"] == []
+        )

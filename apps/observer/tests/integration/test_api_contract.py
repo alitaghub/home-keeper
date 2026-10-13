@@ -1,23 +1,35 @@
 """Public API contract: response bodies stay stable and every route publishes a schema.
 
-Snapshots in tests/snapshots/api/ hold the exact parsed JSON each public route
+Snapshots in tests/integration/snapshots/api/ hold the exact parsed JSON each public route
 returned for a seeded state. Regenerate them only when a response change is intended:
 
-    UPDATE_SNAPSHOTS=1 uv run pytest apps/observer/tests/test_api_contract.py
+    UPDATE_SNAPSHOTS=1 uv run pytest apps/observer/tests/integration/test_api_contract.py
 """
 
 import json
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from test_baselines import observation, select
-from test_discovery import AUTH, BROWSER, CATALOG, NOW, TOKEN
-from test_events import event
+from support.api import (
+    AUTH,
+    BROWSER,
+    CATALOG,
+    CATALOG_ENTITIES,
+    NOW,
+    TOKEN,
+    Payload,
+    event,
+    observation,
+    select,
+)
 
 from home_observer.api import create_app
 
@@ -25,15 +37,18 @@ SNAPSHOTS = Path(__file__).parent / "snapshots" / "api"
 UPDATE = os.environ.get("UPDATE_SNAPSHOTS") == "1"
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
+# A recorded response: its status and normalized JSON body.
+type Recorded = dict[str, Any]
 
-def normalize(body):
+
+def normalize(body: object) -> Any:
     """Replace random uuid4 identifiers (baseline and gap IDs) with stable placeholders.
 
     Placeholders are numbered by first appearance in key-sorted JSON, so references
     between fields (a recovery baseline's coverage_gap_ids pointing at a gap) still
     have to match, while key order, which parsed-JSON equality ignores, does not.
     """
-    seen = {}
+    seen: dict[str, str] = {}
     text = UUID.sub(
         lambda match: seen.setdefault(match.group(), f"<uuid-{len(seen) + 1}>"),
         json.dumps(body, sort_keys=True),
@@ -41,19 +56,19 @@ def normalize(body):
     return json.loads(text)
 
 
-def record(response):
+def record(response: httpx.Response) -> Recorded:
     return {"status": response.status_code, "body": normalize(response.json())}
 
 
-def health(clock):
-    return dict(source_id="demo", status="healthy", received_at=clock.isoformat())
+def health(clock: datetime) -> Payload:
+    return {"source_id": "demo", "status": "healthy", "received_at": clock.isoformat()}
 
 
-def coverage(clock, status="interrupted", **changes):
-    return dict(source_id="demo", status=status, received_at=clock.isoformat()) | changes
+def coverage(clock: datetime, status: str = "interrupted", **changes: object) -> Payload:
+    return {"source_id": "demo", "status": status, "received_at": clock.isoformat()} | changes
 
 
-def empty_responses(tmp_path):
+def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
     with TestClient(create_app(tmp_path / "empty.sqlite", TOKEN, now=lambda: NOW)) as client:
         return {
             "empty_catalog": record(client.get("/api/catalog")),
@@ -66,9 +81,9 @@ def empty_responses(tmp_path):
         }
 
 
-def seeded_responses(tmp_path):
+def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
     clock = [NOW]
-    result = {}
+    result: dict[str, Recorded] = {}
     app = create_app(tmp_path / "seeded.sqlite", TOKEN, now=lambda: clock[0])
     with TestClient(app) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
@@ -101,7 +116,7 @@ def seeded_responses(tmp_path):
 
         # bulb-b stays selected but disappears from discovery.
         clock[0] = NOW + timedelta(seconds=7)
-        catalog = CATALOG | {"entities": [e for e in CATALOG["entities"] if e["id"] != "bulb-b"]}
+        catalog = CATALOG | {"entities": [e for e in CATALOG_ENTITIES if e["id"] != "bulb-b"]}
         client.post("/internal/catalog", json=catalog, headers=AUTH)
 
         # An entity-scoped gap that stays open.
@@ -171,17 +186,17 @@ SNAPSHOT_NAMES = [
 
 
 @pytest.fixture(scope="module")
-def responses(tmp_path_factory):
+def responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Recorded]:
     path = tmp_path_factory.mktemp("contract")
     return empty_responses(path) | seeded_responses(path)
 
 
-def test_snapshot_list_covers_every_recorded_response(responses):
+def test_snapshot_list_covers_every_recorded_response(responses: dict[str, Recorded]) -> None:
     assert sorted(responses) == sorted(SNAPSHOT_NAMES)
 
 
 @pytest.mark.parametrize("name", SNAPSHOT_NAMES)
-def test_public_response_matches_snapshot(responses, name):
+def test_public_response_matches_snapshot(responses: dict[str, Recorded], name: str) -> None:
     path = SNAPSHOTS / f"{name}.json"
     if UPDATE:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,27 +204,28 @@ def test_public_response_matches_snapshot(responses, name):
     assert responses[name] == json.loads(path.read_text())
 
 
-def schema_app(tmp_path):
+def schema_app(tmp_path: Path) -> FastAPI:
     return create_app(tmp_path / "schema.sqlite", TOKEN, now=lambda: NOW)
 
 
-def test_every_public_route_publishes_a_response_schema(tmp_path):
+def test_every_public_route_publishes_a_response_schema(tmp_path: Path) -> None:
     app = schema_app(tmp_path)
     paths = app.openapi()["paths"]
     public = [
         (route.path, method.lower())
         for route in app.routes
         if isinstance(route, APIRoute) and route.path.startswith("/api/")
-        for method in route.methods
+        for method in route.methods or ()
         if method != "HEAD"
     ]
     assert public, "expected public /api routes"
-    untyped = []
+    untyped: list[str] = []
     for path, method in public:
-        operation = paths.get(path, {}).get(method)
+        operation: dict[str, Any] = paths.get(path, {}).get(method) or {}
+        operation_responses: dict[str, Any] = operation.get("responses", {})
         schemas = [
             response.get("content", {}).get("application/json", {}).get("schema")
-            for status, response in (operation or {}).get("responses", {}).items()
+            for status, response in operation_responses.items()
             if status.startswith("2")
         ]
         if not any(schemas):
@@ -217,7 +233,7 @@ def test_every_public_route_publishes_a_response_schema(tmp_path):
     assert untyped == [], f"public routes without a response schema: {untyped}"
 
 
-def test_internal_routes_are_not_published(tmp_path):
+def test_internal_routes_are_not_published(tmp_path: Path) -> None:
     paths = schema_app(tmp_path).openapi()["paths"]
     internal = [path for path in paths if path.startswith("/internal")]
     assert internal == [], f"internal routes in OpenAPI: {internal}"
