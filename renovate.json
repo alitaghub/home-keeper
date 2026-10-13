@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits", "helpers:pinGitHubActionDigests"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "Europe/Copenhagen",
+  "minimumReleaseAge": "3 days",
+  "automerge": false,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "packageRules": [
+    {
+      "groupName": "Python dependencies",
+      "matchManagers": ["pep621"]
+    },
+    {
+      "groupName": "JS dependencies",
+      "matchManagers": ["npm"]
+    },
+    {
+      "groupName": "React",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["react", "react-dom", "@types/react", "@types/react-dom", "@vitejs/plugin-react"]
+    },
+    {
+      "groupName": "Vite and Vitest",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["vite", "vitest", "@vitest/**"]
+    },
+    {
+      "groupName": "JS testing",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@playwright/test", "@testing-library/**", "jsdom"]
+    },
+    {
+      "groupName": "JS lint and types",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@biomejs/biome", "typescript", "@types/node"]
+    },
+    {
+      "groupName": "GitHub Actions",
+      "matchManagers": ["github-actions"]
+    },
+    {
+      "groupName": "Docker images",
+      "matchManagers": ["dockerfile", "docker-compose"]
+    },
+    {
+      "groupName": "mise tools",
+      "matchManagers": ["mise"]
+    }
+  ]
+}
