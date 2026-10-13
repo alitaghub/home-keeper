@@ -14,6 +14,7 @@ Identity = Annotated[
     str, StringConstraints(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.:-]+$")
 ]
 Name = Annotated[str, StringConstraints(min_length=1, max_length=256)]
+SourceId = Literal["demo", "home_assistant"]
 
 
 class WireModel(BaseModel):
@@ -36,7 +37,7 @@ class Entity(WireModel):
 
 
 class Catalog(WireModel):
-    source_id: Literal["demo", "home_assistant"]
+    source_id: SourceId
     entities: list[Entity] = Field(max_length=500)
 
     @model_validator(mode="after")
@@ -57,30 +58,21 @@ class SelectionChange(WireModel):
 
 
 Channel = Annotated[int, Field(strict=True, ge=0, le=255)]
+ColorMode = Literal[
+    "unknown", "onoff", "brightness", "color_temp", "hs", "xy", "rgb", "rgbw", "rgbww", "white"
+]
+LightStateValue = Literal["on", "off", "unavailable", "unknown"]
+Availability = Literal["available", "unavailable", "unknown"]
 Coordinate = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
 
 class LightState(WireModel):
-    state: Literal["on", "off", "unavailable", "unknown"]
+    state: LightStateValue
     last_changed: datetime | None = None
     last_updated: datetime | None = None
     last_reported: datetime | None = None
     brightness: int | None = Field(default=None, strict=True, ge=0, le=255)
-    color_mode: (
-        Literal[
-            "unknown",
-            "onoff",
-            "brightness",
-            "color_temp",
-            "hs",
-            "xy",
-            "rgb",
-            "rgbw",
-            "rgbww",
-            "white",
-        ]
-        | None
-    ) = None
+    color_mode: ColorMode | None = None
     color_temp_kelvin: int | None = Field(default=None, strict=True, ge=1000, le=10000)
     hs_color: tuple[Coordinate, Coordinate] | None = None
     xy_color: tuple[Coordinate, Coordinate] | None = None
@@ -88,7 +80,7 @@ class LightState(WireModel):
     rgbw_color: tuple[Channel, Channel, Channel, Channel] | None = None
     rgbww_color: tuple[Channel, Channel, Channel, Channel, Channel] | None = None
 
-    availability: Literal["available", "unavailable", "unknown"] | None = None
+    availability: Availability | None = None
 
     @model_validator(mode="after")
     def state_availability(self):
@@ -135,7 +127,7 @@ class Observation(LightState):
     source_entity_id: Identity | None = None
     entity_id: Identity
     selection_revision: int = Field(ge=0)
-    source_id: Literal["demo", "home_assistant"]
+    source_id: SourceId
     kind: Literal["baseline", "reconciliation", "recovery"] = "baseline"
     received_at: datetime
     collection_started_at: datetime | None = None
@@ -150,7 +142,7 @@ class ChangeEvent(WireModel):
     id: Identity
     entity_id: Identity
     source_entity_id: Identity | None = None
-    source_id: Literal["demo", "home_assistant"]
+    source_id: SourceId
     selection_revision: int = Field(ge=0)
     event_time: datetime
     received_at: datetime
@@ -169,22 +161,22 @@ class ChangeEvent(WireModel):
         return self
 
 
+CollectorError = Literal[
+    "authentication",
+    "connection",
+    "tls",
+    "timeout",
+    "invalid_data",
+    "missing",
+    "discovery",
+    "configuration",
+]
+
+
 class Health(WireModel):
-    source_id: Literal["demo", "home_assistant"]
+    source_id: SourceId
     status: Literal["healthy", "failed"]
-    error: (
-        Literal[
-            "authentication",
-            "connection",
-            "tls",
-            "timeout",
-            "invalid_data",
-            "missing",
-            "discovery",
-            "configuration",
-        ]
-        | None
-    ) = None
+    error: CollectorError | None = None
     received_at: datetime
 
     @field_validator("received_at")
@@ -193,24 +185,27 @@ class Health(WireModel):
         return Observation.utc_timestamp(value)
 
 
+GapReason = Literal[
+    "connection",
+    "ingestion",
+    "authentication",
+    "timeout",
+    "restart",
+    "overflow",
+    "reconciliation",
+    "heartbeat",
+    "selection",
+    "invalid_data",
+    "configuration",
+    "tls",
+    "missing",
+]
+
+
 class Coverage(WireModel):
-    source_id: Literal["demo", "home_assistant"]
+    source_id: SourceId
     status: Literal["interrupted", "recovered"]
-    reason: Literal[
-        "connection",
-        "ingestion",
-        "authentication",
-        "timeout",
-        "restart",
-        "overflow",
-        "reconciliation",
-        "heartbeat",
-        "selection",
-        "invalid_data",
-        "configuration",
-        "tls",
-        "missing",
-    ] = "connection"
+    reason: GapReason = "connection"
     received_at: datetime
     entity_id: Identity | None = None
     selection_revision: int | None = Field(default=None, ge=0)
@@ -220,3 +215,137 @@ class Coverage(WireModel):
     @classmethod
     def utc_timestamp(cls, value):
         return LightState.utc_timestamp(value)
+
+
+# Public API responses. Records are stored as JSON and returned as stored, so timestamps
+# stay the exact ISO strings the API wrote instead of being re-serialized as datetimes.
+Timestamp = Annotated[str, Field(json_schema_extra={"format": "date-time"})]
+Freshness = Literal["pending", "fresh", "stale"]
+
+
+class CatalogResponse(WireModel):
+    source_id: SourceId
+    refreshed_at: Timestamp | None
+    freshness: Freshness
+    entities: list[Entity]
+
+
+class DiscoveryRefresh(WireModel):
+    refresh_revision: int
+
+
+class LightReading(WireModel):
+    """Light attributes as stored. Event states omit unset attributes, so routes returning
+    readings exclude unset fields to keep absent keys absent."""
+
+    state: LightStateValue
+    availability: Availability
+    last_changed: Timestamp | None = None
+    last_updated: Timestamp | None = None
+    last_reported: Timestamp | None = None
+    brightness: int | None = None
+    color_mode: ColorMode | None = None
+    color_temp_kelvin: int | None = None
+    hs_color: tuple[float, float] | None = None
+    xy_color: tuple[float, float] | None = None
+    rgb_color: tuple[int, int, int] | None = None
+    rgbw_color: tuple[int, int, int, int] | None = None
+    rgbww_color: tuple[int, int, int, int, int] | None = None
+
+
+class BaselineRecord(LightReading):
+    id: str
+    kind: Literal["baseline", "reconciliation", "recovery"]
+    entity_id: Identity
+    source_entity_id: Identity | None
+    source_id: SourceId
+    received_at: Timestamp
+    collection_started_at: Timestamp | None
+    persisted_at: Timestamp
+    # Present only when the snapshot closes a coverage gap.
+    coverage_gap_ids: list[str] | None = None
+    transition_time: Literal["unknown"] | None = None
+
+
+class EventReading(LightReading):
+    """The latest state taken from a recorded change event."""
+
+    id: Identity
+    kind: Literal["event"]
+    entity_id: Identity
+    source_entity_id: Identity | None
+    source_id: SourceId
+    event_time: Timestamp
+    received_at: Timestamp
+    persisted_at: Timestamp
+
+
+class BaselinesPage(WireModel):
+    baselines: list[BaselineRecord]
+    next_cursor: int | None
+
+
+class EventRecord(WireModel):
+    id: Identity
+    entity_id: Identity
+    source_entity_id: Identity | None
+    source_id: SourceId
+    selection_revision: int
+    event_time: Timestamp
+    received_at: Timestamp
+    persisted_at: Timestamp
+    old: LightReading | None
+    new: LightReading | None
+
+
+class EventsPage(WireModel):
+    events: list[EventRecord]
+    next_cursor: str | None
+    retained_since: Timestamp
+    coverage: Literal["unknown"]
+
+
+class CoverageGap(WireModel):
+    id: str
+    source_id: SourceId
+    entity_ids: list[Identity]
+    last_confirmed_at: Timestamp | None
+    uncertain_start: bool
+    detected_at: Timestamp
+    recovered_at: Timestamp | None
+    reason: GapReason
+
+
+class CoverageReport(WireModel):
+    gaps: list[CoverageGap]
+    state: Literal["interrupted", "collecting", "unknown"]
+    last_confirmed_at: Timestamp | None
+    retained_since: Timestamp
+    continuous_coverage: Literal[False]
+    outside_recorded_windows: Literal["unknown"]
+
+
+class HealthPending(WireModel):
+    status: Literal["pending"]
+    source_id: SourceId
+
+
+class HealthReport(WireModel):
+    status: Literal["healthy", "failed", "stale"]
+    source_id: SourceId
+    error: CollectorError | None
+    received_at: Timestamp
+    persisted_at: Timestamp
+
+
+HealthStatus = Annotated[HealthPending | HealthReport, Field(discriminator="status")]
+
+
+class MonitoredEntity(Entity):
+    baseline: Annotated[BaselineRecord | EventReading, Field(discriminator="kind")] | None
+    freshness: Freshness
+    confirmed_at: Timestamp | None
+
+
+class MonitoredEntities(WireModel):
+    entities: list[MonitoredEntity]

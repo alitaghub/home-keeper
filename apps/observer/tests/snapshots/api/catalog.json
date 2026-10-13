@@ -1,0 +1,34 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "device_id": "device-a",
+        "device_name": "Hue bulb",
+        "id": "bulb-a",
+        "name": "<script>alert('device')</script>",
+        "reason": null,
+        "supported": true
+      },
+      {
+        "device_id": "device-plug",
+        "device_name": "Plug",
+        "id": "plug",
+        "name": "Plug state",
+        "reason": "Not an individual Hue light",
+        "supported": false
+      },
+      {
+        "device_id": null,
+        "device_name": null,
+        "id": "room",
+        "name": "Living room",
+        "reason": "Room aggregate",
+        "supported": false
+      }
+    ],
+    "freshness": "fresh",
+    "refreshed_at": "2026-10-12T10:00:07+00:00",
+    "source_id": "demo"
+  }
+}

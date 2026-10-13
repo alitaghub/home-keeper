@@ -1,0 +1,10 @@
+{
+  "status": 200,
+  "body": {
+    "error": null,
+    "persisted_at": "2026-10-12T10:00:08+00:00",
+    "received_at": "2026-10-12T10:00:08Z",
+    "source_id": "demo",
+    "status": "healthy"
+  }
+}

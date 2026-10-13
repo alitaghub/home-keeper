@@ -12,14 +12,22 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from home_observer.models import (
+    BaselinesPage,
     Catalog,
+    CatalogResponse,
     ChangeEvent,
     Coverage,
+    CoverageReport,
+    DiscoveryRefresh,
+    EventsPage,
     Health,
+    HealthStatus,
     Identity,
     LightState,
+    MonitoredEntities,
     Observation,
     SelectionChange,
+    SelectionSnapshot,
 )
 from home_observer.store import Store
 
@@ -133,7 +141,7 @@ def create_app(
     async def validation_error(request, exc):
         return JSONResponse({"detail": "Invalid request"}, status_code=422)
 
-    @app.get("/api/catalog")
+    @app.get("/api/catalog", response_model=CatalogResponse)
     def catalog():
         with store.transaction() as db:
             refreshed = db.execute("SELECT value FROM metadata WHERE key='catalog_at'").fetchone()
@@ -142,10 +150,10 @@ def create_app(
                 if refreshed
                 else None
             )
-            return {
-                "source_id": source_id,
-                "refreshed_at": refreshed[0] if refreshed else None,
-                "freshness": "pending"
+            return CatalogResponse(
+                source_id=source_id,
+                refreshed_at=refreshed[0] if refreshed else None,
+                freshness="pending"
                 if age is None
                 else (
                     "fresh"
@@ -153,18 +161,23 @@ def create_app(
                     and get_health(db)["status"] not in ("failed", "stale")
                     else "stale"
                 ),
-                "entities": [
+                entities=[
                     json.loads(row[0]) for row in db.execute("SELECT data FROM catalog ORDER BY id")
                 ],
-            }
+            )
 
-    @app.get("/api/selection")
-    @app.get("/internal/selection", dependencies=[Depends(internal_auth)])
+    @app.get("/api/selection", response_model=SelectionSnapshot)
+    @app.get(
+        "/internal/selection",
+        response_model=SelectionSnapshot,
+        dependencies=[Depends(internal_auth)],
+        include_in_schema=False,
+    )
     def selection():
         with store.transaction() as db:
             return store.selection(db)
 
-    @app.post("/api/discovery/refresh")
+    @app.post("/api/discovery/refresh", response_model=DiscoveryRefresh)
     def refresh_discovery():
         with store.transaction() as db:
             revision = (
@@ -176,9 +189,9 @@ def create_app(
                 + 1
             )
             db.execute("UPDATE metadata SET value=? WHERE key='refresh_revision'", (str(revision),))
-            return {"refresh_revision": revision}
+            return DiscoveryRefresh(refresh_revision=revision)
 
-    @app.put("/api/selection/{entity_id}")
+    @app.put("/api/selection/{entity_id}", response_model=SelectionSnapshot)
     def select(entity_id: str, change: SelectionChange):
         with store.transaction() as db:
             entity = store.entity(db, entity_id)
@@ -202,7 +215,7 @@ def create_app(
                 )
             return store.selection(db)
 
-    @app.post("/internal/catalog", dependencies=[Depends(internal_auth)])
+    @app.post("/internal/catalog", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_catalog(payload: Catalog):
         if payload.source_id != source_id:
             raise conflict("source_mismatch", "Collection source mismatch")
@@ -218,7 +231,7 @@ def create_app(
             # Discovery describes support; it never changes the user's approval.
         return {"accepted": True}
 
-    @app.post("/internal/baselines", dependencies=[Depends(internal_auth)])
+    @app.post("/internal/baselines", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_observation(payload: Observation):
         if payload.source_id != source_id:
             raise conflict("source_mismatch", "Collection source mismatch")
@@ -326,7 +339,8 @@ def create_app(
             )
             return {"accepted": True, "baseline": baseline}
 
-    @app.get("/api/baselines")
+    # Stored readings omit unset light attributes; excluding unset fields returns them as stored.
+    @app.get("/api/baselines", response_model=BaselinesPage, response_model_exclude_unset=True)
     def baselines(
         entity_id: Identity,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -344,12 +358,12 @@ def create_app(
                     limit + 1,
                 ),
             ).fetchall()
-            return {
-                "baselines": [json.loads(row["data"]) for row in rows[:limit]],
-                "next_cursor": rows[limit - 1]["rowid"] if len(rows) > limit else None,
-            }
+            return BaselinesPage(
+                baselines=[json.loads(row["data"]) for row in rows[:limit]],
+                next_cursor=rows[limit - 1]["rowid"] if len(rows) > limit else None,
+            )
 
-    @app.post("/internal/events", dependencies=[Depends(internal_auth)])
+    @app.post("/internal/events", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_event(payload: ChangeEvent):
         if payload.source_id != source_id:
             raise conflict("source_mismatch", "Collection source mismatch")
@@ -435,7 +449,7 @@ def create_app(
                 )
             return {"accepted": True, "recorded": True, "duplicate": False}
 
-    @app.get("/api/events")
+    @app.get("/api/events", response_model=EventsPage, response_model_exclude_unset=True)
     def events(
         source_id: Literal["demo", "home_assistant"] | None = None,
         entity_id: Identity | None = None,
@@ -484,14 +498,14 @@ def create_app(
         next_cursor = None
         if len(rows) > limit:
             next_cursor = values[-1]["event_time"] + "|" + values[-1]["id"]
-        return {
-            "events": values,
-            "next_cursor": next_cursor,
-            "retained_since": (now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
-            "coverage": "unknown",
-        }
+        return EventsPage(
+            events=values,
+            next_cursor=next_cursor,
+            retained_since=(now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
+            coverage="unknown",
+        )
 
-    @app.post("/internal/health", dependencies=[Depends(internal_auth)])
+    @app.post("/internal/health", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_health(payload: Health):
         if payload.source_id != source_id:
             raise conflict("source_mismatch", "Collection source mismatch")
@@ -535,7 +549,7 @@ def create_app(
             store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "heartbeat")
         return result
 
-    @app.post("/internal/coverage", dependencies=[Depends(internal_auth)])
+    @app.post("/internal/coverage", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_coverage(payload: Coverage):
         if payload.source_id != source_id:
             raise conflict("source_mismatch", "Collection source mismatch")
@@ -592,7 +606,7 @@ def create_app(
                 )
             return {"accepted": True}
 
-    @app.get("/api/coverage")
+    @app.get("/api/coverage", response_model=CoverageReport)
     def coverage(limit: Annotated[int, Query(ge=1, le=100)] = 100):
         with store.transaction() as db:
             health = get_health(db)
@@ -604,9 +618,9 @@ def create_app(
                     (retention_cutoff(), limit),
                 )
             ]
-            return {
-                "gaps": gaps,
-                "state": "interrupted"
+            return CoverageReport(
+                gaps=gaps,
+                state="interrupted"
                 if any(
                     not gap["entity_ids"]
                     or set(gap["entity_ids"]) & set(store.selection(db)["entity_ids"])
@@ -615,20 +629,18 @@ def create_app(
                 else "collecting"
                 if health["status"] == "healthy"
                 else "unknown",
-                "last_confirmed_at": store.last_confirmed(db),
-                "retained_since": (
-                    now().astimezone(UTC) - timedelta(days=retention_days)
-                ).isoformat(),
-                "continuous_coverage": False,
-                "outside_recorded_windows": "unknown",
-            }
+                last_confirmed_at=store.last_confirmed(db),
+                retained_since=(now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
+                continuous_coverage=False,
+                outside_recorded_windows="unknown",
+            )
 
-    @app.get("/api/health")
+    @app.get("/api/health", response_model=HealthStatus)
     def health():
         with store.transaction() as db:
             return get_health(db)
 
-    @app.get("/api/monitored")
+    @app.get("/api/monitored", response_model=MonitoredEntities, response_model_exclude_unset=True)
     def monitored():
         with store.transaction() as db:
             results = []
@@ -673,7 +685,7 @@ def create_app(
                         "confirmed_at": confirmed["received_at"] if confirmed else None,
                     }
                 )
-            return {"entities": results}
+            return MonitoredEntities(entities=results)
 
     web_path = Path.cwd() / "web"
     if web_path.exists():

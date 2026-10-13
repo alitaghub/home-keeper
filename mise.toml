@@ -24,6 +24,24 @@ run = [
   "uv run pytest -q",
   "node --check web/app.js",
   "bash -n scripts/start-home.sh scripts/connect-home.sh",
+  "mise run check:api",
+]
+
+[tasks."gen:api"]
+description = "Generate the web app's API types from the observer's OpenAPI schema"
+run = """
+schema=$(mktemp --suffix=.json)
+trap 'rm -f "$schema"' EXIT
+uv run python -m home_observer.openapi > "$schema"
+pnpm exec openapi-typescript "$schema" --output apps/web/src/api/schema.d.ts
+"""
+
+[tasks."check:api"]
+description = "Fail when the generated API types are stale"
+run = [
+  "pnpm install --frozen-lockfile",
+  "mise run gen:api",
+  "git diff --exit-code -- apps/web/src/api/schema.d.ts",
 ]
 
 [tasks.dev]
