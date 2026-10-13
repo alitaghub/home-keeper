@@ -36,7 +36,7 @@ class Entity(WireModel):
 
 
 class Catalog(WireModel):
-    source_id: Literal["demo"]
+    source_id: Literal["demo", "home_assistant"]
     entities: list[Entity] = Field(max_length=500)
 
     @model_validator(mode="after")
@@ -51,9 +51,10 @@ class SelectionChange(WireModel):
 
 
 class Observation(WireModel):
+    source_entity_id: Identity | None = None
     entity_id: Identity
     selection_revision: int = Field(ge=0)
-    source_id: Literal["demo"]
+    source_id: Literal["demo", "home_assistant"]
     state: Annotated[str, StringConstraints(min_length=1, max_length=64)]
     availability: Literal["available", "unavailable", "unknown"]
     received_at: datetime
@@ -82,8 +83,21 @@ class Observation(WireModel):
 
 
 class Health(WireModel):
-    source_id: Literal["demo"]
+    source_id: Literal["demo", "home_assistant"]
     status: Literal["healthy", "failed"]
+    error: (
+        Literal[
+            "authentication",
+            "connection",
+            "tls",
+            "timeout",
+            "invalid_data",
+            "missing",
+            "discovery",
+            "configuration",
+        ]
+        | None
+    ) = None
     received_at: datetime
 
     @field_validator("received_at")

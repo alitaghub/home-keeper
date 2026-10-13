@@ -18,12 +18,31 @@ def create_app(
     service_token: str,
     now=lambda: datetime.now(UTC),
     reconciliation_seconds: int = 60,
+    source_id: str = "demo",
     allowed_hosts: tuple[str, ...] = ("testserver", "127.0.0.1:8000", "localhost:8000"),
     allowed_origins: tuple[str, ...] = ("http://127.0.0.1:8000", "http://localhost:8000"),
 ):
     if reconciliation_seconds < 1 or not service_token:
         raise ValueError("Positive reconciliation interval and service credential required")
+    if source_id not in ("demo", "home_assistant"):
+        raise ValueError("Unsupported collection source")
     store = Store(Path(db_path))
+    with store.transaction() as db:
+        existing = db.execute("SELECT value FROM metadata WHERE key='source_id'").fetchone()
+        if existing and existing[0] != source_id:
+            raise ValueError("Use a separate database for a different collection source")
+        # Story 01 databases contain demo records before source metadata existed.
+        if (
+            not existing
+            and source_id != "demo"
+            and any(
+                db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                for table in ("catalog", "selection", "baselines", "confirmed")
+            )
+        ):
+            raise ValueError("Use an empty database for live mode")
+        db.execute("INSERT OR IGNORE INTO metadata VALUES('source_id', ?)", (source_id,))
+        db.execute("INSERT OR IGNORE INTO metadata VALUES('refresh_revision', '0')")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -63,10 +82,26 @@ def create_app(
     @app.get("/api/catalog")
     def catalog():
         with store.transaction() as db:
+            refreshed = db.execute("SELECT value FROM metadata WHERE key='catalog_at'").fetchone()
+            age = (
+                (now() - datetime.fromisoformat(refreshed[0])).total_seconds()
+                if refreshed
+                else None
+            )
             return {
+                "source_id": source_id,
+                "refreshed_at": refreshed[0] if refreshed else None,
+                "freshness": "pending"
+                if age is None
+                else (
+                    "fresh"
+                    if 0 <= age <= 2 * reconciliation_seconds
+                    and get_health(db)["status"] not in ("failed", "stale")
+                    else "stale"
+                ),
                 "entities": [
                     json.loads(row[0]) for row in db.execute("SELECT data FROM catalog ORDER BY id")
-                ]
+                ],
             }
 
     @app.get("/api/selection")
@@ -74,6 +109,20 @@ def create_app(
     def selection():
         with store.transaction() as db:
             return store.selection(db)
+
+    @app.post("/api/discovery/refresh")
+    def refresh_discovery():
+        with store.transaction() as db:
+            revision = (
+                int(
+                    db.execute(
+                        "SELECT value FROM metadata WHERE key='refresh_revision'"
+                    ).fetchone()[0]
+                )
+                + 1
+            )
+            db.execute("UPDATE metadata SET value=? WHERE key='refresh_revision'", (str(revision),))
+            return {"refresh_revision": revision}
 
     @app.put("/api/selection/{entity_id}")
     def select(entity_id: str, change: SelectionChange):
@@ -100,7 +149,12 @@ def create_app(
 
     @app.post("/internal/catalog", dependencies=[Depends(internal_auth)])
     def ingest_catalog(payload: Catalog):
+        if payload.source_id != source_id:
+            raise HTTPException(409, "Collection source mismatch")
         with store.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO metadata VALUES('catalog_at', ?)", (now().isoformat(),)
+            )
             db.execute("DELETE FROM catalog")
             db.executemany(
                 "INSERT INTO catalog VALUES(?, ?)",
@@ -111,6 +165,8 @@ def create_app(
 
     @app.post("/internal/baselines", dependencies=[Depends(internal_auth)])
     def ingest_observation(payload: Observation):
+        if payload.source_id != source_id:
+            raise HTTPException(409, "Collection source mismatch")
         persisted = now().astimezone(UTC)
         if payload.received_at > persisted:
             raise HTTPException(422, "Future receipt timestamp")
@@ -163,6 +219,8 @@ def create_app(
 
     @app.post("/internal/health", dependencies=[Depends(internal_auth)])
     def ingest_health(payload: Health):
+        if payload.source_id != source_id:
+            raise HTTPException(409, "Collection source mismatch")
         persisted = now().astimezone(UTC)
         if payload.received_at > persisted:
             raise HTTPException(422, "Future receipt timestamp")
@@ -183,7 +241,7 @@ def create_app(
     def get_health(db):
         row = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
         if not row:
-            return {"status": "pending", "source_id": "demo"}
+            return {"status": "pending", "source_id": source_id}
         result = json.loads(row[0])
         age = (now() - datetime.fromisoformat(result["received_at"])).total_seconds()
         if age < 0 or age > 2 * reconciliation_seconds:

@@ -44,6 +44,9 @@ class Store:
             "revision": int(
                 db.execute("SELECT value FROM metadata WHERE key='revision'").fetchone()[0]
             ),
+            "refresh_revision": int(
+                db.execute("SELECT value FROM metadata WHERE key='refresh_revision'").fetchone()[0]
+            ),
             "entity_ids": [row[0] for row in db.execute("SELECT id FROM selection ORDER BY id")],
         }
 

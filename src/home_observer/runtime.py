@@ -29,6 +29,7 @@ def main():
     app = create_app(
         db_path=Path(os.environ.get("OBSERVER_DB", "/data/home.sqlite")),
         service_token=token,
+        source_id=os.environ.get("OBSERVER_SOURCE_ID", "demo"),
         reconciliation_seconds=int(os.environ.get("OBSERVER_RECONCILIATION_SECONDS", "10")),
         allowed_hosts=hosts,
         allowed_origins=(f"http://127.0.0.1:{port}", f"http://localhost:{port}"),
