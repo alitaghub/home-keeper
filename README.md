@@ -385,16 +385,18 @@ Assistant instance have not been tested.
 
 ## Development and verification
 
-Python 3.12, `uv`, and Node.js 24 are the development tools. Node checks static
-JavaScript syntax; the frontend has no package dependencies or TypeScript.
-Python dependencies are pinned in `uv.lock`.
+`mise.toml` pins the development tools (Python 3.13, `uv`, Node.js 24, pnpm) and
+defines the tasks. The Python service lives in `apps/observer` inside a uv
+workspace; its dependencies are pinned in the root `uv.lock`. The dashboard in
+`web/` has no package dependencies or TypeScript; Node checks its static
+JavaScript syntax. The Compose smoke scripts live in `e2e/`.
 
 ```sh
-uv sync --locked
-uv run pytest -q
-uv run ruff check .
-uv run ruff format --check .
-node --check web/app.js
+mise install
+mise run check   # Ruff lint and format check, pytest, JS syntax, script syntax
+mise run fmt     # Ruff format
+mise run dev     # docker compose up --build --wait
+uv run python e2e/compose_smoke.py
 ```
 
 CI uses hardware-free checks and a Compose demo smoke test. Live connector tests

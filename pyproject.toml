@@ -1,29 +1,31 @@
+# Workspace root. Each app or package under apps/ and packages/ owns its own
+# pyproject.toml; this file holds the shared dev tools and tool configuration.
 [project]
-name = "home-observer"
-version = "0.1.0"
-description = "Local smart-home observation with explicit device selection"
-requires-python = ">=3.12"
-dependencies = [
-    "fastapi>=0.115,<1",
-    "uvicorn>=0.34,<1",
-    "httpx>=0.28,<1",
-    "websockets>=15,<16",
-]
+name = "home-observer-workspace"
+version = "0.0.0"
+requires-python = ">=3.13"
+dependencies = ["home-observer"]
 
 [dependency-groups]
 dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+home-observer = { workspace = true }
+
+[tool.uv.workspace]
+members = ["apps/*", "packages/*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
+testpaths = ["apps/observer/tests"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 100
+# Resolve workspace packages as first-party imports.
+src = [".", "apps/*/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

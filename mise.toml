@@ -1,0 +1,31 @@
+[tools]
+python = "3.13.16"
+node = "24.20.0"
+pnpm = "12.10.1"
+uv = "0.13.0"
+
+[tasks.lint]
+description = "Lint Python"
+run = "uv run ruff check ."
+
+[tasks.fmt]
+description = "Format Python"
+run = "uv run ruff format ."
+
+[tasks.test]
+description = "Run Python tests"
+run = "uv run pytest -q"
+
+[tasks.check]
+description = "Run every hardware-free check CI runs"
+run = [
+  "uv run ruff check .",
+  "uv run ruff format --check .",
+  "uv run pytest -q",
+  "node --check web/app.js",
+  "bash -n scripts/start-home.sh scripts/connect-home.sh",
+]
+
+[tasks.dev]
+description = "Start the demo stack on 127.0.0.1:8000"
+run = "docker compose up --build --wait"
