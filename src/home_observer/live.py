@@ -10,12 +10,13 @@ from threading import Event, Lock, Thread
 
 import httpx
 
-from home_observer.home_assistant import ConnectorError, HomeAssistantConnector
+from home_observer.home_assistant import Connector, ConnectorError, HomeAssistantConnector
+from home_observer.models import SelectionSnapshot
 from home_observer.runtime import load_token
 
 
 def _health(client: httpx.Client, error: str | None):
-    client.post(
+    response = client.post(
         "/internal/health",
         json={
             "source_id": "home_assistant",
@@ -23,7 +24,8 @@ def _health(client: httpx.Client, error: str | None):
             "received_at": datetime.now(UTC).isoformat(),
             "error": error,
         },
-    ).raise_for_status()
+    )
+    _check_response(response)
 
 
 def _failure_reason(error):
@@ -34,6 +36,19 @@ def _failure_reason(error):
     if isinstance(error, (ValueError, KeyError, TypeError)):
         return "invalid_data"
     return "ingestion"
+
+
+def _check_response(response):
+    if response.status_code == 409:
+        try:
+            code = response.json()["detail"]["code"]
+        except (ValueError, KeyError, TypeError):
+            code = None
+        reason = {"selection_changed": "selection", "source_mismatch": "configuration"}.get(
+            code, "invalid_data"
+        )
+        raise ConnectorError(reason)
+    response.raise_for_status()
 
 
 MAX_BUFFER_EVENTS = 256
@@ -103,7 +118,12 @@ class CollectionSession:
     """Owns subscription continuity and proves persistence before closing coverage gaps."""
 
     def __init__(
-        self, client, connector, *, max_events=MAX_BUFFER_EVENTS, max_bytes=MAX_BUFFER_BYTES
+        self,
+        client,
+        connector: Connector,
+        *,
+        max_events=MAX_BUFFER_EVENTS,
+        max_bytes=MAX_BUFFER_BYTES,
     ):
         if not 1 <= max_events <= MAX_BUFFER_EVENTS or not 1 <= max_bytes <= MAX_BUFFER_BYTES:
             raise ValueError("Invalid recovery buffer limits")
@@ -114,7 +134,7 @@ class CollectionSession:
         self._max_bytes = max_bytes
         self.last_error = None
 
-    def _coverage(self, status, reason, revision=None):
+    def _coverage(self, status, reason, revision=None, entity_id=None, entity_ids=None):
         response = self.client.post(
             "/internal/coverage",
             json={
@@ -123,11 +143,11 @@ class CollectionSession:
                 "reason": reason,
                 "received_at": datetime.now(UTC).isoformat(),
                 "selection_revision": revision,
+                "entity_id": entity_id,
+                "entity_ids": entity_ids,
             },
         )
-        if response.status_code == 409:
-            raise ConnectorError("selection")
-        response.raise_for_status()
+        _check_response(response)
 
     def close(self):
         if self._buffer is not None:
@@ -136,6 +156,7 @@ class CollectionSession:
 
     def interrupt(self, reason):
         self.last_error = reason
+        logging.warning("Collection interrupted: %s", reason)
         self.close()
         try:
             self._coverage("interrupted", "connection" if reason == "discovery" else reason)
@@ -144,14 +165,12 @@ class CollectionSession:
                 reason if reason not in {"overflow", "ingestion", "selection"} else "connection",
             )
         except (httpx.HTTPError, ConnectorError):
-            # The API detects missing heartbeats if it cannot receive our gap record.
-            pass
+            # Log only a fixed operation/reason, never exception text or response bodies.
+            logging.warning("Interruption reporting failed: %s", reason)
 
     def _persist(self, path, value):
         response = self.client.post(path, json=value.model_dump(mode="json", exclude_none=True))
-        if response.status_code == 409:
-            raise ConnectorError("selection")
-        response.raise_for_status()
+        _check_response(response)
 
     def receive(self, timeout=0, *, deadline=None):
         if self._buffer is None:
@@ -170,12 +189,12 @@ class CollectionSession:
         deadline = time.monotonic() + 30
         try:
             catalog = self.connector.discover()
-            self.client.post(
-                "/internal/catalog", json=catalog.model_dump(mode="json")
-            ).raise_for_status()
+            _check_response(
+                self.client.post("/internal/catalog", json=catalog.model_dump(mode="json"))
+            )
             response = self.client.get("/internal/selection")
             response.raise_for_status()
-            selection = response.json()
+            selection = SelectionSnapshot.model_validate(response.json()).model_dump()
             supported = {entity.id for entity in catalog.entities if entity.supported}
             selected = {
                 identity: selection["revision"]
@@ -190,20 +209,36 @@ class CollectionSession:
                 self._buffer = _EventBuffer(
                     self.connector.subscribe_selected(), self._max_events, self._max_bytes
                 )
+            deadline = time.monotonic() + max(30, 5 * len(selected) + 10)
+            heartbeat = time.monotonic()
+            recovered = []
+            for identity in set(selection["entity_ids"]) - supported:
+                self._coverage("interrupted", "missing", entity_id=identity)
             for identity, revision in selected.items():
                 if time.monotonic() >= deadline:
                     raise ConnectorError("timeout")
-                observation = self.connector.read_selected(identity, revision)
+                self.receive(deadline=deadline)
+                try:
+                    observation = self.connector.read_selected(identity, revision)
+                except ConnectorError as error:
+                    if error.code != "missing":
+                        raise
+                    self._coverage("interrupted", "missing", entity_id=identity)
+                    continue
+                # A real event captured during the HTTP read explains the sampled change.
+                self.receive(deadline=deadline)
                 observation.kind = "reconciliation"
                 self._persist("/internal/baselines", observation)
+                recovered.append(identity)
+                if time.monotonic() - heartbeat >= 10:
+                    _health(self.client, None)
+                    heartbeat = time.monotonic()
             self.receive(deadline=deadline)
-            if len(selected) != len(selection["entity_ids"]):
-                raise ConnectorError("missing")
             # The API can detect a restart/heartbeat gap independently of this process.
             # Every successful full pass is an explicit, revision-bound recovery proof.
             if self._buffer is not None:
                 self._buffer.check()
-            self._coverage("recovered", "connection", selection["revision"])
+            self._coverage("recovered", "connection", selection["revision"], entity_ids=recovered)
             if self._buffer is not None:
                 self._buffer.check()
             _health(self.client, None)
@@ -213,15 +248,6 @@ class CollectionSession:
             reason = _failure_reason(error)
             self.interrupt(reason)
             return False
-
-
-def reconcile(client: httpx.Client, connector: HomeAssistantConnector, session=None):
-    if session is None:
-        session = getattr(connector, "_collection_session", None)
-        if session is None:
-            session = CollectionSession(client, connector)
-            connector._collection_session = session
-    return session.reconcile()
 
 
 def main():

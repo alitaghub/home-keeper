@@ -223,10 +223,30 @@ def test_legacy_snapshot_migration_compares_timestamp_instants(tmp_path):
             json=observation(revision, last_updated=NOW.isoformat()),
             headers=AUTH,
         ).raise_for_status()
-    # Story02 databases have baselines, but no current_state table. Simulate that schema.
+    # Removing the current-state cache exercises migration from a snapshot-only database.
     with sqlite3.connect(path) as db:
         db.execute("DROP TABLE current_state")
     with TestClient(create_app(path, TOKEN, now=lambda: NOW)) as client:
         payload = event(revision, "migration-change", old={"state": "on"}, new={"state": "off"})
         client.post("/internal/events", json=payload, headers=AUTH).raise_for_status()
         assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+
+
+def test_newer_poll_replaces_event_state_after_source_clock_steps_back(tmp_path):
+    clock = [NOW]
+    with TestClient(create_app(tmp_path / "clock.sqlite", TOKEN, now=lambda: clock[0])) as client:
+        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
+        revision = select(client)
+        client.post(
+            "/internal/baselines",
+            json=observation(revision, last_updated=NOW.isoformat()),
+            headers=AUTH,
+        ).raise_for_status()
+        client.post("/internal/events", json=event(revision), headers=AUTH).raise_for_status()
+        clock[0] += timedelta(seconds=5)
+        # Home Assistant's clock stepped back before the light turned off.
+        earlier = (NOW - timedelta(minutes=1)).isoformat()
+        snapshot = observation(revision, clock[0].isoformat(), state="off", last_updated=earlier)
+        client.post("/internal/baselines", json=snapshot, headers=AUTH).raise_for_status()
+        current = client.get("/api/monitored").json()["entities"][0]["baseline"]
+        assert current["state"] == "off"

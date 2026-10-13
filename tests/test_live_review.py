@@ -90,7 +90,7 @@ def test_initial_missing_baseline_stays_selected_then_recovers(adapter, tmp_path
     from fastapi.testclient import TestClient
 
     from home_observer.api import create_app
-    from home_observer.live import reconcile
+    from home_observer.live import CollectionSession
 
     status = [404]
     transport(
@@ -130,23 +130,29 @@ def test_initial_missing_baseline_stays_selected_then_recovers(adapter, tmp_path
             create_app(tmp_path / "live.sqlite", "review-internal", source_id="home_assistant"),
             headers={"Authorization": "Bearer review-internal"},
         ) as api:
-            reconcile(api, adapter)
+            session = CollectionSession(api, adapter)
+            session.reconcile()
             api.put(
                 "/api/selection/ha:registry1",
                 json={"selected": True},
                 headers={"X-Home-Observer": "1"},
             ).raise_for_status()
-            reconcile(api, adapter)
+            session.reconcile()
             assert api.get("/api/selection").json()["entity_ids"] == ["ha:registry1"]
-            assert api.get("/api/health").json()["error"] == "missing"
+            assert api.get("/api/health").json()["status"] == "healthy"
+            gaps = api.get("/api/coverage").json()
+            assert gaps["state"] == "interrupted"
+            assert gaps["gaps"][0]["entity_ids"] == ["ha:registry1"]
             monitored = api.get("/api/monitored").json()["entities"][0]
             assert monitored["baseline"] is None
             assert monitored["freshness"] == "pending"
             assert api.get("/api/baselines?entity_id=ha:registry1").json()["baselines"] == []
             status[0] = 200
-            reconcile(api, adapter)
+            session.reconcile()
             assert api.get("/api/health").json()["status"] == "healthy"
             assert api.get("/api/monitored").json()["entities"][0]["freshness"] == "fresh"
             assert len(api.get("/api/baselines?entity_id=ha:registry1").json()["baselines"]) == 1
     finally:
+        if "session" in locals():
+            session.close()
         ha.connect = original_connect

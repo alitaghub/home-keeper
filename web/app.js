@@ -80,6 +80,10 @@ function renderMonitored(entities) {
     const card = el("article", undefined, "observation");
     const title = el("div", undefined, "section-heading");
     title.append(el("h3", entity.name), el("span", entity.freshness, `tag ${entity.freshness}`));
+    const stop = el("button", "Stop monitoring", "secondary");
+    stop.setAttribute("aria-label", `Stop monitoring ${entity.name}`);
+    stop.addEventListener("click", () => toggle(entity.id, false));
+    title.append(stop);
     card.append(title);
     const baseline = entity.baseline;
     card.append(el("p", baseline ? `${baseline.state} · ${baseline.availability}` : "Pending · state unknown", "state"));

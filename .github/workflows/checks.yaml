@@ -18,6 +18,8 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: node --check web/app.js
+      - run: bash -n scripts/start-home.sh scripts/connect-home.sh
+      - run: docker compose -f compose.home-assistant.yaml config --quiet
       - run: docker compose config --quiet
       - run: docker compose up --build --wait
       - run: uv run python tests/compose_smoke.py
