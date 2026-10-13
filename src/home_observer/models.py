@@ -46,6 +46,12 @@ class Catalog(WireModel):
         return self
 
 
+class SelectionSnapshot(WireModel):
+    revision: int = Field(strict=True, ge=0)
+    refresh_revision: int = Field(default=0, strict=True, ge=0)
+    entity_ids: list[Identity] = Field(max_length=500)
+
+
 class SelectionChange(WireModel):
     selected: bool
 
@@ -132,8 +138,9 @@ class Observation(LightState):
     source_id: Literal["demo", "home_assistant"]
     kind: Literal["baseline", "reconciliation", "recovery"] = "baseline"
     received_at: datetime
+    collection_started_at: datetime | None = None
 
-    @field_validator("received_at")
+    @field_validator("received_at", "collection_started_at")
     @classmethod
     def receipt_timestamp(cls, value):
         return cls.utc_timestamp(value)
@@ -207,6 +214,7 @@ class Coverage(WireModel):
     received_at: datetime
     entity_id: Identity | None = None
     selection_revision: int | None = Field(default=None, ge=0)
+    entity_ids: list[Identity] | None = Field(default=None, max_length=500)
 
     @field_validator("received_at")
     @classmethod

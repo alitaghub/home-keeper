@@ -24,6 +24,8 @@ class Store:
                     event_time TEXT NOT NULL, persisted_at TEXT NOT NULL, data TEXT NOT NULL,
                     PRIMARY KEY(source_id, id)
                 );
+                CREATE INDEX IF NOT EXISTS event_order ON events(event_time, id);
+                CREATE INDEX IF NOT EXISTS event_expiration ON events(persisted_at);
                 CREATE INDEX IF NOT EXISTS event_scope ON events(entity_id, event_time, id);
                 CREATE TABLE IF NOT EXISTS current_state(
                     entity_id TEXT PRIMARY KEY, source_time TEXT NOT NULL, data TEXT NOT NULL
@@ -39,6 +41,14 @@ class Store:
                     persisted_at TEXT NOT NULL
                 );
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(current_state)")}
+            if "snapshot_started_at" not in columns:
+                db.execute("ALTER TABLE current_state ADD COLUMN snapshot_started_at TEXT")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(baselines)")}
+            if "persisted_at" not in columns:
+                db.execute("ALTER TABLE baselines ADD COLUMN persisted_at TEXT")
+                db.execute("UPDATE baselines SET persisted_at=json_extract(data, '$.persisted_at')")
+            db.execute("CREATE INDEX IF NOT EXISTS baseline_expiration ON baselines(persisted_at)")
 
     @contextmanager
     def transaction(self):
@@ -88,22 +98,68 @@ class Store:
             (cutoff,),
         )
         # Snapshot receipt time is not retention time: use the API persistence timestamp.
-        db.execute(
-            "DELETE FROM baselines WHERE json_extract(data, '$.persisted_at') < ?", (cutoff,)
-        )
+        db.execute("DELETE FROM baselines WHERE persisted_at < ?", (cutoff,))
 
     @staticmethod
-    def update_current(db, entity_id, source_time, data):
+    def snapshot_can_replace(db, entity_id, source_time, started_at, received_at):
         previous = db.execute(
-            "SELECT source_time FROM current_state WHERE entity_id=?", (entity_id,)
+            "SELECT source_time, data FROM current_state WHERE entity_id=?", (entity_id,)
         ).fetchone()
-        # Legacy JSON uses Z, while wire ingestion uses +00:00. Compare instants.
+        if previous is None:
+            return True
+        value = json.loads(previous["data"])
+        receipt = datetime.fromisoformat(value["received_at"])
+        if received_at < receipt:
+            return False
+        # Events captured during the HTTP read may be newer than its sampled state.
+        return not (
+            value.get("kind") == "event"
+            and receipt >= started_at
+            and datetime.fromisoformat(previous["source_time"]) > source_time
+        )
+
+    @classmethod
+    def update_current(
+        cls,
+        db,
+        entity_id,
+        source_time,
+        data,
+        *,
+        snapshot_started_at=None,
+        snapshot_received_at=None,
+    ):
+        previous = db.execute(
+            "SELECT source_time, snapshot_started_at FROM current_state WHERE entity_id=?",
+            (entity_id,),
+        ).fetchone()
         instant = datetime.fromisoformat(source_time).astimezone(UTC)
-        if previous is None or instant >= datetime.fromisoformat(previous[0]):
-            db.execute(
-                "INSERT OR REPLACE INTO current_state VALUES(?, ?, ?)",
-                (entity_id, instant.isoformat(), json.dumps(data)),
-            )
+        boundary = previous["snapshot_started_at"] if previous else None
+        if snapshot_started_at is not None:
+            if not cls.snapshot_can_replace(
+                db, entity_id, instant, snapshot_started_at, snapshot_received_at
+            ):
+                db.execute(
+                    "UPDATE current_state SET snapshot_started_at=? WHERE entity_id=?",
+                    (snapshot_started_at.isoformat(), entity_id),
+                )
+                return
+            boundary = snapshot_started_at.isoformat()
+        else:
+            # Keep delayed observations in history without crossing a newer HTTP read boundary.
+            if (
+                boundary
+                and data.get("kind") == "event"
+                and datetime.fromisoformat(data["received_at"]) < datetime.fromisoformat(boundary)
+            ):
+                return
+            if previous and instant < datetime.fromisoformat(previous["source_time"]):
+                return
+        db.execute(
+            "INSERT OR REPLACE INTO current_state "
+            "(entity_id,source_time,data,snapshot_started_at) VALUES(?,?,?,?)",
+            (entity_id, instant.isoformat(), json.dumps(data), boundary),
+        )
 
     @staticmethod
     def last_confirmed(db, entity_id=None):

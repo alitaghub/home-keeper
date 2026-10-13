@@ -319,7 +319,7 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path):
     from websockets.sync.server import serve
 
     from home_observer.api import create_app
-    from home_observer.live import reconcile
+    from home_observer.live import CollectionSession
 
     token = tmp_path / "ha-token"
     token.write_text("ha-token-sentinel")
@@ -398,7 +398,8 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path):
             with TestClient(
                 app, headers={"Authorization": "Bearer internal-token-sentinel"}
             ) as api:
-                reconcile(api, connector)
+                session = CollectionSession(api, connector)
+                session.reconcile()
                 assert not state_reads
                 catalog = api.get("/api/catalog").json()
                 assert len(catalog["entities"]) == 3
@@ -408,16 +409,16 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path):
                     json={"selected": True},
                     headers={"X-Home-Observer": "1"},
                 ).is_success
-                reconcile(api, connector)
+                session.reconcile()
                 baseline = api.get("/api/monitored").json()["entities"][0]["baseline"]
                 assert baseline["state"] == "on"
                 assert state_reads == ["/api/states/light.bulb"]
                 entities.append(row("new", "light.new"))
-                reconcile(api, connector)
+                session.reconcile()
                 assert len(api.get("/api/catalog").json()["entities"]) == 4
                 assert "ha:new" not in api.get("/api/selection").json()["entity_ids"]
                 fail[0] = True
-                reconcile(api, connector)
+                session.reconcile()
                 assert api.get("/api/catalog").json()["freshness"] == "stale"
                 assert api.put(
                     "/api/selection/ha:new",
@@ -433,10 +434,10 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path):
                     == 404
                 )
                 count = len(state_reads)
-                reconcile(api, connector)
+                session.reconcile()
                 assert len(state_reads) == count
                 fail[0] = False
-                reconcile(api, connector)
+                session.reconcile()
                 assert set(state_reads) == {"/api/states/light.bulb", "/api/states/light.new"}
                 assert all(
                     entity["baseline"] for entity in api.get("/api/monitored").json()["entities"]
@@ -451,6 +452,8 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path):
                     assert sentinel not in wire
                     assert sentinel.encode() not in db.read_bytes()
         finally:
+            if "session" in locals():
+                session.close()
             connector.close()
             server.shutdown()
             thread.join(timeout=5)

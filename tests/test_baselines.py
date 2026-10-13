@@ -124,3 +124,28 @@ def test_reselecting_requires_new_confirmation_before_showing_old_state(tmp_path
             "/internal/baselines", json=observation(renewed), headers=AUTH
         ).is_success
         assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "fresh"
+
+
+def test_history_pages_are_bounded_and_retention_filters_before_cleanup(tmp_path):
+    clock = [NOW]
+    with TestClient(app_for(tmp_path / "pages.sqlite", now=lambda: clock[0])) as client:
+        client.post("/internal/catalog", json=CATALOG, headers=AUTH).raise_for_status()
+        revision = select(client)
+        for brightness in range(4):
+            clock[0] += timedelta(seconds=1)
+            client.post(
+                "/internal/baselines",
+                json=observation(revision, clock[0].isoformat(), brightness=brightness),
+                headers=AUTH,
+            ).raise_for_status()
+        params = {"entity_id": "bulb-a", "limit": 2}
+        first = client.get("/api/baselines", params=params).json()
+        second = client.get(
+            "/api/baselines", params=params | {"cursor": first["next_cursor"]}
+        ).json()
+        assert [b["brightness"] for b in first["baselines"] + second["baselines"]] == [3, 2, 1, 0]
+        assert second["next_cursor"] is None
+        assert client.get("/api/baselines", params=params | {"limit": 101}).status_code == 422
+        clock[0] += timedelta(days=31)
+        assert client.get("/api/baselines", params=params).json()["baselines"] == []
+        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["brightness"] == 3

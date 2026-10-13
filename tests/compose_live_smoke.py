@@ -117,7 +117,8 @@ def main():
                     assert "synthetic-compose-token" not in content
                     assert "ADMIN_SENTINEL" not in content
                 assert client.get("/api/baselines?entity_id=ha:unsupported").json() == {
-                    "baselines": []
+                    "baselines": [],
+                    "next_cursor": None,
                 }
                 compose("stop", "fake-ha")
                 deadline = time.monotonic() + 15

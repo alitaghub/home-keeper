@@ -42,9 +42,52 @@ SQLite data and the internal service credential persist in named volumes.
 requires a restart. **Stop monitoring** rejects later observation ingestion.
 Previously recorded events stay visible until retention expires.
 
+## Guided local setup (optional)
+
+If you do not have Home Assistant, run this from WSL or a Linux terminal:
+
+```sh
+./scripts/start-home.sh
+```
+
+The script starts a separate Home Assistant Container, waits for its local web
+page, and opens a three-stage wizard: account creation, Hue Bridge pairing, then
+Home Observer connection. Enter passwords in Home Assistant and paste the token
+only into the wizard's hidden terminal input. The wizard stores the token outside
+this repo, with mode `600` and owner `10001` for the connector. It may ask for your
+local sudo password to set that owner. Public connection settings go to
+`~/.local/state/home-observer/local-live.env` (or `$XDG_STATE_HOME/home-observer`).
+Nothing is sent to CI or an AI model. Device selection remains explicit.
+
+Home Assistant opens at <http://127.0.0.1:8123>, and the monitor at
+<http://127.0.0.1:8000>. This optional container publishes only a loopback port.
+It uses a separate persistent configuration volume and network joined only by
+the trusted connector, not the Observer API. It has no privileged mode, host
+networking, USB or Bluetooth access. WSL/container multicast discovery may fail:
+add Philips Hue in Home Assistant using the bridge IP from the Hue app. No router
+administration or subnet scan is performed. Container installation has no Home
+Assistant apps; see the [official installation guide](https://www.home-assistant.io/installation/linux/).
+The upstream guide requires Docker Engine rather than Docker Desktop. Linux/WSL
+Engine is the development target for this optional setup; macOS and Docker Desktop
+have not been verified. For them, use a separately installed Home Assistant.
+
+To restart the configured monitor without repeating the wizard:
+
+```sh
+docker compose --env-file "${XDG_STATE_HOME:-$HOME/.local/state}/home-observer/local-live.env" \
+  -f compose.yaml -f compose.live.yaml -f compose.local-live.yaml up --build --wait
+```
+
+Stop Home Assistant while keeping its configuration:
+
+```sh
+docker compose -p home-observer-ha -f compose.home-assistant.yaml down
+```
+
 ## Connect Home Assistant and Hue
 
-This setup does not install Home Assistant. First run Home Assistant separately
+The default demo/live Compose files do not install Home Assistant. Use the optional
+guided setup above, or first run Home Assistant separately
 and pair your Hue Bridge through its [Hue integration](https://www.home-assistant.io/integrations/hue/).
 Home Observer connects to Home Assistant, rather than directly to the bridge.
 
@@ -125,7 +168,8 @@ For live mode, add `-f compose.yaml -f compose.live.yaml` to that command. Use a
 positive interval in seconds. Freshness becomes stale after twice the interval
 or a reported collector failure. Authentication, connection and certificate
 errors appear as safe status messages. A failed refresh retains the previous
-catalog marked stale. A missing or unreadable selected entity remains selected,
+catalog marked stale. A missing selected entity gets its own collection gap while healthy selected lights
+keep their event subscription. It remains selected,
 with unknown or stale evidence. This does not prove the bulb is disconnected.
 
 Each accepted snapshot records its stable ID, registry identity, current entity
@@ -166,7 +210,8 @@ OBSERVER_RETENTION_DAYS=7 docker compose up --build --wait
 ```
 
 For live mode, add `-f compose.yaml -f compose.live.yaml`. Retention uses the API
-persistence time. Requests trigger cleanup of expired historical records.
+persistence time. Requests trigger cleanup at most once per minute. History reads apply the cutoff
+immediately; expired rows can remain on disk until the next cleanup request.
 Active selections and their latest known state stay available in a separate
 current-state cache. That cache does not establish recent device availability.
 Expired current-state caches for removed selections are deleted too. An empty
@@ -383,3 +428,11 @@ Real Hue hardware, hosted CI and the other platforms listed above remain unteste
 
 [MIT](LICENSE). This independent project uses original code, public documentation
 and synthetic examples. It contains no employer code or home credentials.
+
+Baseline history uses `limit` (1–100, default 50) and an integer `cursor` from
+`next_cursor`; pages contain newest snapshots first. Event history uses its own
+timestamp/ID cursor. Collection passes have a deadline of at least 30 seconds,
+scaled by five seconds per selected light plus ten seconds. Buffered changes are
+persisted between reads, with healthy heartbeats during long successful passes.
+A newer completed HTTP read can correct current state after Home Assistant clock
+rollback; events captured during that read retain precedence when newer.

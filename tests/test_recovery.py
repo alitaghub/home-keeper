@@ -59,6 +59,7 @@ def home(tmp_path, race_count=1, authentication_invalid=False):
             # A snapshot cannot begin before the event subscription is acknowledged.
             assert subscribed.wait(1)
             race_sent.set()
+            time.sleep(0.05)
             return Response(
                 200,
                 "OK",
@@ -80,6 +81,7 @@ def home(tmp_path, race_count=1, authentication_invalid=False):
         command = json.loads(socket.recv(timeout=5))
         commands.append(command["type"])
         if command["type"] == "subscribe_events":
+            race_sent.clear()
             socket.send(json.dumps({"id": 1, "type": "result", "success": True}))
             subscribed.set()
             assert race_sent.wait(3)
@@ -141,7 +143,8 @@ def test_snapshot_race_is_persisted_before_recovery_and_subscription_survives_po
             session.close()
 
 
-def test_failed_ingestion_never_reports_healthy_and_resynchronizes(tmp_path):
+@pytest.mark.parametrize("failed_path", ["/internal/baselines", "/internal/events"])
+def test_failed_ingestion_never_reports_healthy_and_resynchronizes(tmp_path, failed_path):
     accepted = []
     fail = [True]
 
@@ -150,7 +153,7 @@ def test_failed_ingestion_never_reports_healthy_and_resynchronizes(tmp_path):
         if request.url.path == "/internal/selection":
             return httpx.Response(200, json={"revision": 1, "entity_ids": ["ha:a"]})
         accepted.append((request.url.path, payload))
-        if request.url.path == "/internal/baselines" and fail[0]:
+        if request.url.path == failed_path and fail[0]:
             return httpx.Response(503)
         return httpx.Response(200, json={})
 
@@ -172,7 +175,10 @@ def test_failed_ingestion_never_reports_healthy_and_resynchronizes(tmp_path):
                 and value["status"] == "interrupted"
                 for path, value in accepted
             )
-            assert not any(path == "/internal/events" for path, value in accepted)
+            assert not any(
+                path == "/internal/coverage" and value["status"] == "recovered"
+                for path, value in accepted
+            )
             fail[0] = False
             assert session.reconcile()
             assert commands.count("subscribe_events") == 2
@@ -359,7 +365,7 @@ def test_obsolete_revision_does_not_close_gap_and_revalidates_new_selection(tmp_
         if request.url.path == "/internal/baselines" and obsolete[0]:
             obsolete[0] = False
             selected.update(revision=2, entity_ids=["ha:c"])
-            return httpx.Response(409)
+            return httpx.Response(409, json={"detail": {"code": "selection_changed"}})
         return httpx.Response(200, json={})
 
     with (
@@ -432,3 +438,87 @@ def test_production_retry_backoff_is_capped_and_auth_failure_stops_it(tmp_path, 
         assert result.value.code == 1
         assert attempts == [0, 1, 3, 7, 15, 31, 63, 123, 183, 243]
         assert round(clock[0]) == 303
+
+
+def test_missing_selection_keeps_healthy_light_subscription_and_scopes_gap(tmp_path):
+    accepted = []
+
+    def api(request):
+        payload = json.loads(request.content) if request.content else None
+        if request.url.path == "/internal/selection":
+            return httpx.Response(200, json={"revision": 1, "entity_ids": ["ha:a", "ha:gone"]})
+        accepted.append((request.url.path, payload))
+        return httpx.Response(200, json={})
+
+    with (
+        home(tmp_path, race_count=0) as (connector, commands, rows),
+        httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client,
+    ):
+        session = CollectionSession(client, connector)
+        try:
+            # ha:gone is selected but absent from discovery; ha:a stays healthy.
+            session.reconcile()
+            session.reconcile()
+            assert commands.count("subscribe_events") == 1
+            interrupted = [
+                value
+                for path, value in accepted
+                if path == "/internal/coverage" and value["status"] == "interrupted"
+            ]
+            assert interrupted
+            assert all(value.get("entity_id") == "ha:gone" for value in interrupted)
+        finally:
+            session.close()
+
+
+def test_large_selection_finishes_with_progress_heartbeats(monkeypatch):
+    from types import SimpleNamespace
+
+    from home_observer.models import Catalog, Entity, Observation
+
+    clock = [0.0]
+    selected = [f"ha:light{number}" for number in range(32)]
+    calls = []
+    subscription = SimpleNamespace(key=(), receive=lambda timeout: None, close=lambda: None)
+
+    def read(identity, revision):
+        clock[0] += 1
+        return Observation(
+            entity_id=identity,
+            selection_revision=revision,
+            source_id="home_assistant",
+            state="on",
+            availability="available",
+            received_at="2025-01-01T00:00:00Z",
+        )
+
+    connector = SimpleNamespace(
+        discover=lambda: Catalog(
+            source_id="home_assistant",
+            entities=[Entity(id=identity, name=identity, supported=True) for identity in selected],
+        ),
+        approve=lambda values: None,
+        subscription_key=("fixture",),
+        subscribe_selected=lambda: subscription,
+        read_selected=read,
+    )
+    subscription.key = connector.subscription_key
+    monkeypatch.setattr("home_observer.live.time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def api(request):
+        if request.url.path == "/internal/selection":
+            return httpx.Response(200, json={"revision": 1, "entity_ids": selected})
+        calls.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={})
+
+    with httpx.Client(base_url="http://api", transport=httpx.MockTransport(api)) as client:
+        session = CollectionSession(client, connector)
+        try:
+            assert session.reconcile()
+            assert len([path for path, _ in calls if path == "/internal/baselines"]) == 32
+            assert len([path for path, _ in calls if path == "/internal/health"]) >= 4
+            recovered = [v for path, v in calls if path == "/internal/coverage"][-1]
+            assert recovered["status"] == "recovered"
+            assert recovered["entity_ids"] == selected
+        finally:
+            session.close()

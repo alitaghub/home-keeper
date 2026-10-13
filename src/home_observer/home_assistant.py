@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
-from home_observer.events import COLOR_FIELDS, change_event, light_state
-from home_observer.models import Catalog, Entity, Observation
+from home_observer.events import change_event, light_state
+from home_observer.models import Catalog, ChangeEvent, Entity, Observation
 
 MAX_PAYLOAD = 2 * 1024 * 1024
 _REGISTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,120}$")
@@ -36,11 +36,21 @@ class ConnectorError(Exception):
         super().__init__(f"Home Assistant collection failed ({code})")
 
 
+class Subscription(Protocol):
+    key: tuple[tuple[str, int, str], ...]
+
+    def receive(self, timeout: float = 1) -> ChangeEvent | None: ...
+    def close(self) -> None: ...
+
+
 class Connector(Protocol):
     def discover(self) -> Catalog: ...
     def approve(self, selected: dict[str, int]) -> None: ...
     def read_selected(self, identity: str, revision: int) -> Observation: ...
-    def subscribe_selected(self): ...
+    @property
+    def subscription_key(self) -> tuple[tuple[str, int, str], ...]: ...
+    def subscribe_selected(self) -> Subscription | None: ...
+    def close(self) -> None: ...
 
 
 class HomeAssistantConnector:
@@ -104,9 +114,6 @@ class HomeAssistantConnector:
         self._validated = False
 
     def close(self):
-        session = getattr(self, "_collection_session", None)
-        if session is not None:
-            session.close()
         self._http.close()
 
     def discover(self) -> Catalog:
@@ -262,6 +269,7 @@ class HomeAssistantConnector:
         ):
             raise ConnectorError("configuration")
         entity_id = self._entities[identity]
+        started_at = datetime.now(UTC)
         deadline = time.monotonic() + self._timeout
         try:
             with self._http.stream("GET", f"/api/states/{entity_id}") as response:
@@ -279,25 +287,19 @@ class HomeAssistantConnector:
                     if len(payload) > MAX_PAYLOAD:
                         raise ConnectorError("invalid_data")
             data = json.loads(payload)
-            if not isinstance(data, dict) or data.get("entity_id") != entity_id:
-                raise ConnectorError("invalid_data")
-            state = data.get("state")
-            if state not in {"on", "off", "unavailable", "unknown"}:
-                raise ConnectorError("invalid_data")
-            attributes = data.get("attributes", {})
-            if not isinstance(attributes, dict):
+            value = light_state(data, entity_id)
+            if value is None:
                 raise ConnectorError("invalid_data")
             return Observation(
+                **value.model_dump(exclude_none=True),
                 entity_id=identity,
                 source_entity_id=entity_id,
                 source_id="home_assistant",
                 selection_revision=revision,
-                state=state,
-                availability=(state if state in {"unknown", "unavailable"} else "available"),
                 received_at=datetime.now(UTC),
-                **{key: data.get(key) for key in ("last_changed", "last_updated", "last_reported")},
-                **{key: attributes.get(key) for key in COLOR_FIELDS},
+                collection_started_at=started_at,
             )
+
         except ConnectorError:
             raise
         except httpx.TimeoutException:

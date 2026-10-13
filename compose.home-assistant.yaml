@@ -1,0 +1,17 @@
+# Optional local Home Assistant dependency, separate from Observer's data and API.
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.10.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - home-assistant-config:/config
+    networks: [home-assistant]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 60s
+networks:
+  home-assistant:
+    name: home-observer-home-assistant
+volumes:
+  home-assistant-config:

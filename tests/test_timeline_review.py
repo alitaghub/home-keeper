@@ -35,9 +35,14 @@ def test_review_offset_ordering_and_timestamp_only_snapshots(tmp_path):
         )
         assert client.post("/internal/events", json=older, headers=AUTH).is_success
         assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
-        # A later receipt of an older source snapshot also cannot roll state backward.
+        # An event captured during a snapshot read must retain its newer source state.
         clock[0] += timedelta(seconds=1)
-        snapshot = observation(revision, clock[0].isoformat(), last_updated=NOW.isoformat())
+        snapshot = observation(
+            revision,
+            clock[0].isoformat(),
+            last_updated=NOW.isoformat(),
+            collection_started_at=(NOW + timedelta(seconds=4)).isoformat(),
+        )
         assert client.post("/internal/baselines", json=snapshot, headers=AUTH).is_success
         assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
         assert [x["id"] for x in client.get("/api/events").json()["events"]] == [
