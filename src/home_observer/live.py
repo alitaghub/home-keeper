@@ -98,18 +98,51 @@ def main():
             except httpx.HTTPError:
                 pass
             raise SystemExit(1) from None
+        subscription = None
+        next_pass = 0.0
         try:
             while True:
                 try:
-                    reconcile(client, connector)
-                except (httpx.HTTPError, ValueError, KeyError, TypeError):
-                    logging.warning("Live collection failed; retrying on next reconciliation")
+                    if time.monotonic() >= next_pass:
+                        reconcile(client, connector)
+                        next_pass = time.monotonic() + interval
+                        key = connector.subscription_key
+                        if subscription is not None and subscription.key != key:
+                            subscription.close()
+                            subscription = None
+                        if subscription is None and key:
+                            subscription = connector.subscribe_selected()
+                    if subscription is not None:
+                        event = subscription.receive(
+                            min(1, max(0.01, next_pass - time.monotonic()))
+                        )
+                        if event is not None:
+                            response = client.post(
+                                "/internal/events",
+                                json=event.model_dump(mode="json", exclude_none=True),
+                            )
+                            if response.status_code != 409:
+                                response.raise_for_status()
+                    else:
+                        time.sleep(min(0.5, max(0.01, next_pass - time.monotonic())))
+                except (ConnectorError, httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+                    logging.warning("Live collection interrupted; retrying on next reconciliation")
+                    if subscription is not None:
+                        subscription.close()
+                        subscription = None
                     try:
-                        _health(client, "connection")
+                        _health(
+                            client,
+                            error.code if isinstance(error, ConnectorError) else "connection",
+                        )
                     except httpx.HTTPError:
                         pass
-                time.sleep(interval)
+                    # One retry per reconciliation interval, with no tight auth/error loop.
+                    next_pass = time.monotonic() + interval
+                    time.sleep(min(1, interval))
         finally:
+            if subscription is not None:
+                subscription.close()
             connector.close()
 
 
