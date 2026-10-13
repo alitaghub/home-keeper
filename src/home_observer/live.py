@@ -88,6 +88,9 @@ class _EventBuffer:
             self._bytes = 0
         return events
 
+    def wait(self, timeout):
+        self._stop.wait(timeout)
+
     def close(self):
         self._stop.set()
         self.subscription.close()
@@ -156,7 +159,7 @@ class CollectionSession:
                 time.sleep(timeout)
             return
         if timeout:
-            self._buffer._stop.wait(timeout)
+            self._buffer.wait(timeout)
         deadline = time.monotonic() + 30 if deadline is None else deadline
         for event in self._buffer.drain():
             if time.monotonic() >= deadline:
