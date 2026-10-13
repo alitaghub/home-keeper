@@ -320,6 +320,8 @@ def test_authentication_failure_halts_process_and_retains_safe_failure(
         return original_client(**kwargs)
 
     with home(tmp_path, authentication_invalid=True) as (connector, _, _):
+        # The fake API client matches the default port; a developer's OBSERVER_PORT would bypass it.
+        monkeypatch.delenv("OBSERVER_PORT", raising=False)
         monkeypatch.setenv("OBSERVER_TOKEN_FILE", str(service_token))
         monkeypatch.setenv("OBSERVER_HA_TOKEN_FILE", str(tmp_path / "ha-token"))
         monkeypatch.setenv("OBSERVER_HA_URL", connector.origin)
@@ -447,6 +449,8 @@ def test_production_retry_backoff_is_capped_and_auth_failure_stops_it(
         _,
         _,
     ):
+        # The fake API client matches the default port; a developer's OBSERVER_PORT would bypass it.
+        monkeypatch.delenv("OBSERVER_PORT", raising=False)
         monkeypatch.setenv("OBSERVER_TOKEN_FILE", str(service_token))
         monkeypatch.setenv("OBSERVER_HA_TOKEN_FILE", str(tmp_path / "ha-token"))
         monkeypatch.setenv("OBSERVER_HA_URL", connector.origin)

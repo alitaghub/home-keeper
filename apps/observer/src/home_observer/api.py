@@ -16,25 +16,34 @@ from pydantic import TypeAdapter
 from starlette.middleware.base import RequestResponseEndpoint
 
 from home_observer.models import (
+    BaselineRecord,
     BaselinesPage,
     Catalog,
     CatalogResponse,
     ChangeEvent,
     Coverage,
+    CoverageGap,
     CoverageReport,
     DiscoveryRefresh,
+    Entity,
+    EventReading,
+    EventRecord,
     EventsPage,
+    Freshness,
     Health,
+    HealthPending,
+    HealthReport,
     HealthStatus,
     Identity,
     LightState,
     MonitoredEntities,
+    MonitoredEntity,
     Observation,
     SelectionChange,
     SelectionSnapshot,
     to_utc,
 )
-from home_observer.store import Record, SnapshotRead, Store
+from home_observer.store import SnapshotRead, Store, gap_record
 
 
 def create_app(
@@ -86,8 +95,8 @@ def create_app(
                 "SELECT 1 FROM current_state WHERE entity_id=?", (row["entity_id"],)
             ).fetchone():
                 continue
-            value = json.loads(row["data"])
-            source_time = value.get("last_updated") or value["received_at"]
+            value = BaselineRecord.model_validate_json(row["data"])
+            source_time = value.last_updated or value.received_at
             store.update_current(db, row["entity_id"], source_time, value)
         if store.last_confirmed(db):
             store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "restart")
@@ -168,11 +177,12 @@ def create_app(
                 else (
                     "fresh"
                     if 0 <= age <= 2 * reconciliation_seconds
-                    and get_health(db)["status"] not in ("failed", "stale")
+                    and get_health(db).status not in ("failed", "stale")
                     else "stale"
                 ),
                 entities=[
-                    json.loads(row[0]) for row in db.execute("SELECT data FROM catalog ORDER BY id")
+                    Entity.model_validate_json(row[0])
+                    for row in db.execute("SELECT data FROM catalog ORDER BY id")
                 ],
             )
 
@@ -208,7 +218,7 @@ def create_app(
             current = store.selection(db)
             if entity is None and (change.selected or entity_id not in current["entity_ids"]):
                 raise HTTPException(404, "Unknown entity")
-            if change.selected and entity is not None and not entity["supported"]:
+            if change.selected and entity is not None and not entity.supported:
                 raise HTTPException(422, "Entity is unsupported")
             current = store.selection(db)
             if change.selected != (entity_id in current["entity_ids"]):
@@ -255,7 +265,7 @@ def create_app(
                 payload.selection_revision != current["revision"]
                 or payload.entity_id not in current["entity_ids"]
                 or entity is None
-                or not entity["supported"]
+                or not entity.supported
             ):
                 raise conflict("selection_changed", "Selection no longer permits this observation")
             confirmed = db.execute(
@@ -264,17 +274,13 @@ def create_app(
             if confirmed and payload.received_at < datetime.fromisoformat(confirmed[0]):
                 raise conflict("observation_older", "Observation is older than latest confirmation")
             data = payload.model_dump(mode="json", exclude={"selection_revision"})
-            latest = db.execute(
-                "SELECT data, source_time FROM current_state WHERE entity_id=?",
-                (payload.entity_id,),
-            ).fetchone()
+            latest = store.current(db, payload.entity_id)
             # Only an authoritative snapshot lacking a recorded change exposes a gap.
             # A newer buffered event wins over an older reconciliation snapshot.
             if confirmed and latest:
-                previous_value = json.loads(latest["data"])
                 keys = LightState.model_fields.keys()
                 previous_state = LightState.model_validate(
-                    {key: value for key, value in previous_value.items() if key in keys}
+                    latest.model_dump(include=set(keys), exclude_unset=True)
                 )
                 snapshot_time = payload.last_updated or payload.received_at
                 if (
@@ -308,7 +314,7 @@ def create_app(
                 "SELECT data FROM baselines WHERE entity_id=? ORDER BY rowid DESC LIMIT 1",
                 (payload.entity_id,),
             ).fetchone()
-            baseline: Record | None = json.loads(previous[0]) if previous else None
+            baseline = BaselineRecord.model_validate_json(previous[0]) if previous else None
             comparable = {
                 key: value
                 for key, value in data.items()
@@ -321,19 +327,20 @@ def create_app(
                     "collection_started_at",
                 )
             }
-            old = {key: baseline.get(key) for key in comparable} if baseline else None
+            old = baseline.model_dump(mode="json", include=set(comparable)) if baseline else None
             new_recovery = bool(gaps) and (
-                not baseline or baseline.get("coverage_gap_ids") != data.get("coverage_gap_ids")
+                not baseline or baseline.coverage_gap_ids != data.get("coverage_gap_ids")
             )
-            # A first snapshot (no previous baseline) always records.
             if baseline is None or comparable != old or new_recovery:
-                baseline = {**data, "id": str(uuid4()), "persisted_at": persisted.isoformat()}
+                baseline = BaselineRecord.model_validate(
+                    data | {"id": str(uuid4()), "persisted_at": persisted.isoformat()}
+                )
                 db.execute(
                     "INSERT INTO baselines(id,entity_id,data,persisted_at) VALUES(?, ?, ?, ?)",
                     (
-                        baseline["id"],
+                        baseline.id,
                         payload.entity_id,
-                        json.dumps(baseline),
+                        baseline.model_dump_json(exclude_unset=True),
                         persisted.isoformat(),
                     ),
                 )
@@ -351,7 +358,10 @@ def create_app(
                 "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
                 (payload.entity_id, payload.received_at.isoformat(), persisted.isoformat()),
             )
-            return {"accepted": True, "baseline": baseline}
+            return {
+                "accepted": True,
+                "baseline": baseline.model_dump(mode="json", exclude_unset=True),
+            }
 
     # Stored readings omit unset light attributes; excluding unset fields returns them as stored.
     @app.get("/api/baselines", response_model=BaselinesPage, response_model_exclude_unset=True)
@@ -374,7 +384,7 @@ def create_app(
                 ),
             ).fetchall()
             return BaselinesPage(
-                baselines=[json.loads(row["data"]) for row in rows[:limit]],
+                baselines=[BaselineRecord.model_validate_json(row["data"]) for row in rows[:limit]],
                 next_cursor=rows[limit - 1]["rowid"] if len(rows) > limit else None,
             )
 
@@ -392,7 +402,7 @@ def create_app(
                 payload.selection_revision != current["revision"]
                 or payload.entity_id not in current["entity_ids"]
                 or entity is None
-                or not entity["supported"]
+                or not entity.supported
             ):
                 raise conflict("selection_changed", "Selection no longer permits this event")
             previous = db.execute(
@@ -403,7 +413,9 @@ def create_app(
                 state = getattr(payload, key)
                 data[key] = state.model_dump(mode="json", exclude_none=True) if state else None
             if previous:
-                stored = json.loads(previous[0])
+                stored = EventRecord.model_validate_json(previous[0]).model_dump(
+                    mode="json", exclude_unset=True
+                )
                 # A stable source ID cannot silently refer to different evidence.
                 comparable = {
                     key: value
@@ -442,16 +454,19 @@ def create_app(
             )
             current_value = payload.new or LightState(state="unknown")
             if current_value:
-                value = current_value.model_dump(mode="json", exclude_none=True) | {
-                    "id": payload.id,
-                    "entity_id": payload.entity_id,
-                    "source_entity_id": payload.source_entity_id,
-                    "source_id": source_id,
-                    "kind": "event",
-                    "event_time": payload.event_time.isoformat(),
-                    "received_at": payload.received_at.isoformat(),
-                    "persisted_at": persisted.isoformat(),
-                }
+                value = EventReading.model_validate(
+                    current_value.model_dump(mode="json", exclude_none=True)
+                    | {
+                        "id": payload.id,
+                        "entity_id": payload.entity_id,
+                        "source_entity_id": payload.source_entity_id,
+                        "source_id": source_id,
+                        "kind": "event",
+                        "event_time": payload.event_time.isoformat(),
+                        "received_at": payload.received_at.isoformat(),
+                        "persisted_at": persisted.isoformat(),
+                    }
+                )
                 store.update_current(db, payload.entity_id, payload.event_time.isoformat(), value)
             # Older deliveries may add evidence but cannot refresh a newer confirmation backwards.
             confirmed = db.execute(
@@ -506,10 +521,10 @@ def create_app(
                 "SELECT data FROM events" + where + " ORDER BY event_time DESC, id DESC LIMIT ?",  # noqa: S608
                 (*parameters, limit + 1),
             ).fetchall()
-        values = [json.loads(row[0]) for row in rows[:limit]]
+        values = [EventRecord.model_validate_json(row[0]) for row in rows[:limit]]
         next_cursor = None
         if len(rows) > limit:
-            next_cursor = values[-1]["event_time"] + "|" + values[-1]["id"]
+            next_cursor = f"{values[-1].event_time}|{values[-1].id}"
         return EventsPage(
             events=values,
             next_cursor=next_cursor,
@@ -525,15 +540,15 @@ def create_app(
         if payload.received_at > persisted:
             raise HTTPException(422, "Future receipt timestamp")
         with store.transaction() as db:
-            previous = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
-            if previous:
-                previous = json.loads(previous[0])
-                # A delayed heartbeat cannot erase a newer failure. When the API's
-                # clock rolled back, allow the new clock's heartbeat to reset health.
-                if persisted >= datetime.fromisoformat(
-                    previous["persisted_at"]
-                ) and payload.received_at < datetime.fromisoformat(previous["received_at"]):
-                    raise conflict("heartbeat_older", "Heartbeat is older than latest health")
+            previous = store.health(db)
+            # A delayed heartbeat cannot erase a newer failure. When the API's
+            # clock rolled back, allow the new clock's heartbeat to reset health.
+            if (
+                previous
+                and persisted >= datetime.fromisoformat(previous.persisted_at)
+                and payload.received_at < datetime.fromisoformat(previous.received_at)
+            ):
+                raise conflict("heartbeat_older", "Heartbeat is older than latest health")
             if payload.status == "failed":
                 reason = (
                     "invalid_data"
@@ -550,14 +565,13 @@ def create_app(
             db.execute("INSERT OR REPLACE INTO metadata VALUES('health', ?)", (json.dumps(data),))
         return {"accepted": True}
 
-    def get_health(db: sqlite3.Connection) -> Record:
-        row = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
-        if not row:
-            return {"status": "pending", "source_id": source_id}
-        result = json.loads(row[0])
-        age = (now() - datetime.fromisoformat(result["received_at"])).total_seconds()
+    def get_health(db: sqlite3.Connection) -> HealthPending | HealthReport:
+        result = store.health(db)
+        if result is None:
+            return HealthPending(status="pending", source_id=source_id)
+        age = (now() - datetime.fromisoformat(result.received_at)).total_seconds()
         if age < 0 or age > 2 * reconciliation_seconds:
-            result["status"] = "stale"
+            result.status = "stale"
             store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "heartbeat")
         return result
 
@@ -604,17 +618,16 @@ def create_app(
                     else row["scope"] == "*" or row["scope"] in recovered_entities
                 )
             ]
+            gaps = [gap_record.validate_json(row["data"]) for row in relevant]
             if any(
-                payload.received_at < datetime.fromisoformat(json.loads(row["data"])["detected_at"])
-                for row in relevant
+                payload.received_at < datetime.fromisoformat(gap["detected_at"]) for gap in gaps
             ):
                 raise conflict("recovery_older", "Recovery is older than interruption")
-            for row in relevant:
-                gap = json.loads(row["data"])
+            for gap in gaps:
                 gap["recovered_at"] = persisted.isoformat()
                 db.execute(
                     "UPDATE coverage SET recovered_at=?, data=? WHERE id=?",
-                    (persisted.isoformat(), json.dumps(gap), row["id"]),
+                    (persisted.isoformat(), json.dumps(gap), gap["id"]),
                 )
             return {"accepted": True}
 
@@ -623,7 +636,7 @@ def create_app(
         with store.transaction() as db:
             health = get_health(db)
             gaps = [
-                json.loads(row[0])
+                CoverageGap.model_validate_json(row[0])
                 for row in db.execute(
                     "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=? "
                     "ORDER BY detected_at DESC, id DESC LIMIT ?",
@@ -639,7 +652,7 @@ def create_app(
                     for gap in store.open_gaps(db)
                 )
                 else "collecting"
-                if health["status"] == "healthy"
+                if health.status == "healthy"
                 else "unknown",
                 last_confirmed_at=store.last_confirmed(db),
                 retained_since=(now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
@@ -655,49 +668,45 @@ def create_app(
     @app.get("/api/monitored", response_model=MonitoredEntities, response_model_exclude_unset=True)
     def monitored():
         with store.transaction() as db:
-            results: list[Record] = []
+            results: list[MonitoredEntity] = []
             health = get_health(db)
             for entity_id in store.selection(db)["entity_ids"]:
                 entity = store.entity(db, entity_id)
                 missing = entity is None
                 if entity is None:
-                    entity = {
-                        "id": entity_id,
-                        "name": entity_id,
-                        "device_id": None,
-                        "device_name": None,
-                        "supported": False,
-                        "reason": "Entity missing from latest discovery",
-                    }
-                row = db.execute(
-                    "SELECT data FROM current_state WHERE entity_id=?",
-                    (entity_id,),
-                ).fetchone()
+                    entity = Entity(
+                        id=entity_id,
+                        name=entity_id,
+                        device_id=None,
+                        device_name=None,
+                        supported=False,
+                        reason="Entity missing from latest discovery",
+                    )
                 confirmed = db.execute(
                     "SELECT * FROM confirmed WHERE entity_id=?", (entity_id,)
                 ).fetchone()
-                freshness = "pending"
+                freshness: Freshness = "pending"
                 if confirmed:
                     receipt = datetime.fromisoformat(confirmed["received_at"])
                     persisted = datetime.fromisoformat(confirmed["persisted_at"])
                     fresh = (
                         0 <= (now() - receipt).total_seconds() <= 2 * reconciliation_seconds
                         and 0 <= (now() - persisted).total_seconds() <= 2 * reconciliation_seconds
-                        and health["status"] not in ("failed", "stale")
+                        and health.status not in ("failed", "stale")
                         and not store.open_gaps(db, entity_id)
                         and not missing
-                        and entity["supported"]
+                        and entity.supported
                     )
                     freshness = "fresh" if fresh else "stale"
                 results.append(
-                    entity
-                    | {
-                        "baseline": json.loads(row[0]) if row and confirmed else None,
-                        "freshness": freshness,
-                        "confirmed_at": confirmed["received_at"] if confirmed else None,
-                    }
+                    MonitoredEntity(
+                        **entity.model_dump(),
+                        baseline=store.current(db, entity_id) if confirmed else None,
+                        freshness=freshness,
+                        confirmed_at=confirmed["received_at"] if confirmed else None,
+                    )
                 )
-            return MonitoredEntities.model_validate({"entities": results})
+            return MonitoredEntities(entities=results)
 
     web_path = Path.cwd() / "web"
     if web_path.exists():

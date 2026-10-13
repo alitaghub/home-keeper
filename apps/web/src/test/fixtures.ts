@@ -145,6 +145,17 @@ export const change1 = {
   new: { availability: "available", state: "on", brightness: 50 },
 } satisfies Schemas["EventRecord"];
 
+// Distinct source, receipt, and storage times so a swapped label shows up.
+export const colorChange = {
+  ...changeEvent,
+  id: "change-color",
+  event_time: "2026-10-12T09:59:55Z",
+  received_at: "2026-10-12T09:59:57Z",
+  persisted_at: "2026-10-12T10:00:01+00:00",
+  old: { availability: "available", state: "on", brightness: 150, xy_color: [0.3, 0.32] },
+  new: { availability: "available", state: "on", brightness: 150, xy_color: [0.45, 0.41] },
+} satisfies Schemas["EventRecord"];
+
 export const eventsPage1 = {
   coverage: "unknown",
   events: [change3, change2],

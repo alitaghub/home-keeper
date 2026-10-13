@@ -210,6 +210,11 @@ describe("dashboard behavior", () => {
     expect(monitored.getByText("off · available")).toBeInTheDocument();
     expect(monitored.getByText("Recovery snapshot; transition time unknown")).toBeInTheDocument();
     expect(
+      monitored.getByText(
+        `Related gap evidence: ${fixtures.openGap.id}. Changes during this gap have unknown timing.`,
+      ),
+    ).toBeInTheDocument();
+    expect(
       within(byId("catalog")).getByRole("button", { name: "Stop monitoring Desk lamp" }),
     ).toHaveClass("secondary");
 
@@ -353,6 +358,26 @@ describe("dashboard behavior", () => {
     expect(byId("timeline-status")).toHaveTextContent(
       `2 changes shown. ${cutoff} New changes refresh automatically.`,
     );
+  });
+
+  it("shows a color-only change with its source, receipt and storage times", async () => {
+    const event = fixtures.colorChange;
+    renderDashboard({ "GET /api/events": { ...fixtures.eventsPage2, events: [event] } });
+
+    const card = (await within(byId("timeline")).findByText(`Evidence ID: ${event.id}`)).closest(
+      "article",
+    );
+    if (!card) throw new Error(`${event.id} is not rendered as a card`);
+    const scope = within(card);
+    expect(scope.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "xy color: 0.3, 0.32 → 0.45, 0.41",
+    ]);
+    expect(scope.getByText(`Source event: ${localTime(event.event_time)}`)).toBeInTheDocument();
+    expect(
+      scope.getByText(
+        `Connector received: ${localTime(event.received_at)} · Stored: ${localTime(event.persisted_at)}`,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("tells an open collection gap from a recovered one", async () => {

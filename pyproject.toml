@@ -42,7 +42,7 @@ branch = true
 source_pkgs = ["home_observer"]
 
 [tool.coverage.report]
-# Measured 86.43% branch coverage when the gate was added; keep a small buffer below it.
+# A few points under measured coverage, so refactors don't trip it but real drops do.
 fail_under = 83
 show_missing = true
 skip_covered = true
