@@ -300,6 +300,14 @@ Do not share the token or raw registry payloads when reporting a failure.
 Share the safe dashboard error and Home Assistant version. Phase 1 implements
 monitoring and evidence collection. Real home hardware validation remains pending.
 
+Baseline history uses `limit` (1–100, default 50) and an integer `cursor` from
+`next_cursor`; pages contain newest snapshots first. Event history uses its own
+timestamp/ID cursor. Collection passes have a deadline of at least 30 seconds,
+scaled by five seconds per selected light plus ten seconds. Buffered changes are
+persisted between reads, with healthy heartbeats during long successful passes.
+A newer completed HTTP read can correct current state after Home Assistant clock
+rollback; events captured during that read retain precedence when newer.
+
 ## Architecture
 
 ```mermaid
@@ -323,9 +331,10 @@ Delayed collection cannot bypass a removal or a new selection revision.
 
 ## Security boundary
 
-- Only the API publishes a port, on `127.0.0.1`. Both services run as an
+- The Observer API publishes only on `127.0.0.1`. Its API and collector run as an
   unprivileged user, without Linux capabilities, with read-only filesystems
-  except their mounted volumes.
+  except their mounted volumes. The optional, separate Home Assistant container
+  also publishes a loopback port and runs with its upstream container identity.
 - Only the live collector mounts the Home Assistant token file. The API, SQLite
   and browser never receive it. Whole-home registries stay inside the trusted
   connector until it projects minimal metadata. Raw administrative URLs and
@@ -424,15 +433,15 @@ also produced a heartbeat gap without new device events, then recovered in a
 Ruff, JavaScript syntax, demo Compose smoke and browser DOM checks passed.
 Real Hue hardware, hosted CI and the other platforms listed above remain untested.
 
+The full review fixes passed 82 local tests. Four major failures were reproduced
+before their fixes. Demo Compose and synthetic live Compose passed; the latter
+check took 22.789 seconds including startup/build. Ruff, JavaScript syntax, shell
+syntax and Compose configuration checks passed. A secret scan found only public
+synthetic fixture values. The optional Home Assistant 2026.10.1 container started
+on this WSL2/Linux Docker Engine host and returned its onboarding page. Account
+creation, real bridge pairing and hardware event capture are still pending.
+
 ## License
 
 [MIT](LICENSE). This independent project uses original code, public documentation
 and synthetic examples. It contains no employer code or home credentials.
-
-Baseline history uses `limit` (1–100, default 50) and an integer `cursor` from
-`next_cursor`; pages contain newest snapshots first. Event history uses its own
-timestamp/ID cursor. Collection passes have a deadline of at least 30 seconds,
-scaled by five seconds per selected light plus ten seconds. Buffered changes are
-persisted between reads, with healthy heartbeats during long successful passes.
-A newer completed HTTP read can correct current state after Home Assistant clock
-rollback; events captured during that read retain precedence when newer.
