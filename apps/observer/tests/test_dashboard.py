@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-APP = Path(__file__).parents[1] / "web" / "app.js"
+APP = Path(__file__).parents[3] / "web" / "app.js"
 HARNESS = """
 const fs = require("node:fs");
 const vm = require("node:vm");

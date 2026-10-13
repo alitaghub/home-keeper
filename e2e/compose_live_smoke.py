@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 REPO = Path(__file__).resolve().parents[1]
+FAKE_HOME_ASSISTANT = REPO / "apps" / "observer" / "tests" / "fake_home_assistant.py"
 
 
 def main():
@@ -32,7 +33,7 @@ def main():
     build: {REPO}
     command: [python, /fixture/fake_home_assistant.py]
     volumes:
-      - {REPO / "tests" / "fake_home_assistant.py"}:/fixture/fake_home_assistant.py:ro
+      - {FAKE_HOME_ASSISTANT}:/fixture/fake_home_assistant.py:ro
     networks: [live]
     read_only: true
     cap_drop: [ALL]

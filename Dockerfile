@@ -1,12 +1,14 @@
-FROM ghcr.io/astral-sh/uv:0.10.12 AS uv
-FROM python:3.12-slim
+FROM ghcr.io/astral-sh/uv:0.13.0 AS uv
+FROM python:3.13-slim
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-COPY src ./src
+COPY apps/observer/pyproject.toml ./apps/observer/
+COPY apps/observer/src ./apps/observer/src
+# The API serves the dashboard from ./web relative to the working directory.
 COPY web ./web
-RUN uv sync --locked --no-dev --no-editable
+RUN uv sync --locked --no-dev --no-editable --package home-observer
 ENV PATH="/app/.venv/bin:$PATH"
 # Shared secret and data volumes use a fixed, unprivileged identity.
 RUN groupadd --gid 10001 observer && useradd --uid 10001 --gid 10001 observer \
