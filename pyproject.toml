@@ -86,6 +86,9 @@ ignore = [
 [tool.basedpyright]
 typeCheckingMode = "strict"
 pythonVersion = "3.13"
+# Read installed packages from the uv workspace environment, not whatever python is on PATH.
+venvPath = "."
+venv = ".venv"
 include = ["apps/observer/src", "apps/observer/tests", "e2e"]
 # Resolve the workspace package and the shared test helpers as local source.
 extraPaths = ["apps/observer/src", "apps/observer/tests"]
