@@ -6,12 +6,13 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <header><div class="brand">◉ <strong>Home Observer</strong></div><span class="demo">SYNTHETIC DEMO</span></header>
+  <header><div class="brand">◉ <strong>Home Observer</strong></div><span id="source" class="demo">CONNECTING</span></header>
   <main>
     <div class="heading"><div><p class="eyebrow">YOUR HOME, OBSERVED</p><h1>Know what is connected.</h1>
       <p class="intro">Discover devices. Choose the lights to monitor. Keep the evidence local.</p></div>
       <button id="refresh">Refresh discovery</button></div>
-    <p class="notice">Demo data only. No hardware, Home Assistant, model, or device controls are connected.</p>
+    <p id="source-notice" class="notice">Waiting for the configured collector. No model or device controls are connected.</p>
+    <p id="catalog-status" role="status" aria-live="polite"></p>
     <div class="stats"><section><span>Collector</span><strong id="health">Connecting…</strong><small id="heartbeat">Waiting for collection</small></section>
       <section><span>Discovered entities</span><strong id="count">—</strong><small>Entities grouped by device below</small></section>
       <section><span>Monitoring</span><strong id="selected-count">0</strong><small>You choose what gets recorded</small></section></div>

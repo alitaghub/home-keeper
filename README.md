@@ -1,13 +1,13 @@
 # Home Observer
 
-A local smart-home monitor, starting with explicit device discovery and selection.
-This first milestone runs a synthetic home. It has no agent, model calls, device
-controls or live Home Assistant connection yet.
+A local smart-home monitor with explicit device discovery and selection. Run a
+hardware-free synthetic demo, or connect an existing Home Assistant instance and
+record selected individual Hue lights. There is no AI agent or device control yet.
 
 ## Start the demo
 
-Install Docker Engine with Compose on Linux, or Docker Desktop on Windows/WSL2
-or macOS. From this repository:
+Install Docker Engine with Compose on Linux, or Docker Desktop with Compose on
+Windows/WSL2 or macOS. From this repository:
 
 ```sh
 docker compose up --build --wait
@@ -19,13 +19,13 @@ sensor. Only individual lights can be selected. Click **Monitor** to establish a
 baseline. Nothing is monitored automatically.
 
 Selection takes effect on the next collection pass, normally within 10 seconds.
-The old source change date is deliberate: collection can be fresh even when a
-light has not changed for months. A script-shaped device name is also deliberate;
-the dashboard displays it as text.
+The old source change date is deliberate. A recent collection can confirm a
+state that has not changed for months. A script-shaped device name is also
+deliberate; the dashboard displays it as text.
 
-The dashboard refreshes its view every three seconds. **Refresh discovery** loads
-the latest catalog collected by the synthetic connector. In this milestone that
-catalog is fixed, and the connector refreshes it on every collection pass.
+The dashboard refreshes every three seconds. **Refresh discovery** requests a
+new catalog on the next collection pass. A newly discovered light stays
+unselected until you choose it.
 
 ```sh
 docker compose restart
@@ -33,84 +33,187 @@ docker compose restart
 docker compose down
 ```
 
-SQLite data and the generated internal credential persist in separate named
-volumes. `docker compose down --volumes` deletes both. Changing selection never
-requires a restart. **Stop monitoring** removes the light from current views and
-rejects later observation ingestion. Previously recorded baselines stay stored.
+SQLite data and the internal service credential persist in named volumes.
+`docker compose down --volumes` deletes those volumes. Changing selection never
+requires a restart. **Stop monitoring** rejects later observation ingestion.
+Previously recorded baselines stay stored.
 
-To change collection timing without storing a secret:
+## Connect Home Assistant and Hue
+
+This setup does not install Home Assistant. First run Home Assistant separately
+and pair your Hue Bridge through its [Hue integration](https://www.home-assistant.io/integrations/hue/).
+Home Observer connects to Home Assistant, rather than directly to the bridge.
+
+Create a dedicated Home Assistant user with permission to read the required
+registries and selected entities, then generate a long-lived access token from
+that user's profile. Home Assistant tokens do not provide a per-token read-only
+entity scope. Treat the token as a powerful credential. The connector restricts
+its own operations to fixed discovery and selected-state reads.
+
+Save the token alone in a local file outside this repository. Do not put it in
+`.env`, a URL, a shell command argument, the dashboard, or a Compose environment
+variable. On Linux/WSL, restrict the file so container user `10001` can read it:
+
+```sh
+# Replace this example path with your token file. These commands contain no token.
+sudo chown 10001:10001 /absolute/path/to/ha-token
+sudo chmod 600 /absolute/path/to/ha-token
+```
+
+Docker Desktop file-sharing permissions may differ. Confirm that the mounted
+file is readable by container user `10001` without making it publicly readable.
+Set the connection origin and absolute token file path, then start live mode:
+
+```sh
+export OBSERVER_HA_URL=https://home-assistant.example.test:8123
+export OBSERVER_HA_TOKEN_FILE=/absolute/path/to/ha-token
+docker compose -f compose.yaml -f compose.live.yaml up --build --wait
+```
+
+Use your actual Home Assistant origin, without credentials, a query string or an
+API path. The address above is an example. HTTPS certificate verification stays
+on. Install a certificate trusted by the container; invalid certificates fail
+collection. HTTP is supported for a trusted local network, but does not encrypt
+the token in transit.
+
+Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
+lists minimal device/entity metadata exposed by Home Assistant. Only enabled
+individual Hue V2 lights with recognized registry metadata can be monitored.
+Hue groups, other integrations, disabled entities and unknown metadata remain
+unsupported. This classification uses the released Home Assistant
+[2026.10.1 individual-light contract](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/components/hue/v2/light.py)
+and [group-light contract](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/components/hue/v2/group.py).
+Changed or legacy metadata is rejected rather than guessed.
+
+Select a light to record its first state. Add more devices to Home Assistant and
+click **Refresh discovery** to find them without changing configuration or
+restarting. Stable entity registry identity keeps selection and history across
+an entity name change. A new registry entry reusing an old entity ID does not
+inherit approval.
+
+Live mode uses its own `live-data` SQLite volume. Keep demo and live data separate.
+The API rejects a database containing another source. Stop the demo before
+starting live mode because both publish the same localhost port. To stop live
+mode while retaining data:
+
+```sh
+docker compose -f compose.yaml -f compose.live.yaml down
+```
+
+Use both Compose files for live start, restart and stop commands. Adding
+`--volumes` to the live stop command deletes its named volumes.
+
+## Collection and evidence limits
+
+The collector refreshes discovery and polls selected current states in each
+collection pass. It waits ten seconds between passes by default. Slow requests
+can lengthen the interval. Change the interval without storing a secret:
 
 ```sh
 OBSERVER_RECONCILIATION_SECONDS=30 docker compose up --build --wait
 ```
 
-Use a positive interval in seconds. Freshness becomes stale after twice that
-interval or when the collector reports failure. Missing observations are pending,
-not evidence of an unavailable bulb.
+For live mode, add `-f compose.yaml -f compose.live.yaml` to that command. Use a
+positive interval in seconds. Freshness becomes stale after twice the interval
+or a reported collector failure. Authentication, connection and certificate
+errors appear as safe status messages. A failed refresh retains the previous
+catalog marked stale. A missing or unreadable selected entity remains selected,
+with unknown or stale evidence. This does not prove the bulb is disconnected.
 
-## What is recorded
+Each accepted baseline records its stable ID, registry identity, current entity
+ID, source, state, availability, receipt time and server-owned persistence time.
+Source change, update and report timestamps remain separate. Unchanged polling
+updates collection confirmation without duplicating the baseline. Freshness
+means Home Assistant answered recently, not that the bulb itself answered then.
 
-Each baseline has a stable ID, entity ID, synthetic source, state, availability,
-receipt time, and server-owned persistence time. Source change, update and report
-timestamps remain separate. The latest confirmed collection time updates after
-unchanged reconciliation without duplicating baseline history.
+Home Assistant's [Hue integration](https://www.home-assistant.io/integrations/hue/)
+receives pushed updates from Hue V2 bridges and polls V1 bridges. Our connector
+polls Home Assistant current state. It does not subscribe to an event stream,
+import Recorder history, recover changes between polls, or attribute changes to
+automations. Earlier or short-lived changes may therefore be absent.
 
-This milestone does not implement an event timeline, historical import, retention
-cleanup, investigations, or recovery-gap accounting. Baselines currently remain
-until the data volume is removed. Do not use this milestone to collect real home
-history. The planned history milestone adds configurable retention.
+There is no event timeline, retention cleanup, investigation or recovery-gap
+accounting yet. Baselines remain until the data volume is removed. Use this
+milestone for connection and baseline verification; long-term history collection
+needs the planned retention milestone.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    C[Synthetic collector] -->|Authenticated typed reads and ingestion| A[FastAPI]
+    H[Hue lights and bridge] --> HA[External Home Assistant]
+    HA -->|Fixed registry and selected-state reads| C[Live collector]
+    D[Synthetic home] --> DC[Demo collector]
+    C -->|Authenticated typed ingestion| A[FastAPI]
+    DC -->|Authenticated typed ingestion| A
     A --> S[(SQLite)]
-    B[Local dashboard] -->|Explicit selection| A
-    V[Generated secret volume] --> A
+    B[Local dashboard] -->|Explicit selection and refresh| A
+    T[Home Assistant token file] -->|Read only; live collector only| C
+    V[Internal credential volume] --> A
     V -->|Read only| C
 ```
 
-FastAPI is the only SQLite writer. The collector has no database mount. Catalog
-refresh describes devices but does not grant or revoke user approval. A selected
-entity missing from discovery stays selected, displays unknown or stale evidence,
-and cannot receive new observations until supported discovery returns. The user
-can remove it explicitly.
-
-Selection changes and observation acceptance use SQLite transactions and a
-server-owned revision. A delayed collector snapshot cannot bypass a removal or a
-new selection revision. Unsupported and unknown IDs cannot be selected or ingested.
+Choose one collector mode. FastAPI is the only SQLite writer. The collector has
+no database mount. Discovery describes devices but grants no monitoring approval.
+Selection and ingestion use SQLite transactions and a server-owned revision.
+Delayed collection cannot bypass a removal or a new selection revision.
 
 ## Security boundary
 
-- Only the API publishes a port, explicitly on `127.0.0.1`. The collector has no
-  published port. Both services run without Linux capabilities, as an unprivileged
-  user, with a read-only filesystem except their mounted volumes.
-- The API generates an internal service credential in a restricted file. The
-  collector mounts that secret volume read-only. The dashboard never receives it.
-  This is a service-ingestion credential, not a Home Assistant token.
-- Internal endpoints require that credential. Dashboard mutations require an
-  explicit header, validate Host and Origin, and deny cross-site requests.
-- Device names render with `textContent`, under a restrictive Content Security
-  Policy. Schema validation caps fields and accepts only the synthetic source.
-  Validation errors and collector failures never echo submitted values or secrets.
-- The collector can post catalog, observations and health to a fixed internal API.
-  There are no shell tools, arbitrary HTTP tools, vendor credentials, router
-  administration endpoints or device-write operations.
-- The collector attaches only to an internal collection network. The API also
-  attaches to an ordinary bridge network so Docker can publish its localhost
-  dashboard port. This separates the collector from direct internet routing,
-  but does not prove that every host service is unreachable. There is no agent
-  in this milestone. Its later network boundary requires separate tests.
+- Only the API publishes a port, on `127.0.0.1`. Both services run as an
+  unprivileged user, without Linux capabilities, with read-only filesystems
+  except their mounted volumes.
+- Only the live collector mounts the Home Assistant token file. The API, SQLite
+  and browser never receive it. Whole-home registries stay inside the trusted
+  connector until it projects minimal metadata. Raw administrative URLs and
+  unused registry identifiers do not enter the catalog or database.
+- The API creates an internal service credential in a restricted file. The
+  collector mounts its volume read-only. Internal endpoints require it.
+  Dashboard mutations require an explicit header and validate Host and Origin.
+- Device names render as text under a restrictive Content Security Policy.
+  Schema validation limits fields and restricts source identity. Error status
+  and logs omit submitted secrets and raw connector responses.
+- Home Assistant operations are fixed registry reads and approved entity-state
+  reads. There is no arbitrary HTTP passthrough, shell tool, router
+  administration endpoint, service call or device-write operation.
+- The demo collector uses an internal Docker network. The live collector also
+  has an ordinary bridge network to reach Home Assistant. It has network access
+  needed by a trusted credential service. No model can use this service as a
+  tool. A future agent needs a separate network boundary and approved evidence
+  tools before it can be added.
 
-Do not expose this service publicly. It has no user authentication. No data leaves
-the home for a cloud model because this milestone makes no model calls.
+Do not expose the dashboard publicly. It has no user authentication. This version
+makes no model calls, so no data leaves the home for a cloud model. A future cloud
+investigation mode must document the evidence it sends before enabling it.
+Deco and additional vendor adapters require separate review.
 
-## Development and checks
+## Networking and platform limits
 
-Python 3.12, `uv`, and Node.js 24 are the development tools. Node only checks the
-static JavaScript syntax; there are no frontend package dependencies or TypeScript
-claims. Python dependencies are pinned in `uv.lock`.
+Use an explicit address reachable from the collector container. Container
+`localhost` means that container, not the computer running Docker.
+
+- Windows/WSL2: run Compose in the WSL project with Docker Desktop WSL integration
+  enabled. Use the dashboard's published localhost address. For Home Assistant
+  on the Windows host, Docker Desktop provides `host.docker.internal`; for a
+  separate home server, use its reachable LAN address or DNS name. WSL firewall,
+  VPN and LAN routing can affect connectivity.
+- macOS with Docker Desktop: `host.docker.internal` identifies the host. LAN DNS,
+  firewall and VPN rules still apply. Docker Desktop runs containers inside a VM.
+- Native Linux Docker Engine: `host.docker.internal` is not supplied automatically.
+  Use a reachable LAN address, or configure a host-gateway mapping explicitly.
+  Home Assistant must listen on an address reachable from the container network.
+
+These are setup directions, not platform test results. The demo was verified on
+WSL2/Linux kernel `6.18.33.2-microsoft-standard-WSL2`, Docker Engine `29.9.0`
+`linux/amd64`, and Compose `5.6.0`. Native Windows, macOS and a separate native
+Linux deployment have not been tested. Real Hue hardware and a user's Home
+Assistant instance have not been tested.
+
+## Development and verification
+
+Python 3.12, `uv`, and Node.js 24 are the development tools. Node checks static
+JavaScript syntax; the frontend has no package dependencies or TypeScript.
+Python dependencies are pinned in `uv.lock`.
 
 ```sh
 uv sync --locked
@@ -120,50 +223,26 @@ uv run ruff format --check .
 node --check web/app.js
 ```
 
-CI runs these hardware-free checks and starts the Compose demo. Tests exercise
-real temporary SQLite files and API requests. They cover explicit approval,
-selection persistence, rejected delayed ingestion, freshness, malformed data,
-credential checks, and browser request boundaries. Browser and actual deployment
-results are recorded separately in the local build report; the plan alone does
-not prove a check passed.
+CI uses hardware-free checks and a Compose demo smoke test. Live connector tests
+use synthetic Home Assistant responses, not home credentials. They distinguish
+connector behavior from Home Assistant's physical device behavior.
 
-## Verification
+Story 01's local verification recorded 12 passing API tests, Ruff and JavaScript
+syntax checks, browser selection/removal and malicious-name rendering, and
+Compose startup/restart/smoke checks. One synthetic selection confirmed in 4.6
+seconds with ten-second polling. That is not measured Hue latency.
 
-The following checks passed locally on the WSL2/Linux runtime described below.
-Hosted CI has not run because this change has not been pushed.
-
-| Check | Observed result |
-| --- | --- |
-| API integration tests | 12 passed, including selection, timestamp ordering, access restrictions and failure/recovery |
-| Python lint and formatting | Ruff passed |
-| Frontend | JavaScript syntax passed; browser navigation, selection/removal and literal malicious-name rendering passed |
-| Deployment | Compose startup, restart and positive smoke passed; smoke failed as expected with the collector stopped |
-| Collection delay | One synthetic selection took 4.6 seconds to confirm with 10-second polling; this is not measured Hue latency |
-| Model usage | Zero model calls and zero model cost |
-
-There is one upstream TestClient deprecation warning. No Python static typechecker
-or TypeScript checks ran. Browser screenshot capture failed, so visual screenshot
-review is not claimed. Live Hue and Home Assistant behavior were not tested.
-
-## Platform and live-mode limits
-
-Compose uses an explicit URL, so it does not depend on local `.local` name
-resolution. On Windows, run Compose in the WSL2 project directory with Docker
-Desktop WSL integration enabled and use the published localhost URL. Container
-`localhost` refers to that container, not the Windows, Linux or macOS host.
-
-The demo was verified on WSL2/Linux with kernel
-`6.18.33.2-microsoft-standard-WSL2`, Docker Engine `29.9.0` on `linux/amd64`,
-and Compose `5.6.0`. Native Windows, macOS, and a separate native Linux deployment
-have not been tested. No direct Hue discovery or live Home Assistant networking
-was implemented or verified in this milestone.
-
-Live mode will connect to an existing Home Assistant instance; setup will not
-install Home Assistant. Discovery will show entities exposed by Home Assistant,
-then explicit selection will approve supported individual Hue lights. Vendor
-adapters and Deco support remain later work.
+Story 02 passed 41 local tests, including seven independent boundary probes.
+Synthetic WebSocket/REST tests verified selected reads, identity changes, failure
+recovery, credential sanitization, payload limits and invalid TLS rejection.
+An isolated live Compose deployment against a fake Home Assistant passed
+startup, selection, collection, outage and recovery checks in 44.31 seconds,
+including image build time. This is test duration, not measured Hue latency.
+Demo Compose smoke, Ruff, JavaScript syntax and browser DOM checks also passed.
+Hosted CI has not run. No Python static typechecker or TypeScript checks are
+claimed. Model calls and model cost are zero.
 
 ## License
 
-[MIT](LICENSE). This is an independent project with original code and synthetic
-examples. It contains no employer code or home credentials.
+[MIT](LICENSE). This independent project uses original code, public documentation
+and synthetic examples. It contains no employer code or home credentials.

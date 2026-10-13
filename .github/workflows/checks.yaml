@@ -21,5 +21,6 @@ jobs:
       - run: docker compose config --quiet
       - run: docker compose up --build --wait
       - run: uv run python tests/compose_smoke.py
+      - run: uv run python tests/compose_live_smoke.py
       - if: always()
         run: docker compose down

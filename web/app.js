@@ -7,6 +7,19 @@ const el = (tag, text, className) => {
 };
 const date = (value) => value ? new Date(value).toLocaleString() : "Not captured";
 let busy = false;
+let refreshPending = false;
+let lastCatalogRefresh = null;
+let requestedAfter = null;
+const collectionErrors = {
+  authentication: "Home Assistant rejected authentication. Check the connector token and its user permissions.",
+  connection: "The connector cannot reach Home Assistant. Check its address and container networking.",
+  tls: "Certificate verification failed. Configure a trusted certificate; verification remains enabled.",
+  timeout: "Home Assistant did not respond in time. Collection will retry.",
+  invalid_data: "Home Assistant returned unsupported or invalid data. No affected observation was stored.",
+  missing: "A selected entity could not be read. This does not prove a physical device outage.",
+  discovery: "Discovery failed. The last validated catalog remains visible.",
+  configuration: "The connector configuration is invalid. Check the origin and token file."
+};
 async function request(path, options = {}) {
   const response = await fetch(path, options);
   if (!response.ok) throw new Error("Request failed. Please retry.");
@@ -27,7 +40,7 @@ async function toggle(id, selected) {
 function renderCatalog(entities, selected) {
   const target = document.getElementById("catalog");
   target.replaceChildren();
-  if (!entities.length) target.append(el("p", "Waiting for the synthetic collector to publish discovery.", "empty"));
+  if (!entities.length) target.append(el("p", "Waiting for the collector to publish discovery.", "empty"));
   const groups = new Map();
   for (const entity of entities) {
     const key = entity.device_id || "__ungrouped";
@@ -85,11 +98,32 @@ async function load() {
     document.getElementById("selected-count").textContent = String(selection.entity_ids.length);
     document.getElementById("health").textContent = health.status;
     document.getElementById("heartbeat").textContent = `Last collection: ${date(health.received_at)}`;
-    document.getElementById("message").textContent = "";
+    const live = catalog.source_id === "home_assistant";
+    lastCatalogRefresh = catalog.refreshed_at;
+    if (refreshPending && catalog.refreshed_at && catalog.refreshed_at !== requestedAfter) refreshPending = false;
+    document.getElementById("source").textContent = live ? "HOME ASSISTANT" : "SYNTHETIC DEMO";
+    document.getElementById("source-notice").textContent = live
+      ? "Home Assistant discovery. Only selected individual Hue lights are recorded. No model or device controls are connected."
+      : "Demo data only. No hardware, Home Assistant, model, or device controls are connected.";
+    document.getElementById("catalog-status").textContent = catalog.freshness === "stale"
+      ? `Discovery is stale. Showing the last validated catalog from ${date(catalog.refreshed_at)}.`
+      : `Discovery: ${catalog.freshness || "pending"} · Last refreshed: ${date(catalog.refreshed_at)}`;
+    document.getElementById("message").textContent = collectionErrors[health.error]
+      || (refreshPending ? "Discovery refresh requested. The collector checks on its next collection pass." : "");
     renderCatalog(catalog.entities, selection.entity_ids);
     renderMonitored(monitored.entities);
   } catch (_) { document.getElementById("message").textContent = "Cannot reach the observer. Collection freshness is unknown until connection returns."; }
 }
-document.getElementById("refresh").addEventListener("click", load);
+document.getElementById("refresh").addEventListener("click", async () => {
+  if (busy) return;
+  busy = true;
+  try {
+    await request("/api/discovery/refresh", {method: "POST", headers: {"X-Home-Observer": "1"}});
+    requestedAfter = lastCatalogRefresh;
+    refreshPending = true;
+    await load();
+  } catch (error) { document.getElementById("message").textContent = error.message; }
+  finally { busy = false; }
+});
 load();
 setInterval(load, 3000);
