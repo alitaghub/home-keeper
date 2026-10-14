@@ -3,6 +3,7 @@
   "body": {
     "entities": [],
     "freshness": "pending",
+    "home_assistant_url": null,
     "refreshed_at": null,
     "source_id": "demo"
   }

@@ -265,6 +265,8 @@ export interface components {
              * @enum {string}
              */
             freshness: "pending" | "fresh" | "stale";
+            /** Home Assistant Url */
+            home_assistant_url: string | null;
             /** Refreshed At */
             refreshed_at: string | null;
             /**

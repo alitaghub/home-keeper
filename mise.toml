@@ -42,7 +42,6 @@ run = [
   "mise run typecheck",
   "mise run test",
   "pnpm --filter @home-observer/web build",
-  "bash -n scripts/start-home.sh scripts/connect-home.sh",
   "mise run check:api",
   "mise run lint:workflows",
 ]
@@ -71,18 +70,19 @@ run = [
 [tasks.dev]
 description = "Start the demo stack, then the Vite dev server with /api proxied to it"
 run = """
-docker compose up --build --wait
+docker compose -f compose.demo.yaml up --build --wait
 OBSERVER_API_ORIGIN="http://127.0.0.1:${OBSERVER_PORT:-8000}" pnpm --filter @home-observer/web dev
 """
 
 [tasks.e2e]
-description = "Run the Compose smoke scripts and the Playwright suite against a fresh stack"
+description = "Run the Compose smoke scripts and the Playwright suite against fresh stacks"
 run = """
-# On failure, keep the stack's logs for debugging (CI uploads them).
-trap 'status=$?; [ "$status" -eq 0 ] || docker compose logs --no-color > compose-logs.txt; docker compose down' EXIT
-docker compose -f compose.home-assistant.yaml config --quiet
-docker compose up --build --wait
+# On failure, keep the demo stack's logs for debugging (CI uploads them).
+trap 'status=$?; [ "$status" -eq 0 ] || docker compose -f compose.demo.yaml logs --no-color > compose-logs.txt; docker compose -f compose.demo.yaml down' EXIT
+docker compose config --quiet
+docker compose -f compose.demo.yaml up --build --wait
 uv run python e2e/compose_smoke.py
 uv run python e2e/compose_live_smoke.py
+uv run python e2e/compose_home_smoke.py
 E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${OBSERVER_PORT:-8000}}" pnpm --filter @home-observer/web e2e
 """

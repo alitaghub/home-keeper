@@ -34,12 +34,13 @@ def main() -> None:
     command: [python, /fixture/fake_home_assistant.py]
     volumes:
       - {FAKE_HOME_ASSISTANT}:/fixture/fake_home_assistant.py:ro
-    networks: [live]
+    networks: [home-assistant]
     read_only: true
     cap_drop: [ALL]
 """)
         env = os.environ | {
             "OBSERVER_HA_URL": "http://fake-ha:8123",
+            "OBSERVER_HA_PUBLIC_URL": "http://ha.example.test:8123",
             "OBSERVER_HA_TOKEN_FILE": str(token),
             "OBSERVER_RECONCILIATION_SECONDS": "1",
             # The proof publishes its own port, so ignore a caller's OBSERVER_PORT.
@@ -53,7 +54,7 @@ def main() -> None:
             "-f",
             str(REPO / "compose.yaml"),
             "-f",
-            str(REPO / "compose.live.yaml"),
+            str(REPO / "compose.external.yaml"),
             "-f",
             str(override),
         ]
@@ -93,6 +94,7 @@ def main() -> None:
                 else:
                     raise AssertionError("Live collector never published discovery")
                 assert catalog["source_id"] == "home_assistant"
+                assert catalog["home_assistant_url"] == "http://ha.example.test:8123"
                 assert client.get("/api/selection").json()["entity_ids"] == []
                 client.put("/api/selection/ha:fixture", json={"selected": True}).raise_for_status()
                 deadline = time.monotonic() + 30

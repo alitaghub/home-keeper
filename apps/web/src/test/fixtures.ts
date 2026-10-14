@@ -42,6 +42,7 @@ export const ungroupedSensor = {
 
 export const catalog = {
   source_id: "demo",
+  home_assistant_url: null,
   freshness: "fresh",
   refreshed_at: "2026-10-12T10:00:07+00:00",
   entities: [desk, reading, roomGroup, ungroupedSensor],

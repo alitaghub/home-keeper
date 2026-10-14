@@ -6,7 +6,7 @@ Assistant and never controls them.
 ## Done
 
 - `mise run check` exits 0.
-- Changes to Docker, Compose, `scripts/` or the UI also pass `mise run e2e`.
+- Changes to Docker, Compose or the UI also pass `mise run e2e`.
   Set `OBSERVER_PORT` when port 8000 is taken.
 - User-visible changes update `README.md` or `docs/`.
 
