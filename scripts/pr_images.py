@@ -65,7 +65,7 @@ def with_images(body: str | None, markdown: str) -> str:
 
 
 def gh_api(method: str, route: str, body: dict[str, object] | None = None) -> str:
-    # `gh pr edit` is avoided: the API calls below need no extra scopes or GraphQL.
+    # Plain REST calls: they need no token scopes beyond `repo` and no GraphQL.
     result = subprocess.run(
         ["gh", "api", "--method", method, route, *(["--input", "-"] if body else [])],
         input=json.dumps(body) if body else None,
@@ -80,7 +80,8 @@ def gh_api(method: str, route: str, body: dict[str, object] | None = None) -> st
 
 def upload(repo: str, ref: str, files: list[Path]) -> str:
     """Commits the images on top of the ref and returns the new commit's SHA."""
-    # matching-refs answers [] for a missing ref, where git/ref would answer 404.
+    # matching-refs returns [] for a missing ref, so the first upload creates it.
+    # It matches by prefix (pr-1 also matches pr-12), hence the exact comparison.
     matches = json.loads(gh_api("GET", f"repos/{repo}/git/matching-refs/{ref}"))
     parent = next(
         (m.object.sha for m in map(MatchingRef.model_validate, matches) if m.ref == f"refs/{ref}"),
