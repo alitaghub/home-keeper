@@ -2,6 +2,7 @@ import os
 import secrets
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import uvicorn
 
@@ -56,6 +57,14 @@ def parse_origin(variable: str, value: str) -> str | None:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def parse_timezone(variable: str, value: str) -> ZoneInfo:
+    """Parse an IANA time zone name, such as Europe/Copenhagen, from the environment."""
+    try:
+        return ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError(f"{variable} must be an IANA time zone name") from None
+
+
 def main():
     token = create_token(Path(os.environ.get("OBSERVER_TOKEN_FILE", "/secrets/service-token")))
     port = int(os.environ.get("OBSERVER_PORT", "8000"))
@@ -69,6 +78,7 @@ def main():
         ),
         retention_days=int(os.environ.get("OBSERVER_RETENTION_DAYS", "30")),
         reconciliation_seconds=int(os.environ.get("OBSERVER_RECONCILIATION_SECONDS", "10")),
+        timezone=parse_timezone("OBSERVER_TIMEZONE", os.environ.get("OBSERVER_TIMEZONE", "UTC")),
         allowed_hosts=hosts,
         allowed_origins=tuple(
             f"http://{authority}"

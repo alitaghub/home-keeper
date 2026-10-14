@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -41,9 +42,13 @@ from home_observer.models import (
     Observation,
     SelectionChange,
     SelectionSnapshot,
+    UsageReport,
     to_utc,
 )
 from home_observer.store import SnapshotRead, Store
+from home_observer.usage import light_usage
+
+UTC_ZONE = ZoneInfo("UTC")
 
 
 def create_app(
@@ -57,6 +62,7 @@ def create_app(
     retention_days: int = 30,
     allowed_hosts: tuple[str, ...] = ("testserver", "127.0.0.1:8000", "localhost:8000"),
     allowed_origins: tuple[str, ...] = ("http://127.0.0.1:8000", "http://localhost:8000"),
+    timezone: ZoneInfo = UTC_ZONE,
 ) -> FastAPI:
     if (
         isinstance(retention_days, bool)
@@ -658,6 +664,101 @@ def create_app(
                 continuous_coverage=False,
                 outside_recorded_windows="unknown",
             )
+
+    @app.get("/api/usage", response_model=UsageReport)
+    def usage(
+        *,
+        start: datetime,
+        end: datetime,
+        entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
+    ):
+        # A far-past offset can overflow the conversion to UTC.
+        try:
+            start = to_utc(start)
+            end = to_utc(end)
+        except (ValueError, OverflowError):
+            raise HTTPException(422, "Invalid usage range") from None
+        if start > end or end - start > timedelta(days=366):
+            raise HTTPException(422, "Invalid usage range")
+        cutoff = retention_cutoff()
+        with store.transaction() as db:
+            # An expired heartbeat becomes a recorded gap before coverage is read.
+            get_health(db)
+        # A deferred read sees one consistent state without holding the write lock.
+        with store.transaction("DEFERRED") as db:
+            selected = store.selection(db).entity_ids
+            # Unselected IDs are left out rather than reported as missing.
+            lights = sorted(set(entity_id or selected) & set(selected))
+            scope = ",".join("?" * len(lights))
+            # Evidence inside the window, plus each light's latest evidence before it.
+            readings: list[BaselineRecord | EventReading] = [
+                BaselineRecord.model_validate_json(row[0])
+                for row in db.execute(
+                    # Only placeholders are interpolated; values are bound parameters.
+                    "SELECT data FROM baselines WHERE persisted_at>=? "  # noqa: S608 -- placeholders only
+                    "AND julianday(json_extract(data, '$.received_at')) <= julianday(?) "
+                    f"AND entity_id IN ({scope})",
+                    (max(cutoff, start.isoformat()), end.isoformat(), *lights),
+                )
+            ]
+            events = [
+                EventRecord.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM events WHERE persisted_at>=? AND event_time>=? "  # noqa: S608 -- placeholders only
+                    f"AND event_time<=? AND entity_id IN ({scope})",
+                    (cutoff, start.isoformat(), end.isoformat(), *lights),
+                )
+            ]
+            for light in lights:
+                # Snapshots are stored in receipt order, so the newest persisted is the latest read.
+                prior = db.execute(
+                    "SELECT data FROM baselines WHERE entity_id=? AND persisted_at>=? "
+                    "AND persisted_at<? ORDER BY persisted_at DESC, rowid DESC LIMIT 1",
+                    (light, cutoff, start.isoformat()),
+                ).fetchone()
+                if prior:
+                    readings.append(BaselineRecord.model_validate_json(prior[0]))
+                prior = db.execute(
+                    "SELECT data FROM events WHERE entity_id=? AND persisted_at>=? "
+                    "AND event_time<? ORDER BY event_time DESC, id DESC LIMIT 1",
+                    (light, cutoff, start.isoformat()),
+                ).fetchone()
+                if prior:
+                    events.append(EventRecord.model_validate_json(prior[0]))
+                # The cache keeps a steady light's state after its only snapshot expires.
+                current = store.current(db, light)
+                if current:
+                    readings.append(current)
+            # Every retained gap: one that recovered before the window still leaves the light
+            # unknown until new evidence arrives. Gaps are few, bounded by retention.
+            gaps = [
+                CoverageGap.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=?",
+                    (cutoff,),
+                )
+            ]
+        retained_since = datetime.fromisoformat(cutoff)
+        return UsageReport(
+            start=start.isoformat(),
+            end=end.isoformat(),
+            timezone=timezone.key,
+            retained_since=cutoff,
+            lights=[
+                light_usage(
+                    light,
+                    start=start,
+                    end=end,
+                    now=now().astimezone(UTC),
+                    timezone=timezone,
+                    retained_since=retained_since,
+                    readings=readings,
+                    events=events,
+                    gaps=gaps,
+                )
+                for light in lights
+            ],
+        )
 
     @app.get("/api/health", response_model=HealthStatus)
     def health():

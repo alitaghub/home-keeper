@@ -3,7 +3,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from pydantic import TypeAdapter
@@ -26,6 +26,13 @@ class SnapshotRead(NamedTuple):
 
     started_at: datetime
     received_at: datetime
+
+
+def event_outranks_snapshot(
+    event_received_at: datetime, event_time: datetime, snapshot_time: datetime, read: SnapshotRead
+) -> bool:
+    """Whether an event captured during an HTTP read is newer than the read's sampled state."""
+    return event_received_at >= read.started_at and event_time > snapshot_time
 
 
 class Store:
@@ -74,11 +81,14 @@ class Store:
             db.execute("CREATE INDEX IF NOT EXISTS baseline_expiration ON baselines(persisted_at)")
 
     @contextmanager
-    def transaction(self) -> Generator[sqlite3.Connection]:
+    def transaction(
+        self, mode: Literal["IMMEDIATE", "DEFERRED"] = "IMMEDIATE"
+    ) -> Generator[sqlite3.Connection]:
+        """IMMEDIATE takes the write lock up front; DEFERRED suits reads that need no lock."""
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         try:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(f"BEGIN {mode}")
             yield db
             db.commit()
         except Exception:
@@ -139,7 +149,7 @@ class Store:
     def snapshot_can_replace(
         db: sqlite3.Connection, entity_id: str, source_time: datetime, snapshot: SnapshotRead
     ) -> bool:
-        started_at, received_at = snapshot
+        received_at = snapshot.received_at
         previous = db.execute(
             "SELECT source_time, data FROM current_state WHERE entity_id=?", (entity_id,)
         ).fetchone()
@@ -149,11 +159,14 @@ class Store:
         receipt = datetime.fromisoformat(value.received_at)
         if received_at < receipt:
             return False
-        # Events captured during the HTTP read may be newer than its sampled state.
         return not (
             isinstance(value, EventReading)
-            and receipt >= started_at
-            and datetime.fromisoformat(previous["source_time"]) > source_time
+            and event_outranks_snapshot(
+                receipt,
+                datetime.fromisoformat(previous["source_time"]),
+                source_time,
+                snapshot,
+            )
         )
 
     @classmethod
