@@ -130,6 +130,9 @@ mise run dev        # demo stack plus the Vite dev server
 mise run e2e        # demo, own-HA and bundled-HA stacks, smoke tests, Playwright
 ```
 
+VS Code users get workspace settings and recommended extensions; see
+[CONTRIBUTING.md](CONTRIBUTING.md#vs-code).
+
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. Coding
 agents start at [AGENTS.md](AGENTS.md).
 
