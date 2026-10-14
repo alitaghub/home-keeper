@@ -107,9 +107,9 @@ class Setup:
         access_token = self.onboard(login)
         write_private(self.token_file, self.create_long_lived_token(access_token))
         logging.info(
-            "Home Assistant is ready. Log in as %r with password %r", login.username, login.password
+            "Home Assistant is ready. Show the login: "
+            "docker compose run --rm --no-deps ha-setup login"
         )
-        logging.info("Show this login again: docker compose run --rm --no-deps ha-setup login")
 
     def wait_for_onboarding_status(self) -> list[OnboardingStep]:
         deadline = time.monotonic() + READY_TIMEOUT_SECONDS

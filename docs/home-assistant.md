@@ -38,7 +38,7 @@ clicks:
 4. It stores the owner login with mode `600` in the `ha-owner` volume. Only
    `ha-setup` mounts that volume.
 
-Setup logs the password once. Print the login again at any time:
+Print the login at any time. Setup never writes the password to its log:
 
 ```sh
 docker compose run --rm --no-deps ha-setup login

@@ -106,7 +106,9 @@ def main() -> None:
                 body = client.get(f"/api/{endpoint}").text
                 assert login["Password"] not in body
                 assert token not in body
-            assert token not in compose("logs").stdout
+            logs = compose("logs").stdout
+            assert token not in logs
+            assert login["Password"] not in logs
 
         # The API must not reach Home Assistant; only the collector and setup share its network.
         unreachable = compose(

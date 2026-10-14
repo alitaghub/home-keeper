@@ -10,8 +10,8 @@
   SQLite and browser never receive it. In the bundled stack, `ha-setup` writes
   the token with mode `600` to the `ha-token` volume. It keeps the Home
   Assistant owner login, also mode `600`, in the `ha-owner` volume that no other
-  service mounts. Setup logs the owner password once; treat `docker compose logs`
-  output as sensitive. Whole-home registries stay inside the trusted
+  service mounts. Neither the token nor the password is written to a log.
+  Whole-home registries stay inside the trusted
   connector until it projects minimal metadata. Raw administrative URLs and
   unused registry identifiers do not enter the catalog or database.
 - The API creates an internal service credential in a restricted file. The
