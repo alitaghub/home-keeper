@@ -13,3 +13,4 @@ htmlcov/
 coverage/
 test-results/
 playwright-report/
+compose-logs.txt

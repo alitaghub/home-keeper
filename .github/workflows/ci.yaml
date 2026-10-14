@@ -12,64 +12,10 @@ concurrency:
 permissions:
   contents: read
 
+# Each job runs a mise task, so CI and local runs execute the same commands.
 jobs:
-  changes:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    # Pull requests read the changed files from the API; pushes to main run every job.
-    if: github.event_name == 'pull_request'
-    permissions:
-      pull-requests: read
-    outputs:
-      python: ${{ steps.filter.outputs.python }}
-      web: ${{ steps.filter.outputs.web }}
-      contract: ${{ steps.filter.outputs.contract }}
-      docker: ${{ steps.filter.outputs.docker }}
-      workflows: ${{ steps.filter.outputs.workflows }}
-    steps:
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: filter
-        with:
-          # mise.toml pins every tool and the CI files define every job, so both run everything.
-          filters: |
-            all: &all
-              - mise.toml
-              - .github/workflows/ci.yaml
-            python: &python
-              - *all
-              - apps/observer/**
-              - e2e/**/*.py
-              - pyproject.toml
-              - uv.lock
-              - typings/**
-            web: &web
-              - *all
-              - apps/web/**
-              - e2e/playwright/**
-              - package.json
-              - pnpm-lock.yaml
-              - pnpm-workspace.yaml
-              - biome.json
-            contract:
-              - *python
-              - apps/web/src/api/**
-            docker:
-              - *python
-              - *web
-              - Dockerfile
-              - .dockerignore
-              - compose*.yaml
-              - scripts/**
-            workflows:
-              - *all
-              - .github/**
-
-  # Each job below needs `changes`, which is skipped on push. `!cancelled()` lets the
-  # job run anyway; on a pull request it runs only when its filter matched.
-  python:
-    name: Python
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.python == 'true') }}
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -80,75 +26,17 @@ jobs:
           version: 2026.9.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: uv-${{ runner.os }}-
+          path: |
+            ~/.cache/uv
+            ~/.local/share/pnpm/store
+          key: deps-${{ runner.os }}-${{ hashFiles('uv.lock', 'pnpm-lock.yaml') }}
+          restore-keys: deps-${{ runner.os }}-
       - run: uv sync --locked
-      - name: Ruff lint
-        run: uv run ruff check .
-      - name: Ruff format
-        run: uv run ruff format --check .
-      - name: basedpyright
-        run: uv run basedpyright
-      - name: pytest with coverage gate
-        run: uv run pytest -q --cov
-
-  web:
-    name: Web
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.web == 'true') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
-        with:
-          version: 2026.9.1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.local/share/pnpm/store
-          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
-      - name: Biome
-        run: pnpm exec biome check .
-      - name: tsc
-        run: pnpm -r typecheck
-      - name: Vitest
-        run: pnpm -r test
-      - name: Build
-        run: pnpm --filter @home-observer/web build
-
-  contract:
-    name: API contract
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.contract == 'true') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
-        with:
-          version: 2026.9.1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: uv-${{ runner.os }}-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.local/share/pnpm/store
-          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
-      - name: Generated API types are current
-        run: mise run check:api
+      - run: mise run check
 
   e2e:
     name: End-to-end
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.docker == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -159,36 +47,15 @@ jobs:
           version: 2026.9.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: uv-${{ runner.os }}-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.local/share/pnpm/store
-          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
+          path: |
+            ~/.cache/uv
+            ~/.local/share/pnpm/store
+          key: deps-${{ runner.os }}-${{ hashFiles('uv.lock', 'pnpm-lock.yaml') }}
+          restore-keys: deps-${{ runner.os }}-
       - run: uv sync --locked
       - run: pnpm install --frozen-lockfile
-      - name: Install Chromium for Playwright
-        run: pnpm exec playwright install --with-deps chromium
-      - name: Validate scripts and Compose files
-        run: |
-          bash -n scripts/start-home.sh scripts/connect-home.sh
-          docker compose config --quiet
-          docker compose -f compose.home-assistant.yaml config --quiet
-      - name: Start the demo stack
-        run: docker compose up --build --wait
-      - name: Compose smoke
-        run: uv run python e2e/compose_smoke.py
-      - name: Live Compose smoke
-        run: uv run python e2e/compose_live_smoke.py
-      - name: Playwright
-        run: pnpm --filter @home-observer/web e2e --reporter=list,html
-        env:
-          PLAYWRIGHT_HTML_OPEN: never
-      - name: Collect Compose logs
-        if: failure()
-        run: docker compose logs --no-color > compose-logs.txt
+      - run: pnpm --filter @home-observer/web exec playwright install --with-deps chromium
+      - run: mise run e2e
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -198,37 +65,3 @@ jobs:
             apps/web/playwright-report/
             apps/web/test-results/
           if-no-files-found: ignore
-      - name: Stop the demo stack
-        if: always()
-        run: docker compose down -v
-
-  workflow-lint:
-    name: Workflow lint
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.workflows == 'true') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
-        with:
-          version: 2026.9.1
-          install_args: actionlint zizmor
-      - name: actionlint and zizmor
-        run: mise run lint:workflows
-
-  # The one required check. A job skipped by path filtering counts as a pass.
-  ci-ok:
-    name: ci-ok
-    needs: [changes, python, web, contract, e2e, workflow-lint]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fail when a needed job failed or was cancelled
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
-        run: |
-          echo "Needed job results: $RESULTS"
-          exit 1
