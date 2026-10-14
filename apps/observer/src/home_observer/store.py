@@ -1,6 +1,6 @@
 import sqlite3
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -39,6 +39,10 @@ class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        # WAL lets readers, such as a long usage report, run without blocking collector writes.
+        # The mode is stored in the database file, so setting it once at startup is enough.
+        with closing(sqlite3.connect(path, timeout=10)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
         with self.transaction() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS catalog(id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -79,6 +83,9 @@ class Store:
                 db.execute("ALTER TABLE baselines ADD COLUMN persisted_at TEXT")
                 db.execute("UPDATE baselines SET persisted_at=json_extract(data, '$.persisted_at')")
             db.execute("CREATE INDEX IF NOT EXISTS baseline_expiration ON baselines(persisted_at)")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS baseline_scope ON baselines(entity_id, persisted_at)"
+            )
 
     @contextmanager
     def transaction(

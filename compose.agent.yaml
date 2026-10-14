@@ -49,6 +49,8 @@ services:
       AGENT_MODEL:
       AZURE_OPENAI_ENDPOINT:
       AZURE_OPENAI_API_KEY:
+      # Only listed variables reach the container. Another provider's key goes here too.
+      OPENAI_API_KEY:
     # `dashboard` reaches the observer API, `agent-db` reaches Postgres, and
     # `default` is egress to the model provider. Never the home-assistant network.
     networks: [dashboard, agent-db, default]

@@ -76,9 +76,12 @@ With an `azure:` model, the part after the colon is your deployment name. Any
 other value is passed to LangChain's
 [`init_chat_model`](https://python.langchain.com/docs/how_to/chat_models_universal_init/),
 for example `anthropic:claude-sonnet-4-5`. Model choice lives in one file,
-`apps/agent/src/home_observer_agent/model.py`. Another provider needs only its
-LangChain package in `apps/agent` and its own key in `.env`; the rest of the
-agent does not change.
+`apps/agent/src/home_observer_agent/model.py`. `openai:` models work with
+`OPENAI_API_KEY` in `.env`. Any other provider needs two changes: its LangChain
+package in `apps/agent/pyproject.toml`, and its key variable listed under the
+`agent` service's `environment` in `compose.agent.yaml`. Compose passes only the
+listed variables into the container, not the whole `.env`. The rest of the agent
+does not change.
 
 If a required setting is missing, the agent fails at startup, names the
 variable in `docker compose logs agent`, and never turns healthy.

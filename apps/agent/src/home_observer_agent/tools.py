@@ -4,6 +4,7 @@ Names from Home Assistant are JSON-quoted so they can never read as instructions
 """
 
 import json
+import logging
 from collections.abc import Callable
 from urllib.parse import quote
 
@@ -60,13 +61,18 @@ def _reading(reading: Reading | None) -> str:
     return f"{reading.state} (brightness {reading.brightness}/255)"
 
 
+logger = logging.getLogger(__name__)
+
+
 def _guard(render: Callable[[], str]) -> str:
     try:
         return render()
     except ObserverError as error:
         return f"Observer error: {error}."
     # A tool must never raise into the run; anything else is an unexpected response.
+    # Log the traceback so a formatter bug is not mistaken for an observer failure.
     except Exception:
+        logger.exception("Tool failed on an unexpected error")
         return "Observer error: unexpected response from the observer."
 
 

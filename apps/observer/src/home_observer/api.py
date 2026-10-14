@@ -3,7 +3,7 @@ import secrets
 import sqlite3
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import MAXYEAR, UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -678,14 +678,15 @@ def create_app(
             end = to_utc(end)
         except (ValueError, OverflowError):
             raise HTTPException(422, "Invalid usage range") from None
-        if start > end or end - start > timedelta(days=366):
+        # Splitting by local day looks one day past `end`, which must stay a valid date.
+        if start > end or end - start > timedelta(days=366) or end.year >= MAXYEAR:
             raise HTTPException(422, "Invalid usage range")
         cutoff = retention_cutoff()
         with store.transaction() as db:
             # An expired heartbeat becomes a recorded gap before coverage is read.
             get_health(db)
-        # A deferred read sees one consistent state. It only copies raw rows: parsing and
-        # computing happen after it closes, so a large report never holds up collector writes.
+        # A deferred read sees one consistent state. It only copies raw rows; parsing and
+        # computing happen after it closes. The store runs in WAL mode, so writers continue.
         with store.transaction("DEFERRED") as db:
             selected = store.selection(db).entity_ids
             # Unselected IDs are left out rather than reported as missing.
@@ -723,8 +724,12 @@ def create_app(
                 ).fetchall()
             # Every retained gap: one that recovered before the window still leaves the light
             # unknown until new evidence arrives. Gaps are few, bounded by retention.
+            # Also each scope's latest gap even when it has expired: cached state from before it
+            # must not come back as known once the gap leaves retention.
             gap_rows: list[sqlite3.Row] = db.execute(
-                "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=?",
+                "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=? "
+                "OR recovered_at=(SELECT MAX(recovered_at) FROM coverage AS latest "
+                "WHERE latest.scope=coverage.scope)",
                 (cutoff,),
             ).fetchall()
         readings: dict[str, list[BaselineRecord | EventReading]] = {light: [] for light in lights}

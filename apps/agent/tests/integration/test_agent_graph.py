@@ -1,14 +1,21 @@
+import asyncio
 import json
+import re
+from datetime import UTC, datetime
+from typing import Any, override
 
 import pytest
 from agent_support import READ_TOOLS, WRITE_TOOLS, FakeObserver, ScriptedChatModel, snapshot
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.tool import ToolCall
+from langchain_core.outputs import ChatResult
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
+from pydantic import Field
 
 from home_observer_agent.graph import build_agent
 
@@ -121,3 +128,34 @@ def test_refresh_discovery_runs_without_approval() -> None:
     assert [(request.method, request.url.path) for request in observer.requests] == [
         ("POST", "/api/discovery/refresh")
     ]
+
+
+class RecordingChatModel(ScriptedChatModel):
+    """Keeps the system prompt of each call, so a test can see what the model was told."""
+
+    seen: list[str] = Field(default_factory=list)
+
+    @override
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.seen.extend(message.text for message in messages if message.type == "system")
+        return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+
+def test_model_is_told_the_current_time_on_the_async_path_aegra_uses() -> None:
+    model = RecordingChatModel(responses=[AIMessage("Monday to now.")])
+    agent = build_agent(model, FakeObserver().client())
+
+    before = datetime.now(UTC).replace(microsecond=0)
+    asyncio.run(agent.ainvoke({"messages": [HumanMessage("What counts as this week?")]}))  # pyright: ignore[reportUnknownMemberType] -- langgraph leaves Command's type parameter unparameterized
+    after = datetime.now(UTC)
+
+    [system] = model.seen
+    told = re.search(r"The current time is (\S+?)\.(?:\s|$)", system)
+    assert told, system
+    assert before <= datetime.fromisoformat(told[1]) <= after

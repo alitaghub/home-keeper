@@ -655,3 +655,31 @@ def test_range_at_the_edge_of_representable_time_is_rejected(tmp_path: Path) -> 
             params={"start": "0001-01-01T00:00:00+01:00", "end": "0001-01-01T00:00:00Z"},
         )
         assert response.status_code == 422
+        # The last local day would end after the largest date Python can represent.
+        response = house.client.get(
+            "/api/usage",
+            params={"start": "9999-12-31T00:00:00Z", "end": "9999-12-31T12:00:00Z"},
+        )
+        assert response.status_code == 422
+
+
+def test_expired_recovered_gap_does_not_turn_unknown_time_into_on_time(
+    tmp_path: Path,
+) -> None:
+    with home(tmp_path, clock=utc(10, 8), retention_days=1) as house:
+        house.snapshot("bulb-a", "on")
+        house.at(utc(10, 9))
+        house.interrupt()
+        house.at(utc(10, 9, 30))
+        # Recovery without fresh state: the pre-gap "on" must not carry over.
+        house.recover()
+        house.at(utc(10, 10))
+        before_expiry = house.usage(utc(10, 10), utc(10, 11))["lights"][0]
+        house.at(utc(12, 8))
+
+        report = house.usage(utc(11, 8), utc(12, 8))
+
+    assert before_expiry["on_seconds"] == 0
+    [light] = report["lights"]
+    assert light["on_seconds"] == 0, light
+    assert light["unknown_seconds"] == 24 * HOUR
