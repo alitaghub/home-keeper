@@ -84,6 +84,8 @@ def test_fresh_home_assistant_is_onboarded_and_its_token_stored_privately(
     ]
     login = Login.model_validate_json((tmp_path / "login.json").read_text())
     assert home.posts[0][1]["password"] == login.password
+    # An empty analytics step finishes onboarding without opting in.
+    assert home.posts[3] == ("/api/onboarding/analytics", None)
     assert login.username == "owner"
     assert (tmp_path / "token").read_text() == "long-lived"
     assert socket.sent[0] == {"type": "auth", "access_token": "short-lived"}
