@@ -128,4 +128,25 @@ docker compose -f compose.yaml -f compose.live.yaml down
 Use both Compose files for live start, restart and stop commands. Adding
 `--volumes` to the live stop command deletes its named volumes.
 
-Next, run the [Phase 1 live test checklist](live-test-checklist.md).
+## Check it with a real light
+
+Test one individual Hue light end to end:
+
+1. Confirm the bulb appears and responds in Home Assistant.
+2. Open Home Observer, check the **HOME ASSISTANT** label, and select the bulb.
+   Wait for fresh evidence and a first baseline.
+3. Change on/off and brightness in the Hue app. Leave each setting for about 20
+   seconds. Confirm the changes appear in **Recorded changes**.
+4. Stop the live collector and wait more than twice the collection interval.
+   Confirm the evidence turns stale and a collection gap opens. Change the bulb
+   while collection is stopped.
+5. Start the collector again. Confirm a recovery snapshot and a closed gap. The
+   app must not invent the change that happened while it was stopped.
+6. Restart the API. Confirm selections and history remain, and that a restart
+   gap opens and then closes.
+
+[collection.md](collection.md#test-a-gap-without-hardware) has the commands for
+steps 4 to 6. Add `-f compose.yaml -f compose.live.yaml` to each.
+
+When you report a failure, share the dashboard's error message and your Home
+Assistant version. Never share the token or raw registry payloads.
