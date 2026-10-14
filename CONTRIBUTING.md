@@ -5,7 +5,7 @@
 Install [mise](https://mise.jdx.dev/), then from the repository root:
 
 ```sh
-mise install        # Python, uv, Node.js, pnpm, actionlint, zizmor, lefthook
+mise install        # Python, uv, Node.js, pnpm, actionlint, zizmor, lefthook, jq
 mise run setup      # dependencies (pnpm, uv) and the lefthook pre-commit hook
 mise run check      # should pass on a clean checkout
 ```
@@ -18,6 +18,20 @@ with Compose for `mise run dev` and `mise run e2e`.
 
 Accept the recommended extensions and disable Pylance for this workspace;
 basedpyright reports the same type errors as CI.
+
+## Coding agents
+
+[AGENTS.md](AGENTS.md) holds the rules for any coding agent; `CLAUDE.md` links to
+it. For Claude Code, `.claude/settings.json` adds hooks from `.claude/hooks/`:
+
+- On startup, install the locked dependencies when `.venv` or `node_modules` is
+  missing, as in a fresh clone or worktree.
+- Block `git commit` and `git push` with `--no-verify`, so the lefthook checks run.
+- Format each edited file with Ruff or Biome.
+- When Claude stops, type-check uncommitted files with basedpyright and tsc and
+  report errors back to it. This never blocks; `mise run check` is the gate.
+
+Put personal Claude settings in `.claude/settings.local.json`, which git ignores.
 
 ## Workflow
 
