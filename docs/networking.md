@@ -13,9 +13,3 @@ Use an explicit address reachable from the collector container. Container
 - Native Linux Docker Engine: `host.docker.internal` is not supplied automatically.
   Use a reachable LAN address, or configure a host-gateway mapping explicitly.
   Home Assistant must listen on an address reachable from the container network.
-
-These are setup directions, not platform test results. The demo was verified on
-WSL2/Linux kernel `6.18.33.2-microsoft-standard-WSL2`, Docker Engine `29.9.0`
-`linux/amd64`, and Compose `5.6.0`. Native Windows, macOS and a separate native
-Linux deployment have not been tested. Real Hue hardware and a user's Home
-Assistant instance have not been tested.

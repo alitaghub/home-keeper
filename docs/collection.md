@@ -95,8 +95,7 @@ reports what Home Assistant observed. There is no Recorder history import,
 historical backfill, automation attribution or cause inference. Earlier events
 and changes during a connection interruption may be absent. Polling snapshots
 can reconcile the current state but cannot reconstruct those missing changes.
-Collection gaps and recovery are recorded locally. There is no anomaly detector or
-AI investigation yet.
+Collection gaps and recovery are recorded locally.
 
 ## Collection gaps and recovery
 
