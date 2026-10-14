@@ -52,7 +52,10 @@ flow and the terms the code uses.
   Assistant fired it, when the collector received it, and when the API stored it.
   Interruptions show up as gaps. The app never invents a change it did not see.
 - **Local.** Everything binds to `127.0.0.1`. The Home Assistant token stays in
-  the collector container. Nothing goes to a cloud service.
+  the collector container. Nothing goes to a cloud service, unless you turn on
+  the optional agent: then your questions and its tool results (light names,
+  states, usage numbers) go to the model provider you configure. The Home
+  Assistant token, the database and the service credential never do.
 
 ## Start
 
@@ -98,6 +101,22 @@ Open <http://127.0.0.1:8000> and click **Monitor** on a lamp. Changes appear in
 **Recorded changes** within a few seconds. Stop the home stack first; both use
 port 8000. [docs/demo.md](docs/demo.md) explains what the demo shows.
 
+## Chat with the agent
+
+An optional agent answers questions about your lights in plain words: how long
+a lamp was on this week, at which hours, and whether collection was healthy.
+It uses only the recorded evidence, says how much time is unknown, and cannot
+control devices. Put your model settings in `.env` (see
+[.env.example](.env.example)), then:
+
+```sh
+docker compose --profile agent up --build --wait
+```
+
+Open the chat at <http://127.0.0.1:3000>. The demo works too: add
+`--profile agent` to its command. [docs/agent.md](docs/agent.md) covers models,
+ports and limits.
+
 ## Documentation
 
 | Guide                                            | Read it to                                                         |
@@ -107,6 +126,7 @@ port 8000. [docs/demo.md](docs/demo.md) explains what the demo shows.
 | [Home Assistant and Hue](docs/home-assistant.md) | Run the bundled Home Assistant or your own, and check a real light |
 | [Collection and gaps](docs/collection.md)        | Learn what each record proves, how gaps work, and retention        |
 | [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
+| [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
 | [Security](docs/security.md)                     | Understand the trust boundaries around the token, API and browser  |
 
 ## Repository layout
@@ -115,6 +135,8 @@ port 8000. [docs/demo.md](docs/demo.md) explains what the demo shows.
 | --------------- | ------------------------------------------------------------------ |
 | `apps/observer` | Python service: FastAPI API, collectors, Home Assistant setup, SQLite store, tests |
 | `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
+| `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
+| `apps/chat`     | Image recipe for the unmodified Agent Chat UI                      |
 | `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |
 | `docs`          | User and design docs                                               |
 
@@ -127,7 +149,7 @@ the tasks.
 mise run setup      # tools, dependencies, and the pre-commit hook
 mise run check      # lint, types, tests, build: what CI runs
 mise run dev        # demo stack plus the Vite dev server
-mise run e2e        # demo, own-HA and bundled-HA stacks, smoke tests, Playwright
+mise run e2e        # demo, own-HA, bundled-HA and agent stacks, smoke tests, Playwright
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. Coding

@@ -1,0 +1,101 @@
+# The opt-in agent: Aegra serving the agent graph, its Postgres, and Agent Chat UI.
+# compose.yaml and compose.demo.yaml include this file; start it with
+#   docker compose --profile agent up --build --wait
+# Every service is in the `agent` profile, so stacks started without it are unchanged.
+services:
+  postgres:
+    profiles: [agent]
+    image: postgres:18.6
+    restart: unless-stopped
+    user: postgres
+    environment:
+      POSTGRES_USER: aegra
+      # Only the agent can reach this database: its network is internal and no port is published.
+      POSTGRES_PASSWORD: aegra
+      POSTGRES_DB: aegra
+    volumes:
+      - agent-postgres:/var/lib/postgresql
+    networks: [agent-db]
+    read_only: true
+    tmpfs: [/tmp, /var/run/postgresql]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      # TCP, because the temporary server during first-run init listens only on the socket.
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, aegra, -d, aegra]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+  agent:
+    profiles: [agent]
+    build:
+      context: .
+      dockerfile: apps/agent/Dockerfile
+    # Give up after three crashes, so a missing model key does not restart forever.
+    restart: on-failure:3
+    # The browser calls Aegra here directly from the chat page; LangGraph Studio uses it too.
+    ports:
+      - "127.0.0.1:${AGENT_PORT:-2026}:2026"
+    environment:
+      DATABASE_URL: postgresql://aegra:aegra@postgres:5432/aegra
+      REDIS_BROKER_ENABLED: "false"
+      # No auth: acceptable only because the port binds to 127.0.0.1.
+      AUTH_TYPE: noop
+      OBSERVER_URL: http://api:${OBSERVER_PORT:-8000}
+      # The only browser origin Aegra allows (CORS): the chat page.
+      CHAT_ORIGIN: http://127.0.0.1:${CHAT_PORT:-3000}
+      # Passed through from the shell or .env; left unset when missing, so the
+      # agent keeps its default model and names any missing variable at startup.
+      AGENT_MODEL:
+      AZURE_OPENAI_ENDPOINT:
+      AZURE_OPENAI_API_KEY:
+      # Only listed variables reach the container. Another provider's key goes here too.
+      OPENAI_API_KEY:
+    # `dashboard` reaches the observer API, `agent-db` reaches Postgres, and
+    # `default` is egress to the model provider. Never the home-assistant network.
+    networks: [dashboard, agent-db, default]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2026/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+  chat:
+    profiles: [agent]
+    build:
+      context: apps/chat
+      args:
+        # The browser calls Aegra directly, so this is its published loopback URL.
+        # It is baked into the browser bundle.
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:${AGENT_PORT:-2026}
+        NEXT_PUBLIC_ASSISTANT_ID: agent
+    restart: unless-stopped
+    # No LANGGRAPH_API_URL: upstream's /api passthrough answers every origin with
+    # `Access-Control-Allow-Origin: *`, so it stays without a target and cannot reach Aegra.
+    ports:
+      - "127.0.0.1:${CHAT_PORT:-3000}:3000"
+    read_only: true
+    tmpfs: [/tmp, "/app/.next/cache:uid=1000,gid=1000"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+    depends_on:
+      agent:
+        condition: service_healthy
+networks:
+  agent-db:
+    internal: true
+volumes:
+  agent-postgres:

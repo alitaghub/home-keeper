@@ -4,6 +4,8 @@ Home Observer has three running parts: a collector that reads the home, an API
 that decides what to keep, and a dashboard that shows it. They run as two
 containers from one image. The default stack adds a bundled Home Assistant and
 a one-shot `ha-setup` container that onboards it and stores the collector's token.
+The optional `agent` profile adds a chat agent, its chat page and a Postgres for
+its threads; [agent.md](agent.md) covers it.
 
 ```mermaid
 flowchart LR
@@ -28,6 +30,18 @@ flowchart LR
 
     ha -- "registry reads, state reads,<br/>state_changed events" --> collector
     browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> api
+
+    subgraph agentprofile["Optional agent (profile agent)"]
+        direction LR
+        chat["Chat page<br/><i>Agent Chat UI</i>"]
+        agent["Agent<br/><i>Aegra</i>"]
+        pg[("Postgres<br/><i>threads</i>")]
+        agent --> pg
+    end
+
+    chat -- "questions, from your browser" --> agent
+    agent -- "public API only" --> api
+    agent -- "prompts, tool results" --> model["Model provider"]
 ```
 
 | Part      | Code                                   | Job                                                                                         |
@@ -38,6 +52,8 @@ flowchart LR
 | API       | `api.py`, `models.py`                  | Validates every record, owns the selection, and records collection gaps.                    |
 | Store     | `store.py`                             | SQLite schema, transactions, retention.                                                     |
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |
+| Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
+| Chat      | `apps/chat`                            | Optional. Builds the unmodified Agent Chat UI. Your browser talks to the agent directly.    |
 
 Python code lives in `apps/observer/src/home_observer`.
 
