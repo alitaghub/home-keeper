@@ -157,6 +157,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage */
+        get: operations["usage_api_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -329,6 +346,15 @@ export interface components {
              * @enum {string}
              */
             state: "interrupted" | "collecting" | "unknown";
+        };
+        /** DayUsage */
+        DayUsage: {
+            /** Date */
+            date: string;
+            /** On Seconds */
+            on_seconds: number;
+            /** Unknown Seconds */
+            unknown_seconds: number;
         };
         /** DiscoveryRefresh */
         DiscoveryRefresh: {
@@ -593,6 +619,25 @@ export interface components {
                 number
             ] | null;
         };
+        /** LightUsage */
+        LightUsage: {
+            /** Average Brightness */
+            average_brightness: number | null;
+            /** Days */
+            days: components["schemas"]["DayUsage"][];
+            /** Entity Id */
+            entity_id: string;
+            /** Hours */
+            hours: number[];
+            /** On Seconds */
+            on_seconds: number;
+            /** Switch Ons */
+            switch_ons: number;
+            /** Unknown Intervals */
+            unknown_intervals: components["schemas"]["UnknownInterval"][];
+            /** Unknown Seconds */
+            unknown_seconds: number;
+        };
         /** MonitoredEntities */
         MonitoredEntities: {
             /** Entities */
@@ -638,6 +683,46 @@ export interface components {
             refresh_revision: number;
             /** Revision */
             revision: number;
+        };
+        /** UnknownInterval */
+        UnknownInterval: {
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "gap" | "no_evidence" | "unavailable";
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+        };
+        /** UsageReport */
+        UsageReport: {
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** Lights */
+            lights: components["schemas"]["LightUsage"][];
+            /**
+             * Retained Since
+             * Format: date-time
+             */
+            retained_since: string;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /** Timezone */
+            timezone: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -883,6 +968,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SelectionSnapshot"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    usage_api_usage_get: {
+        parameters: {
+            query: {
+                start: string;
+                end: string;
+                entity_id?: string[] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageReport"];
                 };
             };
             /** @description Validation Error */

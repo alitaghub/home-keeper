@@ -88,6 +88,39 @@ current-state cache. That cache does not establish recent device availability.
 Expired current-state caches for removed selections are deleted too. An empty
 timeline means no retained changes were recorded, not that nothing changed.
 
+### Usage numbers
+
+The read-only `GET /api/usage` endpoint reports, per selected light, how long it
+was on, how often it was switched on and its average brightness while on, split
+by local day and local hour of day. It needs timezone-aware `start` and `end`
+timestamps. Repeat `entity_id` to limit the report to some lights; without it,
+the report covers every selected light. Unselected IDs are left out.
+
+Days and hours use the API's time zone, UTC by default. Set an IANA name on the
+API service; an unknown name stops the API at startup:
+
+```sh
+OBSERVER_TIMEZONE=Europe/Copenhagen docker compose up --build --wait
+```
+
+The numbers only count what the evidence shows:
+
+- A snapshot counts from the moment it was read, and a change from the moment
+  Home Assistant fired it. A later snapshot never rewrites an earlier stretch.
+- A light on before `start` counts from `start`. Only recorded off-to-on
+  changes count as switch-ons.
+- Collection gaps count as neither on nor off. After recovery, time stays
+  unknown, as part of the gap, until a new snapshot or change shows the state.
+- Time when Home Assistant reports a light as `unavailable` or `unknown` is
+  unknown too, never on or off.
+- Time before a light's first evidence, or before the retention cutoff, is
+  unknown.
+- Each light lists its `unknown_intervals`, with reason `gap`, `unavailable` or
+  `no_evidence`.
+
+Selection history is not recorded. If you remove a light and select it again
+later, evidence from before the removal can fill the time it was not selected.
+
 ### What Home Assistant can and cannot tell us
 
 Home Assistant's [Hue integration](https://www.home-assistant.io/integrations/hue/)

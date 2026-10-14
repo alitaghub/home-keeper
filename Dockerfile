@@ -15,6 +15,8 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY apps/observer/pyproject.toml ./apps/observer/
+# uv needs every workspace member's manifest to read the lockfile; only the observer installs.
+COPY apps/agent/pyproject.toml ./apps/agent/
 COPY apps/observer/src ./apps/observer/src
 # The API serves the dashboard from ./web relative to the working directory.
 COPY --from=web /src/apps/web/dist ./web

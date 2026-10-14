@@ -1,0 +1,10 @@
+{
+  "graphs": {
+    "agent": "./src/home_observer_agent/server.py:agent"
+  },
+  "http": {
+    "cors": {
+      "allow_origins": ["http://127.0.0.1:3000"]
+    }
+  }
+}

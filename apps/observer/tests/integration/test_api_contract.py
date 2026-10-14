@@ -63,6 +63,10 @@ def coverage(clock: datetime, status: str = "interrupted", **changes: object) ->
     return {"source_id": "demo", "status": status, "received_at": clock.isoformat()} | changes
 
 
+def usage_range(start: datetime, end: datetime) -> dict[str, str]:
+    return {"start": start.isoformat(), "end": end.isoformat()}
+
+
 def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
     with TestClient(create_app(tmp_path / "empty.sqlite", TOKEN, now=lambda: NOW)) as client:
         return {
@@ -73,6 +77,9 @@ def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
             "empty_coverage": record(client.get("/api/coverage")),
             "empty_health": record(client.get("/api/health")),
             "empty_monitored": record(client.get("/api/monitored")),
+            "empty_usage": record(
+                client.get("/api/usage", params=usage_range(NOW - timedelta(hours=1), NOW))
+            ),
         }
 
 
@@ -142,6 +149,9 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
         result["coverage"] = record(client.get("/api/coverage"))
         result["health"] = record(client.get("/api/health"))
         result["monitored"] = record(client.get("/api/monitored"))
+        # Covers the events, the recovered whole-home gap and the open bulb-a gap above.
+        usage = usage_range(NOW - timedelta(minutes=1), clock[0])
+        result["usage"] = record(client.get("/api/usage", params=usage))
 
         # Errors the dashboard handles.
         result["error_unknown_entity"] = record(
@@ -151,6 +161,9 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
             client.put("/api/selection/room", json={"selected": True}, headers=BROWSER)
         )
         result["error_invalid_cursor"] = record(client.get("/api/events?cursor=not-a-cursor"))
+        result["error_usage_reversed_range"] = record(
+            client.get("/api/usage", params=usage_range(clock[0], NOW))
+        )
     return result
 
 

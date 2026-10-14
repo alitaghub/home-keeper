@@ -81,14 +81,21 @@ OBSERVER_API_ORIGIN="http://127.0.0.1:${OBSERVER_PORT:-8000}" pnpm --filter @hom
 """
 
 [tasks.e2e]
-description = "Run the Compose smoke scripts and the Playwright suite against fresh stacks"
+description = "Run the Compose smoke scripts, the Playwright suite and the agent smoke against fresh stacks"
 run = """
 # On failure, keep the demo stack's logs for debugging (CI uploads them).
-trap 'status=$?; [ "$status" -eq 0 ] || docker compose -f compose.demo.yaml logs --no-color > compose-logs.txt; docker compose -f compose.demo.yaml down' EXIT
+# `--profile agent` makes logs and down cover the agent services too.
+trap 'status=$?; [ "$status" -eq 0 ] || docker compose -f compose.demo.yaml --profile agent logs --no-color > compose-logs.txt; docker compose -f compose.demo.yaml --profile agent down' EXIT
 docker compose config --quiet
+docker compose --profile agent config --quiet
 docker compose -f compose.demo.yaml up --build --wait
 uv run python e2e/compose_smoke.py
 uv run python e2e/compose_live_smoke.py
 uv run python e2e/compose_home_smoke.py
 E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${OBSERVER_PORT:-8000}}" pnpm --filter @home-observer/web e2e
+# Add the agent profile to the running demo stack. The model settings are
+# placeholders with a valid shape; the smoke never calls the model.
+AZURE_OPENAI_ENDPOINT=https://placeholder.invalid AZURE_OPENAI_API_KEY=placeholder \
+  docker compose -f compose.demo.yaml --profile agent up --build --wait
+uv run python e2e/compose_agent_smoke.py
 """

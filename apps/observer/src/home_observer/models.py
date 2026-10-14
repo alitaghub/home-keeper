@@ -361,3 +361,39 @@ class MonitoredEntity(Entity):
 
 class MonitoredEntities(WireModel):
     entities: list[MonitoredEntity]
+
+
+UnknownReason = Literal["gap", "no_evidence", "unavailable"]
+
+
+class UnknownInterval(WireModel):
+    start: Timestamp
+    end: Timestamp
+    reason: UnknownReason
+
+
+class DayUsage(WireModel):
+    # Local calendar date, YYYY-MM-DD, in the report's time zone.
+    date: str
+    on_seconds: float
+    unknown_seconds: float
+
+
+class LightUsage(WireModel):
+    entity_id: Identity
+    on_seconds: float
+    unknown_seconds: float
+    switch_ons: int
+    average_brightness: float | None
+    days: list[DayUsage]
+    # On-seconds per local hour of day, 0 to 23, summed over the whole range.
+    hours: list[float] = Field(min_length=24, max_length=24)
+    unknown_intervals: list[UnknownInterval]
+
+
+class UsageReport(WireModel):
+    start: Timestamp
+    end: Timestamp
+    timezone: str
+    retained_since: Timestamp
+    lights: list[LightUsage]
