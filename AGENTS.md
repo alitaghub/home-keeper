@@ -26,4 +26,13 @@ Assistant and never controls them.
   `unit`, `integration`, or `e2e`.
 - Shared code moves to `packages/` once a second app needs it.
 
+## Pull requests
+
+- One feature per PR. If the Change section covers two unrelated things, split it.
+- Fill the template for a reviewer who reads it in two minutes. Describe what
+  behaves differently, not which files changed.
+- A UI change shows a before and an after screenshot of the same view and
+  state. Take the before screenshot before you change the code, and upload both
+  with `mise run pr:images -- --pr <number> <image>...`.
+
 Before opening a PR, read [CONTRIBUTING.md](CONTRIBUTING.md).
