@@ -27,7 +27,6 @@
 Do not expose the dashboard publicly. It has no user authentication. This version
 makes no model calls, so no data leaves the home for a cloud model. A future cloud
 investigation mode must document the evidence it sends before enabling it.
-Deco and additional vendor adapters require separate review.
 
 See [architecture.md](architecture.md) for how these parts connect, and
 [home-assistant.md](home-assistant.md#create-a-token) for how to store the token.

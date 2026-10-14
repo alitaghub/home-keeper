@@ -38,20 +38,14 @@ for example `fix(observer): keep gaps open after a failed heartbeat`. The
 ## CI
 
 `.github/workflows/ci.yaml` runs on every pull request and on pushes to `main`.
+Each job runs one mise task, so a green local run means a green CI run.
 
-| Job             | What it checks                                                     |
-| --------------- | ------------------------------------------------------------------ |
-| `changes`       | Which areas a pull request touched (pull requests only)            |
-| `python`        | Ruff lint and format, basedpyright, pytest with the coverage gate  |
-| `web`           | Biome, `tsc`, Vitest, production build                             |
-| `contract`      | `mise run check:api`: generated API types match the OpenAPI schema |
-| `e2e`           | Compose config, smoke scripts (demo and live), Playwright          |
-| `workflow-lint` | actionlint and zizmor on `.github/`                                |
-| `ci-ok`         | Fails if any job above failed or was cancelled                     |
+| Job          | Runs             | What it checks                                                        |
+| ------------ | ---------------- | --------------------------------------------------------------------- |
+| `Check`      | `mise run check` | Lint, format, types, tests with coverage, build, API types, workflows |
+| `End-to-end` | `mise run e2e`   | Compose stack, demo and live smoke scripts, Playwright                |
 
-On a pull request, a job runs only when its paths changed. A skipped job counts
-as a pass, so `ci-ok` always reports and is the one check to require. Pushes to
-`main` run every job. Changes to `mise.toml` or `ci.yaml` also run every job.
+On failure, `End-to-end` uploads the Compose logs and the Playwright report.
 
 Two more workflows run beside CI: `CodeQL` (Python and TypeScript, also weekly)
 and `PR title`.
@@ -63,7 +57,7 @@ when you add one; zizmor flags unpinned actions.
 
 The maintainer applies this policy to `main` in the repository settings:
 
-- Require the `ci-ok` and `Conventional commit title` status checks to pass.
+- Require the `Check`, `End-to-end` and `Conventional commit title` status checks to pass.
 - Require a pull request before merging. No direct pushes.
 - Block force-pushes and branch deletion.
 
@@ -71,9 +65,9 @@ Until it is applied, follow it by hand.
 
 ## Dependency updates
 
-`renovate.json` groups updates for Python, JavaScript, GitHub Actions digests,
-Docker images and mise tools. It runs weekly on Monday mornings, with lockfile
-maintenance on and a three-day minimum release age. Nothing merges
+`renovate.json` opens one weekly pull request with every non-major update, on
+Monday mornings, and separate pull requests for major updates. Lockfile
+maintenance is on, and a release must be three days old. Nothing merges
 automatically.
 
 The config does nothing until the maintainer installs the
