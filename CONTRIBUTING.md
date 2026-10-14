@@ -55,13 +55,14 @@ when you add one; zizmor flags unpinned actions.
 
 ## Branch protection
 
-The maintainer applies this policy to `main` in the repository settings:
+`main` has this protection in the repository settings:
 
-- Require the `Check`, `End-to-end` and `Conventional commit title` status checks to pass.
-- Require a pull request before merging. No direct pushes.
-- Block force-pushes and branch deletion.
-
-Until it is applied, follow it by hand.
+- The `Check`, `End-to-end` and `Conventional commit title` status checks must pass.
+- The branch must be up to date with `main`. Rebase before you merge.
+- A pull request is required. No direct pushes.
+- History stays linear. Merge with **Squash and merge** or **Rebase and merge**;
+  GitHub rejects merge commits.
+- Force-pushes and branch deletion are blocked.
 
 ## Dependency updates
 
