@@ -1,4 +1,35 @@
+# Home Observer with a bundled Home Assistant: `docker compose up --build --wait`.
+# The demo lives in compose.demo.yaml; your own Home Assistant uses compose.external.yaml.
 services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.10.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HA_PORT:-8123}:8123"
+    volumes:
+      - home-assistant-config:/config
+    networks: [home-assistant]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 60s
+  # Onboards Home Assistant once and stores the collector's token. Exits when done.
+  ha-setup:
+    build: .
+    entrypoint: [python, -m, home_observer.ha_setup]
+    command: [setup]
+    environment:
+      OBSERVER_HA_URL: http://homeassistant:8123
+      OBSERVER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
+    volumes:
+      - ha-token:/ha-token
+      - ha-owner:/ha-owner
+    networks: [home-assistant]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      homeassistant:
+        condition: service_started
   api:
     build: .
     ports:
@@ -6,6 +37,8 @@ services:
     environment:
       OBSERVER_PORT: ${OBSERVER_PORT:-8000}
       OBSERVER_BIND: 0.0.0.0
+      OBSERVER_SOURCE_ID: home_assistant
+      OBSERVER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
       OBSERVER_RETENTION_DAYS: ${OBSERVER_RETENTION_DAYS:-30}
       OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
     volumes:
@@ -23,13 +56,16 @@ services:
       retries: 10
   collector:
     build: .
-    command: [python, -m, home_observer.demo]
+    command: [python, -m, home_observer.live]
     environment:
       OBSERVER_PORT: ${OBSERVER_PORT:-8000}
       OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
+      OBSERVER_HA_URL: http://homeassistant:8123
+      OBSERVER_HA_TOKEN_FILE: /ha-token/token
     volumes:
       - service-secret:/secrets:ro
-    networks: [collection]
+      - ha-token:/ha-token:ro
+    networks: [collection, home-assistant]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -37,10 +73,17 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      ha-setup:
+        condition: service_completed_successfully
 networks:
   dashboard:
   collection:
     internal: true
+  # Home Assistant and the collector only; the API never joins it.
+  home-assistant:
 volumes:
   data:
   service-secret:
+  home-assistant-config:
+  ha-token:
+  ha-owner:

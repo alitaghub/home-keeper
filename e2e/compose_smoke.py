@@ -1,6 +1,6 @@
 """Bounded external smoke test for a running synthetic Compose deployment.
 
-Run after `docker compose up --build -d`; it uses no internal credentials.
+Run after `docker compose -f compose.demo.yaml up --build -d`; it uses no internal credentials.
 """
 
 import argparse

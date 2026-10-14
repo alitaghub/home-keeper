@@ -236,6 +236,8 @@ Freshness = Literal["pending", "fresh", "stale"]
 
 class CatalogResponse(WireModel):
     source_id: SourceId
+    # Browser-facing Home Assistant origin, so the dashboard can link to it. None in the demo.
+    home_assistant_url: str | None
     refreshed_at: Timestamp | None
     freshness: Freshness
     entities: list[Entity]

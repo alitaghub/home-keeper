@@ -2,15 +2,19 @@
 
 Home Observer has three running parts: a collector that reads the home, an API
 that decides what to keep, and a dashboard that shows it. They run as two
-containers from one image.
+containers from one image. The default stack adds a bundled Home Assistant and
+a one-shot `ha-setup` container that onboards it and stores the collector's token.
 
 ```mermaid
 flowchart LR
     subgraph home["Your home"]
         hue["Hue Bridge and lights"]
-        ha["Home Assistant"]
+        ha["Home Assistant<br/><i>bundled or your own</i>"]
         hue --> ha
     end
+
+    setup["ha-setup<br/><i>runs once</i>"] -- "onboarding,<br/>long-lived token" --> ha
+    setup -- "token volume<br/>(collector reads it)" --> collector
 
     subgraph observer["Home Observer (Docker Compose)"]
         direction LR
@@ -29,6 +33,7 @@ flowchart LR
 | Part      | Code                                   | Job                                                                                         |
 | --------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Collector | `live.py`, `home_assistant.py`         | Reads Home Assistant. Keeps only selected lights and approved fields. Sends typed records.   |
+| Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the collector's token. Never runs again after that. |
 | Demo      | `demo.py`                              | Replaces the live collector with a synthetic home. Same API calls, no hardware.             |
 | API       | `api.py`, `models.py`                  | Validates every record, owns the selection, and records collection gaps.                    |
 | Store     | `store.py`                             | SQLite schema, transactions, retention.                                                     |

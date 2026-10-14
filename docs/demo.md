@@ -5,11 +5,12 @@ Compose on Linux, or Docker Desktop with Compose on Windows/WSL2 or macOS. From
 the repository root:
 
 ```sh
-docker compose up --build --wait
+docker compose -f compose.demo.yaml up --build --wait
 ```
 
 Open <http://127.0.0.1:8000>. Set `OBSERVER_PORT` to publish on another loopback
-port when 8000 is taken, for example `OBSERVER_PORT=18000 docker compose up --build --wait`.
+port when 8000 is taken, for example
+`OBSERVER_PORT=18000 docker compose -f compose.demo.yaml up --build --wait`.
 
 ## What the demo shows
 
@@ -38,13 +39,16 @@ unselected until you choose it.
 ## Restart, stop and reset
 
 ```sh
-docker compose restart
+docker compose -f compose.demo.yaml restart
 # Stop services, keeping selected devices and baselines:
-docker compose down
+docker compose -f compose.demo.yaml down
 ```
 
-SQLite data and the internal service credential persist in named volumes.
-`docker compose down --volumes` deletes those volumes. Changing selection never
+The demo runs as Compose project `home-observer-demo`, with its own volumes.
+SQLite data and the internal service credential persist there.
+`docker compose -f compose.demo.yaml down --volumes` deletes those volumes. It
+does not touch the home stack. Stop the home stack before you start the demo;
+both publish port 8000. Changing selection never
 requires a restart. **Stop monitoring** rejects later observation ingestion.
 Previously recorded events stay visible until retention expires.
 

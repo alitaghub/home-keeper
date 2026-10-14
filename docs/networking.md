@@ -1,5 +1,27 @@
 # Networking and platform limits
 
+## Bundled Home Assistant
+
+The default stack uses three Compose networks:
+
+- `dashboard`: the API and the dashboard port.
+- `collection`: internal; the API and the collector.
+- `home-assistant`: Home Assistant, `ha-setup` and the collector. The API never
+  joins it and cannot even resolve the `homeassistant` name.
+
+All published ports bind to `127.0.0.1` only: the dashboard on `OBSERVER_PORT`
+(default 8000) and Home Assistant on `HA_PORT` (default 8123).
+
+Home Assistant runs on a bridge network, not host networking, so multicast and
+mDNS discovery may not see your LAN. Some integrations still find devices
+another way; Hue found its bridge through Philips' online lookup in testing. If
+a device is not offered, add the integration by IP address, for example the Hue
+Bridge IP from the Hue app. Home Assistant must be
+able to reach that address from the container. USB and Bluetooth are not
+available to it.
+
+## Your own Home Assistant
+
 Use an explicit address reachable from the collector container. Container
 `localhost` means that container, not the computer running Docker.
 

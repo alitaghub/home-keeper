@@ -66,6 +66,7 @@ describe("ported from test_dashboard.py", () => {
     const { api } = renderDashboard({
       "GET /api/catalog": {
         source_id: "home_assistant",
+        home_assistant_url: null,
         refreshed_at: null,
         freshness: "pending",
         entities: [disabled],
@@ -294,6 +295,21 @@ describe("dashboard behavior", () => {
     expect(byId("message")).toHaveTextContent(
       "Home Assistant rejected authentication. Check the connector token and its user permissions.",
     );
+  });
+
+  it("points to Home Assistant when no supported device is connected yet", async () => {
+    renderDashboard({
+      "GET /api/catalog": {
+        ...fixtures.catalog,
+        source_id: "home_assistant",
+        home_assistant_url: "http://127.0.0.1:8123",
+        entities: [fixtures.ungroupedSensor],
+      },
+    });
+
+    const link = await waitFor(() => within(byId("catalog")).getByRole("link"));
+    expect(link).toHaveTextContent("Connect your devices in Home Assistant");
+    expect(link).toHaveAttribute("href", "http://127.0.0.1:8123/config/integrations/dashboard");
   });
 
   it("pages through older timeline history, dedupes by id, and refreshes back to the newest page", async () => {

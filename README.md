@@ -19,7 +19,7 @@ collection stopped.
 ```mermaid
 flowchart LR
     subgraph home["Your home"]
-        hue["Hue lights"] --> ha["Home Assistant"]
+        hue["Hue lights"] --> ha["Home Assistant (bundled or your own)"]
     end
 
     subgraph observer["Home Observer"]
@@ -54,33 +54,49 @@ flow and the terms the code uses.
 - **Local.** Everything binds to `127.0.0.1`. The Home Assistant token stays in
   the collector container. Nothing goes to a cloud service.
 
-## Try the demo
+## Start
 
-The demo runs a synthetic home: no hardware and no Home Assistant needed. You
-need Docker with Compose.
+You need Docker with Compose. One command starts Home Assistant and Home
+Observer. You do not need Home Assistant installed first:
 
 ```sh
 docker compose up --build --wait
 ```
 
-Open <http://127.0.0.1:8000> and click **Monitor** on a lamp. Changes appear in
-**Recorded changes** within a few seconds. If port 8000 is taken, run
-`OBSERVER_PORT=18000 docker compose up --build --wait` instead.
+Setup runs without clicks: it creates the Home Assistant owner account and a
+token for the collector. Then:
 
-Stop it with `docker compose down`. Your selections and history stay in Docker
-volumes. [docs/demo.md](docs/demo.md) explains what the demo shows.
+1. Print your Home Assistant login:
 
-## Connect your home
+   ```sh
+   docker compose run --rm --no-deps ha-setup login
+   ```
 
-Home Observer talks to Home Assistant, not to the Hue Bridge. If you don't run
-Home Assistant yet, a guided script sets one up in a container:
+2. Open Home Assistant at <http://127.0.0.1:8123>, log in, and add your devices
+   under **Settings → Devices & services → Add integration**. Home Assistant owns
+   every device connection. Pairing a Hue Bridge needs one press of its button.
+3. Open the dashboard at <http://127.0.0.1:8000>, click **Refresh discovery**,
+   then **Monitor** on a lamp.
+
+If port 8000 or 8123 is taken, set `OBSERVER_PORT` or `HA_PORT`, for example
+`OBSERVER_PORT=18000 HA_PORT=18123 docker compose up --build --wait`.
+
+`docker compose down` stops everything and keeps Home Assistant, the token and
+your history in Docker volumes. `docker compose down --volumes` deletes all of
+it. [docs/home-assistant.md](docs/home-assistant.md) covers the details, limits,
+and how to use a Home Assistant you already run.
+
+## Try the demo
+
+The demo runs a synthetic home: no hardware and no Home Assistant needed.
 
 ```sh
-./scripts/start-home.sh
+docker compose -f compose.demo.yaml up --build --wait
 ```
 
-If you already have one, follow [docs/home-assistant.md](docs/home-assistant.md)
-to create a token and start live mode.
+Open <http://127.0.0.1:8000> and click **Monitor** on a lamp. Changes appear in
+**Recorded changes** within a few seconds. Stop the home stack first; both use
+port 8000. [docs/demo.md](docs/demo.md) explains what the demo shows.
 
 ## Documentation
 
@@ -88,7 +104,7 @@ to create a token and start live mode.
 | ------------------------------------------------ | ------------------------------------------------------------------ |
 | [Architecture](docs/architecture.md)             | Understand the parts, the data flow, and the domain terms          |
 | [Demo](docs/demo.md)                             | See what the synthetic home does and how to reset it               |
-| [Home Assistant and Hue](docs/home-assistant.md) | Connect a real home and check it against a real light              |
+| [Home Assistant and Hue](docs/home-assistant.md) | Run the bundled Home Assistant or your own, and check a real light |
 | [Collection and gaps](docs/collection.md)        | Learn what each record proves, how gaps work, and retention        |
 | [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
 | [Security](docs/security.md)                     | Understand the trust boundaries around the token, API and browser  |
@@ -97,10 +113,9 @@ to create a token and start live mode.
 
 | Path            | What lives there                                                   |
 | --------------- | ------------------------------------------------------------------ |
-| `apps/observer` | Python service: FastAPI API, collectors, SQLite store, tests        |
+| `apps/observer` | Python service: FastAPI API, collectors, Home Assistant setup, SQLite store, tests |
 | `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
 | `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |
-| `scripts`       | Guided Home Assistant setup                                        |
 | `docs`          | User and design docs                                               |
 
 ## Develop
@@ -112,7 +127,7 @@ the tasks.
 mise run setup      # tools, dependencies, and the pre-commit hook
 mise run check      # lint, types, tests, build: what CI runs
 mise run dev        # demo stack plus the Vite dev server
-mise run e2e        # Docker stack, smoke tests, Playwright
+mise run e2e        # demo, own-HA and bundled-HA stacks, smoke tests, Playwright
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. Coding

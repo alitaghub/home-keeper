@@ -200,6 +200,7 @@ export function App() {
           </div>
           <Catalog
             entities={snapshot?.catalog.entities ?? null}
+            homeAssistantUrl={snapshot?.catalog.home_assistant_url ?? null}
             selected={snapshot?.selection.entity_ids ?? []}
             onToggle={(id, selected) => void toggle(id, selected)}
           />

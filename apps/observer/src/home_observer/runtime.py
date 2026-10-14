@@ -1,6 +1,7 @@
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 
@@ -32,6 +33,29 @@ def local_authorities(port: int, hosts: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(f"{host}:{port}" for host in hosts)
 
 
+def public_origin(value: str) -> str | None:
+    """Parse the browser-facing Home Assistant origin; empty means none is configured."""
+    if not value:
+        return None
+    error = ValueError("OBSERVER_HA_PUBLIC_URL must be an http(s) origin")
+    parsed = urlsplit(value)
+    try:
+        _ = parsed.port  # Raises ValueError for an out-of-range or non-numeric port.
+    except ValueError:
+        raise error from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise error
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def main():
     token = create_token(Path(os.environ.get("OBSERVER_TOKEN_FILE", "/secrets/service-token")))
     port = int(os.environ.get("OBSERVER_PORT", "8000"))
@@ -40,6 +64,7 @@ def main():
         db_path=Path(os.environ.get("OBSERVER_DB", "/data/home.sqlite")),
         service_token=token,
         source_id=os.environ.get("OBSERVER_SOURCE_ID", "demo"),
+        home_assistant_url=public_origin(os.environ.get("OBSERVER_HA_PUBLIC_URL", "")),
         retention_days=int(os.environ.get("OBSERVER_RETENTION_DAYS", "30")),
         reconciliation_seconds=int(os.environ.get("OBSERVER_RECONCILIATION_SECONDS", "10")),
         allowed_hosts=hosts,

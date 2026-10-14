@@ -34,7 +34,7 @@ def main() -> None:
     command: [python, /fixture/fake_home_assistant.py]
     volumes:
       - {FAKE_HOME_ASSISTANT}:/fixture/fake_home_assistant.py:ro
-    networks: [live]
+    networks: [home-assistant]
     read_only: true
     cap_drop: [ALL]
 """)
@@ -53,7 +53,7 @@ def main() -> None:
             "-f",
             str(REPO / "compose.yaml"),
             "-f",
-            str(REPO / "compose.live.yaml"),
+            str(REPO / "compose.external.yaml"),
             "-f",
             str(override),
         ]
