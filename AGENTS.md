@@ -7,7 +7,8 @@ Assistant and never controls them.
 
 - `mise run check` exits 0.
 - Changes to Docker, Compose or the UI also pass `mise run e2e`.
-  Set `OBSERVER_PORT` when port 8000 is taken.
+  Set `OBSERVER_PORT` when port 8000 is taken. The e2e proofs use fixed Compose
+  project names and ports, so run one `mise run e2e` per machine at a time.
 - User-visible changes update `README.md` or `docs/`.
 
 ## Rules

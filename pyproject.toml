@@ -26,7 +26,7 @@ members = ["apps/*", "packages/*"]
 exclude = ["apps/web"]
 
 [tool.pytest.ini_options]
-testpaths = ["apps/observer/tests/unit", "apps/observer/tests/integration"]
+testpaths = ["apps/observer/tests/unit", "apps/observer/tests/integration", "tests"]
 # Shared test helpers live in apps/observer/tests/support.
 pythonpath = ["apps/observer/tests"]
 addopts = ["--strict-markers"]
@@ -80,6 +80,8 @@ ignore = [
 "apps/observer/tests/**" = ["S101", "PLR2004", "S105", "S106"]
 # Smoke scripts assert like tests, use synthetic credentials, and drive docker and HTTP.
 "e2e/**" = ["S101", "PLR2004", "S105", "S310", "S603", "S607"]
+# Repo tooling tests assert like app tests and run the hook scripts with bash.
+"tests/**" = ["S101", "S603", "S607"]
 # Type stubs re-export whole modules.
 "typings/**" = ["F403"]
 
@@ -89,7 +91,7 @@ pythonVersion = "3.13"
 # Read installed packages from the uv workspace environment, not whatever python is on PATH.
 venvPath = "."
 venv = ".venv"
-include = ["apps/observer/src", "apps/observer/tests", "e2e"]
+include = ["apps/observer/src", "apps/observer/tests", "e2e", "tests"]
 # Resolve the workspace package and the shared test helpers as local source.
 extraPaths = ["apps/observer/src", "apps/observer/tests"]
 # Local stubs; see typings/httpx2/__init__.pyi.
