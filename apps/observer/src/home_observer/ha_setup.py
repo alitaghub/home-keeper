@@ -14,9 +14,11 @@ from http import HTTPStatus
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
+
+from home_observer.runtime import parse_origin
 
 OWNER_USERNAME = "owner"
 READY_TIMEOUT_SECONDS = 300
@@ -42,6 +44,10 @@ class AuthCode(BaseModel):
 
 class AccessToken(BaseModel):
     access_token: str
+
+
+class WebSocketAuth(BaseModel):
+    type: str
 
 
 class WebSocketResult(BaseModel):
@@ -172,7 +178,7 @@ class Setup:
         with connect(f"{scheme}://{self.origin.split('://', 1)[1]}/api/websocket") as socket:
             socket.recv()
             socket.send(json.dumps({"type": "auth", "access_token": access_token}))
-            if json.loads(socket.recv()).get("type") != "auth_ok":
+            if WebSocketAuth.model_validate_json(socket.recv()).type != "auth_ok":
                 raise SetupError("Home Assistant rejected the onboarding session")
             socket.send(
                 json.dumps(
@@ -209,10 +215,20 @@ def main() -> None:
         if sys.argv[1:] == ["login"]:
             show_login(login_file, os.environ.get("OBSERVER_HA_PUBLIC_URL", ""))
         elif sys.argv[1:] in ([], ["setup"]):
-            Setup(os.environ.get("OBSERVER_HA_URL", ""), token_file, login_file).run()
+            origin = parse_origin("OBSERVER_HA_URL", os.environ.get("OBSERVER_HA_URL", ""))
+            if origin is None:
+                raise SetupError("Set OBSERVER_HA_URL to the Home Assistant origin")
+            Setup(origin, token_file, login_file).run()
         else:
             raise SetupError("Usage: ha_setup [setup|login]")
-    except (SetupError, httpx.HTTPError, WebSocketException, ValidationError, OSError) as error:
+    except (
+        SetupError,
+        httpx.HTTPError,
+        WebSocketException,
+        OSError,
+        # Includes pydantic's ValidationError for malformed Home Assistant replies.
+        ValueError,
+    ) as error:
         logging.error("Home Assistant setup failed: %s", error)
         raise SystemExit(1) from None
 

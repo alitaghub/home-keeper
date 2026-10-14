@@ -5,7 +5,8 @@
   except their mounted volumes. The bundled Home Assistant also publishes only a
   loopback port and runs with its upstream container identity, without
   privileged mode, host networking, USB or Bluetooth access.
-- Only the live collector mounts the Home Assistant token, read-only. The API,
+- Only the live collector reads the Home Assistant token at run time, from a
+  read-only mount. The API,
   SQLite and browser never receive it. In the bundled stack, `ha-setup` writes
   the token with mode `600` to the `ha-token` volume. It keeps the Home
   Assistant owner login, also mode `600`, in the `ha-owner` volume that no other

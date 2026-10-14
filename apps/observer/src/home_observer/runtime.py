@@ -33,11 +33,11 @@ def local_authorities(port: int, hosts: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(f"{host}:{port}" for host in hosts)
 
 
-def public_origin(value: str) -> str | None:
-    """Parse the browser-facing Home Assistant origin; empty means none is configured."""
+def parse_origin(variable: str, value: str) -> str | None:
+    """Parse an http(s) origin from the environment; empty means none is configured."""
     if not value:
         return None
-    error = ValueError("OBSERVER_HA_PUBLIC_URL must be an http(s) origin")
+    error = ValueError(f"{variable} must be an http(s) origin")
     parsed = urlsplit(value)
     try:
         _ = parsed.port  # Raises ValueError for an out-of-range or non-numeric port.
@@ -64,7 +64,9 @@ def main():
         db_path=Path(os.environ.get("OBSERVER_DB", "/data/home.sqlite")),
         service_token=token,
         source_id=os.environ.get("OBSERVER_SOURCE_ID", "demo"),
-        home_assistant_url=public_origin(os.environ.get("OBSERVER_HA_PUBLIC_URL", "")),
+        home_assistant_url=parse_origin(
+            "OBSERVER_HA_PUBLIC_URL", os.environ.get("OBSERVER_HA_PUBLIC_URL", "")
+        ),
         retention_days=int(os.environ.get("OBSERVER_RETENTION_DAYS", "30")),
         reconciliation_seconds=int(os.environ.get("OBSERVER_RECONCILIATION_SECONDS", "10")),
         allowed_hosts=hosts,

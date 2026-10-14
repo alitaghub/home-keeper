@@ -69,6 +69,17 @@ def main() -> None:
         }
         assert published == {"api": ["127.0.0.1"], "homeassistant": ["127.0.0.1"]}, published
         assert "home-assistant" not in config["services"]["api"]["networks"]
+        mounts = {
+            (name, volume["source"], volume.get("read_only", False))
+            for name, service in config["services"].items()
+            for volume in service.get("volumes", [])
+            if volume["source"] in {"ha-token", "ha-owner"}
+        }
+        assert mounts == {
+            ("ha-setup", "ha-token", False),
+            ("ha-setup", "ha-owner", False),
+            ("collector", "ha-token", True),
+        }, mounts
         compose("up", "--build", "--wait", "--wait-timeout", "400")
         states = {
             row["Service"]: row
@@ -80,15 +91,22 @@ def main() -> None:
             catalog = client.get("/api/catalog").json()
             assert catalog["source_id"] == "home_assistant"
             assert catalog["home_assistant_url"] == HOME_ASSISTANT
-            for endpoint in ("catalog", "health", "selection", "monitored"):
-                assert "password" not in client.get(f"/api/{endpoint}").text.lower()
 
-        login = dict(
-            line.split(": ", 1)
-            for line in compose("run", "--rm", "--no-deps", "ha-setup", "login").stdout.splitlines()
-        )
-        assert login["Home Assistant"] == HOME_ASSISTANT
-        assert log_in(login["Username"], login["Password"]) == "create_entry"
+            login = dict(
+                line.split(": ", 1)
+                for line in compose(
+                    "run", "--rm", "--no-deps", "ha-setup", "login"
+                ).stdout.splitlines()
+            )
+            assert login["Home Assistant"] == HOME_ASSISTANT
+            assert log_in(login["Username"], login["Password"]) == "create_entry"
+            token = compose("exec", "-T", "collector", "cat", "/ha-token/token").stdout.strip()
+            assert token
+            for endpoint in ("catalog", "health", "selection", "monitored"):
+                body = client.get(f"/api/{endpoint}").text
+                assert login["Password"] not in body
+                assert token not in body
+            assert token not in compose("logs").stdout
 
         # The API must not reach Home Assistant; only the collector and setup share its network.
         unreachable = compose(

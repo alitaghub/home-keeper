@@ -33,8 +33,8 @@ clicks:
 2. It finishes onboarding. Analytics stays disabled. Location, time zone and
    units keep Home Assistant's defaults; change them in Home Assistant.
 3. It creates a long-lived token for the collector and stores it in the
-   `ha-token` volume with mode `600`. Only the collector mounts that volume,
-   read-only.
+   `ha-token` volume with mode `600`. Besides `ha-setup`, which writes and
+   checks it, only the collector mounts that volume, read-only.
 4. It stores the owner login with mode `600` in the `ha-owner` volume. Only
    `ha-setup` mounts that volume.
 
