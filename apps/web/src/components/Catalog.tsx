@@ -2,7 +2,7 @@ import type { Schemas } from "../api/client";
 
 type Entity = Schemas["Entity"];
 
-export const lightName = (entity: { device_name?: string | null; name: string }) =>
+export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
   entity.device_name || entity.name;
 
 const UNGROUPED = "__ungrouped";

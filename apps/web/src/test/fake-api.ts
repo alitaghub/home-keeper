@@ -51,22 +51,19 @@ const routePattern = (route: string): { method: string; pattern: RegExp } => {
   return { method, pattern: new RegExp(`^${source}$`) };
 };
 
-const isRoute = (key: string, replies: Replies): key is Route => key in replies;
-
 /** Installs the fake on `globalThis.fetch`. Undo with `vi.unstubAllGlobals()`. */
 export function installFakeApi(overrides: Replies = {}) {
-  const replies: Replies = { ...defaults, ...overrides };
+  // Object.entries widens keys to string; every key of a Replies object is a Route.
+  const replies = new Map(Object.entries({ ...defaults, ...overrides }) as [Route, Reply<Route>][]);
   const failures = new Map<Route, Failure>();
   const calls: ApiCall[] = [];
   const unmatched: string[] = [];
 
   const match = (method: string, pathname: string): Route | undefined =>
-    Object.keys(replies)
-      .filter((key) => isRoute(key, replies))
-      .find((key) => {
-        const route = routePattern(key);
-        return route.method === method && route.pattern.test(pathname);
-      });
+    [...replies.keys()].find((key) => {
+      const route = routePattern(key);
+      return route.method === method && route.pattern.test(pathname);
+    });
 
   const fakeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(
@@ -96,7 +93,7 @@ export function installFakeApi(overrides: Replies = {}) {
         status: failure,
       });
     }
-    const reply = replies[route];
+    const reply = replies.get(route);
     const body = typeof reply === "function" ? reply(call) : reply;
     return new Response(JSON.stringify(body), {
       status: 200,
@@ -112,7 +109,7 @@ export function installFakeApi(overrides: Replies = {}) {
     callsTo: (route: Route): ApiCall[] => calls.filter((call) => call.route === route),
     reply: <R extends Route>(route: R, reply: Reply<R>): void => {
       failures.delete(route);
-      Object.assign(replies, { [route]: reply });
+      replies.set(route, reply);
     },
     fail: (route: Route, failure: Failure): void => {
       failures.set(route, failure);
