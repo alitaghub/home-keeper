@@ -1,0 +1,86 @@
+[tools]
+python = "3.13.16"
+node = "24.20.0"
+pnpm = "12.10.1"
+uv = "0.13.0"
+actionlint = "1.7.12"
+zizmor = "1.30.1"
+lefthook = "2.2.1"
+
+[tasks.setup]
+description = "Install tools and dependencies, then the lefthook pre-commit hook"
+# Chromium for `mise run e2e`. System libraries need sudo, so only CI passes --with-deps.
+run = [
+  "mise install",
+  "pnpm install",
+  "uv sync",
+  "pnpm --filter @home-observer/web exec playwright install chromium",
+  "lefthook install",
+]
+
+[tasks.lint]
+description = "Lint Python (ruff) and the web app (Biome)"
+run = ["uv run ruff check .", "pnpm exec biome check ."]
+
+[tasks.fmt]
+description = "Format Python (ruff) and the web app (Biome)"
+run = ["uv run ruff format .", "pnpm exec biome format --write ."]
+
+[tasks.typecheck]
+description = "Type-check Python (basedpyright, strict) and the web app (tsc)"
+run = ["uv run basedpyright", "pnpm -r typecheck"]
+
+[tasks.test]
+description = "Run Python and web tests with coverage"
+run = ["uv run pytest -q --cov", "pnpm -r test"]
+
+[tasks.check]
+description = "Run every hardware-free check CI runs"
+run = [
+  "mise run lint",
+  "uv run ruff format --check .",
+  "mise run typecheck",
+  "mise run test",
+  "pnpm --filter @home-observer/web build",
+  "bash -n scripts/start-home.sh scripts/connect-home.sh",
+  "mise run check:api",
+  "mise run lint:workflows",
+]
+
+[tasks."lint:workflows"]
+description = "Lint GitHub Actions workflows (actionlint, zizmor)"
+run = ["actionlint", "zizmor .github"]
+
+[tasks."gen:api"]
+description = "Generate the web app's API types from the observer's OpenAPI schema"
+run = """
+schema=$(mktemp --suffix=.json)
+trap 'rm -f "$schema"' EXIT
+uv run python -m home_observer.openapi > "$schema"
+pnpm exec openapi-typescript "$schema" --output apps/web/src/api/schema.d.ts
+"""
+
+[tasks."check:api"]
+description = "Fail when the generated API types are stale"
+run = [
+  "pnpm install --frozen-lockfile",
+  "mise run gen:api",
+  "git diff --exit-code -- apps/web/src/api/schema.d.ts",
+]
+
+[tasks.dev]
+description = "Start the demo stack, then the Vite dev server with /api proxied to it"
+run = """
+docker compose up --build --wait
+OBSERVER_API_ORIGIN="http://127.0.0.1:${OBSERVER_PORT:-8000}" pnpm --filter @home-observer/web dev
+"""
+
+[tasks.e2e]
+description = "Run the Compose smoke scripts and the Playwright suite against a fresh stack"
+run = """
+trap 'docker compose down' EXIT
+docker compose up --build --wait
+uv run python e2e/compose_smoke.py
+uv run python e2e/compose_live_smoke.py
+E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${OBSERVER_PORT:-8000}}" pnpm --filter @home-observer/web e2e
+"""

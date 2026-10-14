@@ -1,0 +1,9 @@
+{
+  "status": 200,
+  "body": {
+    "coverage": "unknown",
+    "events": [],
+    "next_cursor": null,
+    "retained_since": "2026-09-12T10:00:00+00:00"
+  }
+}

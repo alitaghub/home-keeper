@@ -1,0 +1,29 @@
+{
+  "status": 200,
+  "body": {
+    "coverage": "unknown",
+    "events": [
+      {
+        "entity_id": "bulb-a",
+        "event_time": "2026-10-12T09:59:30Z",
+        "id": "change-1",
+        "new": {
+          "availability": "available",
+          "brightness": 50,
+          "state": "on"
+        },
+        "old": {
+          "availability": "available",
+          "state": "off"
+        },
+        "persisted_at": "2026-10-12T10:00:00+00:00",
+        "received_at": "2026-10-12T09:59:33Z",
+        "selection_revision": 2,
+        "source_entity_id": null,
+        "source_id": "demo"
+      }
+    ],
+    "next_cursor": null,
+    "retained_since": "2026-09-12T10:00:10+00:00"
+  }
+}

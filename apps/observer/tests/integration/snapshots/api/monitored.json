@@ -1,0 +1,55 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "baseline": {
+          "availability": "available",
+          "brightness": null,
+          "collection_started_at": null,
+          "color_mode": null,
+          "color_temp_kelvin": null,
+          "coverage_gap_ids": [
+            "<uuid-1>"
+          ],
+          "entity_id": "bulb-a",
+          "hs_color": null,
+          "id": "<uuid-2>",
+          "kind": "recovery",
+          "last_changed": "2020-01-01T00:00:00Z",
+          "last_reported": null,
+          "last_updated": "2020-01-01T00:00:00Z",
+          "persisted_at": "2026-10-12T10:00:06+00:00",
+          "received_at": "2026-10-12T10:00:06Z",
+          "rgb_color": null,
+          "rgbw_color": null,
+          "rgbww_color": null,
+          "source_entity_id": null,
+          "source_id": "demo",
+          "state": "off",
+          "transition_time": "unknown",
+          "xy_color": null
+        },
+        "confirmed_at": "2026-10-12T10:00:06+00:00",
+        "device_id": "device-a",
+        "device_name": "Hue bulb",
+        "freshness": "stale",
+        "id": "bulb-a",
+        "name": "<script>alert('device')</script>",
+        "reason": null,
+        "supported": true
+      },
+      {
+        "baseline": null,
+        "confirmed_at": null,
+        "device_id": null,
+        "device_name": null,
+        "freshness": "pending",
+        "id": "bulb-b",
+        "name": "bulb-b",
+        "reason": "Entity missing from latest discovery",
+        "supported": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "home-observer",
+  "private": true,
+  "packageManager": "pnpm@12.10.1",
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@playwright/test": "1.64.0",
+    "openapi-typescript": "7.13.0"
+  }
+}
