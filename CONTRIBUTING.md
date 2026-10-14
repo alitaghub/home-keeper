@@ -16,14 +16,8 @@ with Compose for `mise run dev` and `mise run e2e`.
 
 ### VS Code
 
-Open the repository folder and install the recommended extensions when VS Code
-asks. The workspace settings point Python at `.venv`, format on save with Ruff
-and Biome, and type-check with basedpyright, the same checker CI runs. Disable
-Pylance, Black, isort and Pylint for this workspace; they disagree with it.
-
-On folder open, the `Sync dependencies` task runs `uv sync` and `pnpm install`,
-so a new clone or worktree is ready without a manual step. VS Code asks once to
-allow automatic tasks.
+Accept the recommended extensions and disable Pylance for this workspace;
+basedpyright reports the same type errors as CI.
 
 ## Workflow
 
