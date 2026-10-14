@@ -27,9 +27,11 @@ def chat_model() -> BaseChatModel:
         raise ValueError("AGENT_MODEL needs a deployment name after azure:")
     endpoint = _required("AZURE_OPENAI_ENDPOINT")
     api_key = _required("AZURE_OPENAI_API_KEY")
-    # Azure's v1 endpoint accepts the standard OpenAI client.
+    # Azure's v1 endpoint accepts the standard OpenAI client. Endpoints are often given with
+    # the /openai or /openai/v1 path already on them.
+    resource = endpoint.rstrip("/").removesuffix("/v1").removesuffix("/openai")
     return ChatOpenAI(
         model=deployment,
-        base_url=f"{endpoint.rstrip('/')}/openai/v1",
+        base_url=f"{resource}/openai/v1",
         api_key=SecretStr(api_key),
     )

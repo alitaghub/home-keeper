@@ -35,8 +35,10 @@ def _name(value: str) -> str:
 
 
 def number(value: float) -> str:
-    """The exact value the observer sent, without a trailing .0."""
-    return str(int(value)) if value.is_integer() else repr(value)
+    """The observer's value to the millisecond, without a trailing .0 or float noise."""
+    text = f"{value:.3f}".rstrip("0").rstrip(".")
+    # A tiny non-zero value must not read as zero; show it exactly instead.
+    return repr(value) if text in ("0", "-0") and value else text
 
 
 def duration(seconds: float) -> str:

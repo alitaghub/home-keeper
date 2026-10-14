@@ -242,6 +242,17 @@ def test_usage_keeps_fractional_numbers_unrounded() -> None:
     assert not re.search(r"unknown 0s\b", result), result
 
 
+def test_usage_prints_milliseconds_without_float_noise_or_hiding_tiny_unknown_time() -> None:
+    usage = usage_of_one_light(on_seconds=180.98349000000002, unknown_seconds=0.0001)
+    observer = FakeObserver({"/api/usage": (200, usage)})
+
+    result = call(observer.tools(), "get_usage", RANGE)
+
+    assert "180.983s" in result, result
+    assert "180.98349" not in result, result
+    assert "unknown 0.0001s" in result, result
+
+
 @pytest.mark.parametrize(
     "body",
     [

@@ -34,6 +34,26 @@ def test_azure_model_calls_the_deployment_on_the_azure_v1_url(
     assert model.openai_api_key.get_secret_value() == "azure-key-sentinel"
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://home.cognitiveservices.azure.com/openai",
+        "https://home.cognitiveservices.azure.com/openai/",
+        "https://home.cognitiveservices.azure.com/openai/v1",
+    ],
+)
+def test_azure_endpoint_that_already_names_the_openai_path_is_not_doubled(
+    monkeypatch: pytest.MonkeyPatch, endpoint: str
+) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key-sentinel")
+
+    model = chat_model()
+
+    assert isinstance(model, ChatOpenAI)
+    assert model.openai_api_base == "https://home.cognitiveservices.azure.com/openai/v1"
+
+
 def test_other_provider_prefix_passes_through_without_azure_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
