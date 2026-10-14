@@ -40,8 +40,12 @@ Put personal Claude settings in `.claude/settings.local.json`, which git ignores
    or the UI, also run `mise run e2e`.
 3. If you changed a public `/api/*` route, run `mise run gen:api` and commit the
    regenerated `apps/web/src/api/schema.d.ts`. CI fails when it is stale.
-4. Open a pull request against `main` and fill in the template: the problem, the
-   change, and the proof (what you ran, and what you did not).
+4. Open a pull request against `main` and fill in the template: the problem, what
+   behaves differently, where to look hardest, and the proof (what you ran, and
+   what you did not). For a UI change, add before and after screenshots with
+   `mise run pr:images -- --pr <number> <image>...`. It commits them to
+   `refs/screenshots/pr-<number>` and adds them under the description's
+   Screenshots heading.
 
 `main` takes changes through pull requests only.
 
