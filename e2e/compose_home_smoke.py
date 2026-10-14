@@ -61,6 +61,14 @@ def log_in(username: str, password: str) -> str:
 def main() -> None:
     started = time.monotonic()
     try:
+        config = json.loads(compose("config", "--format", "json").stdout)
+        published = {
+            name: [port["host_ip"] for port in service.get("ports", [])]
+            for name, service in config["services"].items()
+            if service.get("ports")
+        }
+        assert published == {"api": ["127.0.0.1"], "homeassistant": ["127.0.0.1"]}, published
+        assert "home-assistant" not in config["services"]["api"]["networks"]
         compose("up", "--build", "--wait", "--wait-timeout", "400")
         states = {
             row["Service"]: row

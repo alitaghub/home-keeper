@@ -71,7 +71,10 @@ def main() -> None:
 
     if not args.skip_bindings:
         config = json.loads(
-            subprocess.check_output(["docker", "compose", "config", "--format", "json"], timeout=10)
+            subprocess.check_output(
+                ["docker", "compose", "-f", "compose.demo.yaml", "config", "--format", "json"],
+                timeout=10,
+            )
         )
         published: list[str] = []
         for name, service in config["services"].items():
