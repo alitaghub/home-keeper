@@ -69,6 +69,10 @@ run = [
   "git diff --exit-code -- apps/web/src/api/schema.d.ts",
 ]
 
+[tasks."pr:images"]
+description = "Upload screenshots and add them to a pull request's description"
+run = "uv run python scripts/pr_images.py"
+
 [tasks.dev]
 description = "Start the demo stack, then the Vite dev server with /api proxied to it"
 run = """

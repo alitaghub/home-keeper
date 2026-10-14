@@ -27,8 +27,8 @@ exclude = ["apps/web"]
 
 [tool.pytest.ini_options]
 testpaths = ["apps/observer/tests/unit", "apps/observer/tests/integration", "tests"]
-# Shared test helpers live in apps/observer/tests/support.
-pythonpath = ["apps/observer/tests"]
+# Shared test helpers live in apps/observer/tests/support; repo tooling lives in scripts.
+pythonpath = ["apps/observer/tests", "scripts"]
 addopts = ["--strict-markers"]
 # Every warning fails the run. Ignore only known third-party warnings, each with a reason.
 filterwarnings = [
@@ -82,6 +82,8 @@ ignore = [
 "e2e/**" = ["S101", "PLR2004", "S105", "S310", "S603", "S607"]
 # Repo tooling tests assert like app tests and run the hook scripts with bash.
 "tests/**" = ["S101", "S603", "S607"]
+# Repo tooling runs gh from PATH with fixed arguments.
+"scripts/**" = ["S603", "S607"]
 # Type stubs re-export whole modules.
 "typings/**" = ["F403"]
 
@@ -91,8 +93,8 @@ pythonVersion = "3.13"
 # Read installed packages from the uv workspace environment, not whatever python is on PATH.
 venvPath = "."
 venv = ".venv"
-include = ["apps/observer/src", "apps/observer/tests", "e2e", "tests"]
-# Resolve the workspace package and the shared test helpers as local source.
-extraPaths = ["apps/observer/src", "apps/observer/tests"]
+include = ["apps/observer/src", "apps/observer/tests", "e2e", "scripts", "tests"]
+# Resolve the workspace package, the shared test helpers and repo tooling as local source.
+extraPaths = ["apps/observer/src", "apps/observer/tests", "scripts"]
 # Local stubs; see typings/httpx2/__init__.pyi.
 stubPath = "typings"
