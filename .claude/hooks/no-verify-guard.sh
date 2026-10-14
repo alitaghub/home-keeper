@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) — block `git commit/push --no-verify` (and `commit -n`, its short form).
-# Safeguards against false positives (the phrase inside a message, heredoc,
-# comment, or sed string rather than a real invocation):
-#   1. drop herestrings and heredoc bodies before matching
-#   2. un-quote a quoted "--no-verify" first (it still reaches git as the real
-#      flag), then strip remaining single/double-quoted spans
-#   3. require the git call to START a command segment (^ or after ; | && ),
-#      allowing `command`/`env` prefixes and git's -C/-c/--git-dir globals
+# PreToolUse(Bash): block `git commit/push --no-verify` and `commit -n`, so lefthook always runs.
+# Quoted text and heredoc bodies are stripped first: a commit message may mention the flag.
 set -u
 payload=$(cat)
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
@@ -28,7 +22,9 @@ stripped=$(printf '%s' "$cmd" \
 
 env_pre='(command[[:space:]]+|env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*)?'
 git_glob='([[:space:]]+(-[Cc]|--git-dir(=[^[:space:]]+)?|--work-tree(=[^[:space:]]+)?|--no-pager)([[:space:]]+[^[:space:];|&]+)?)*'
-git_seg="(^|[;|]|&&)[[:space:]]*${env_pre}git${git_glob}[[:space:]]+"
+# A command starts the line, follows ; | & ( { or !, or follows a shell keyword such as `if`.
+seg_start='(^|[;|&({!])[[:space:]]*((if|then|else|elif|do|while|until|time|!)[[:space:]]+)*'
+git_seg="${seg_start}${env_pre}git${git_glob}[[:space:]]+"
 deny() { echo "Blocked: $1 bypasses git hooks. Fix the failing hook instead." >&2; exit 2; }
 if printf '%s' "$stripped" | grep -Eq "${git_seg}(commit|push)([[:space:]][^;|&]*)?--no-verify"; then
   deny '--no-verify'
