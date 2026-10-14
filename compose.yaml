@@ -2,8 +2,9 @@ services:
   api:
     build: .
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${OBSERVER_PORT:-8000}:${OBSERVER_PORT:-8000}"
     environment:
+      OBSERVER_PORT: ${OBSERVER_PORT:-8000}
       OBSERVER_BIND: 0.0.0.0
       OBSERVER_RETENTION_DAYS: ${OBSERVER_RETENTION_DAYS:-30}
       OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
@@ -16,7 +17,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${OBSERVER_PORT:-8000}/api/health', timeout=3)"]
       interval: 5s
       timeout: 4s
       retries: 10
@@ -24,6 +25,7 @@ services:
     build: .
     command: [python, -m, home_observer.demo]
     environment:
+      OBSERVER_PORT: ${OBSERVER_PORT:-8000}
       OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
     volumes:
       - service-secret:/secrets:ro

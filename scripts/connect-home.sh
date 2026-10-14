@@ -231,7 +231,7 @@ write_env OBSERVER_HA_TOKEN_FILE "$state_dir/ha-token"
 chmod 600 "$ENV_FILE"
 docker compose --env-file "$ENV_FILE" -f compose.yaml -f compose.live.yaml \
   -f compose.local-live.yaml up --build --wait --wait-timeout 180
-open_url "http://127.0.0.1:8000"
+open_url "http://127.0.0.1:${OBSERVER_PORT:-8000}"
 step "Click Monitor beside each approved Hue light. New devices stay unselected."
 note "Watch collection health and change one light using the Hue app to test events."
 finish

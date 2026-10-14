@@ -1,0 +1,9 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [],
+    "freshness": "pending",
+    "refreshed_at": null,
+    "source_id": "demo"
+  }
+}

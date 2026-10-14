@@ -1,0 +1,47 @@
+{
+  "status": 200,
+  "body": {
+    "coverage": "unknown",
+    "events": [
+      {
+        "entity_id": "bulb-a",
+        "event_time": "2026-10-12T09:59:50Z",
+        "id": "change-3",
+        "new": {
+          "availability": "available",
+          "brightness": 150,
+          "state": "on"
+        },
+        "old": {
+          "availability": "available",
+          "state": "off"
+        },
+        "persisted_at": "2026-10-12T10:00:00+00:00",
+        "received_at": "2026-10-12T09:59:53Z",
+        "selection_revision": 2,
+        "source_entity_id": null,
+        "source_id": "demo"
+      },
+      {
+        "entity_id": "bulb-a",
+        "event_time": "2026-10-12T09:59:40Z",
+        "id": "change-2",
+        "new": {
+          "availability": "available",
+          "state": "off"
+        },
+        "old": {
+          "availability": "available",
+          "state": "on"
+        },
+        "persisted_at": "2026-10-12T10:00:00+00:00",
+        "received_at": "2026-10-12T09:59:43Z",
+        "selection_revision": 2,
+        "source_entity_id": null,
+        "source_id": "demo"
+      }
+    ],
+    "next_cursor": "2026-10-12T09:59:40Z|change-2",
+    "retained_since": "2026-09-12T10:00:10+00:00"
+  }
+}
