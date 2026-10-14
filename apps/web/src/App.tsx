@@ -37,6 +37,12 @@ function catalogStatus({ freshness, refreshed_at }: Schemas["CatalogResponse"]) 
     : `Discovery: ${freshness} · Last refreshed: ${date(refreshed_at)}`;
 }
 
+type DiscoveryState = {
+  refreshPending: boolean;
+  lastCatalogRefresh: string | null;
+  requestedAfter: string | null;
+};
+
 export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [message, setMessage] = useState("");
@@ -44,10 +50,10 @@ export function App() {
   const { load: loadTimeline, showingOlder } = timeline;
   // One mutation at a time, shared by selection toggles and discovery refresh.
   const busy = useRef(false);
-  const discovery = useRef({
+  const discovery = useRef<DiscoveryState>({
     refreshPending: false,
-    lastCatalogRefresh: null as string | null,
-    requestedAfter: null as string | null,
+    lastCatalogRefresh: null,
+    requestedAfter: null,
   });
 
   const load = useCallback(async () => {
