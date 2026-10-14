@@ -4,7 +4,7 @@
 name = "home-observer-workspace"
 version = "0.0.0"
 requires-python = ">=3.13"
-dependencies = ["home-observer"]
+dependencies = ["home-observer", "home-observer-agent"]
 
 [dependency-groups]
 dev = [
@@ -19,17 +19,26 @@ package = false
 
 [tool.uv.sources]
 home-observer = { workspace = true }
+home-observer-agent = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
-# The web app is a pnpm package, not a Python project.
-exclude = ["apps/web"]
+# The web app and the chat image are not Python projects.
+exclude = ["apps/web", "apps/chat"]
 
 [tool.pytest.ini_options]
-testpaths = ["apps/observer/tests/unit", "apps/observer/tests/integration", "tests"]
-# Shared test helpers live in apps/observer/tests/support; repo tooling lives in scripts.
-pythonpath = ["apps/observer/tests", "scripts"]
-addopts = ["--strict-markers"]
+testpaths = [
+    "apps/observer/tests/unit",
+    "apps/observer/tests/integration",
+    "apps/agent/tests/unit",
+    "apps/agent/tests/integration",
+    "tests",
+]
+# Shared test helpers live in apps/observer/tests/support and apps/agent/tests/agent_support.py;
+# repo tooling lives in scripts.
+pythonpath = ["apps/observer/tests", "apps/agent/tests", "scripts"]
+# importlib mode lets each app keep test files with the same basename.
+addopts = ["--strict-markers", "--import-mode=importlib"]
 # Every warning fails the run. Ignore only known third-party warnings, each with a reason.
 filterwarnings = [
     "error",
@@ -39,7 +48,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source_pkgs = ["home_observer"]
+source_pkgs = ["home_observer", "home_observer_agent"]
 
 [tool.coverage.report]
 # A few points under measured coverage, so refactors don't trip it but real drops do.
@@ -77,7 +86,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests: pytest's assert rewriting is the idiom, literal expected values read best inline,
 # and every credential is a synthetic fixture.
-"apps/observer/tests/**" = ["S101", "PLR2004", "S105", "S106"]
+"apps/*/tests/**" = ["S101", "PLR2004", "S105", "S106"]
 # Smoke scripts assert like tests, use synthetic credentials, and drive docker and HTTP.
 "e2e/**" = ["S101", "PLR2004", "S105", "S310", "S603", "S607"]
 # Repo tooling tests assert like app tests and run the hook scripts with bash.
@@ -93,8 +102,22 @@ pythonVersion = "3.13"
 # Read installed packages from the uv workspace environment, not whatever python is on PATH.
 venvPath = "."
 venv = ".venv"
-include = ["apps/observer/src", "apps/observer/tests", "e2e", "scripts", "tests"]
-# Resolve the workspace package, the shared test helpers and repo tooling as local source.
-extraPaths = ["apps/observer/src", "apps/observer/tests", "scripts"]
+include = [
+    "apps/observer/src",
+    "apps/observer/tests",
+    "apps/agent/src",
+    "apps/agent/tests",
+    "e2e",
+    "scripts",
+    "tests",
+]
+# Resolve the workspace packages, the shared test helpers and repo tooling as local source.
+extraPaths = [
+    "apps/observer/src",
+    "apps/observer/tests",
+    "apps/agent/src",
+    "apps/agent/tests",
+    "scripts",
+]
 # Local stubs; see typings/httpx2/__init__.pyi.
 stubPath = "typings"

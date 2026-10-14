@@ -170,10 +170,10 @@ def light_usage(
     events: Sequence[EventRecord],
     gaps: Sequence[CoverageGap],
 ) -> LightUsage:
-    own_events = [event for event in events if event.entity_id == entity_id]
+    """Usage of one light from its own readings and events; gaps are filtered by their scope."""
     evidence = timeline(
-        [reading_evidence(reading) for reading in readings if reading.entity_id == entity_id]
-        + [event_evidence(event) for event in own_events]
+        [reading_evidence(reading) for reading in readings]
+        + [event_evidence(event) for event in events]
     )
     keys = [(item.at, item.rank) for item in evidence]
     own_gaps = light_gaps(entity_id, gaps, end)
@@ -255,7 +255,7 @@ def light_usage(
         # Only observed off-to-on changes count; none are inferred at the range start or a gap.
         switch_ons=sum(
             1
-            for event in own_events
+            for event in events
             if start <= instant(event.event_time) < end
             and event.old is not None
             and event.new is not None

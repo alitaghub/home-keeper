@@ -1,5 +1,8 @@
 # Home Observer with a bundled Home Assistant: `docker compose up --build --wait`.
 # The demo lives in compose.demo.yaml; your own Home Assistant uses compose.external.yaml.
+# Add `--profile agent` to also start the chat agent (compose.agent.yaml).
+include:
+  - compose.agent.yaml
 services:
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:2026.10.1

@@ -45,7 +45,7 @@ from home_observer.models import (
     UsageReport,
     to_utc,
 )
-from home_observer.store import SnapshotRead, Store
+from home_observer.store import SnapshotRead, Store, current_reading
 from home_observer.usage import light_usage
 
 UTC_ZONE = ZoneInfo("UTC")
@@ -684,60 +684,58 @@ def create_app(
         with store.transaction() as db:
             # An expired heartbeat becomes a recorded gap before coverage is read.
             get_health(db)
-        # A deferred read sees one consistent state without holding the write lock.
+        # A deferred read sees one consistent state. It only copies raw rows: parsing and
+        # computing happen after it closes, so a large report never holds up collector writes.
         with store.transaction("DEFERRED") as db:
             selected = store.selection(db).entity_ids
             # Unselected IDs are left out rather than reported as missing.
             lights = sorted(set(entity_id or selected) & set(selected))
             scope = ",".join("?" * len(lights))
             # Evidence inside the window, plus each light's latest evidence before it.
-            readings: list[BaselineRecord | EventReading] = [
-                BaselineRecord.model_validate_json(row[0])
-                for row in db.execute(
-                    # Only placeholders are interpolated; values are bound parameters.
-                    "SELECT data FROM baselines WHERE persisted_at>=? "  # noqa: S608 -- placeholders only
-                    "AND julianday(json_extract(data, '$.received_at')) <= julianday(?) "
-                    f"AND entity_id IN ({scope})",
-                    (max(cutoff, start.isoformat()), end.isoformat(), *lights),
-                )
-            ]
-            events = [
-                EventRecord.model_validate_json(row[0])
-                for row in db.execute(
-                    "SELECT data FROM events WHERE persisted_at>=? AND event_time>=? "  # noqa: S608 -- placeholders only
-                    f"AND event_time<=? AND entity_id IN ({scope})",
-                    (cutoff, start.isoformat(), end.isoformat(), *lights),
-                )
-            ]
+            snapshot_rows: list[sqlite3.Row] = db.execute(
+                # Only placeholders are interpolated; values are bound parameters.
+                "SELECT entity_id, data FROM baselines WHERE persisted_at>=? "  # noqa: S608 -- placeholders only
+                "AND julianday(json_extract(data, '$.received_at')) <= julianday(?) "
+                f"AND entity_id IN ({scope})",
+                (max(cutoff, start.isoformat()), end.isoformat(), *lights),
+            ).fetchall()
+            event_rows: list[sqlite3.Row] = db.execute(
+                "SELECT entity_id, data FROM events WHERE persisted_at>=? AND event_time>=? "  # noqa: S608 -- placeholders only
+                f"AND event_time<=? AND entity_id IN ({scope})",
+                (cutoff, start.isoformat(), end.isoformat(), *lights),
+            ).fetchall()
+            current_rows: list[sqlite3.Row] = []
             for light in lights:
                 # Snapshots are stored in receipt order, so the newest persisted is the latest read.
-                prior = db.execute(
-                    "SELECT data FROM baselines WHERE entity_id=? AND persisted_at>=? "
+                snapshot_rows += db.execute(
+                    "SELECT entity_id, data FROM baselines WHERE entity_id=? AND persisted_at>=? "
                     "AND persisted_at<? ORDER BY persisted_at DESC, rowid DESC LIMIT 1",
                     (light, cutoff, start.isoformat()),
-                ).fetchone()
-                if prior:
-                    readings.append(BaselineRecord.model_validate_json(prior[0]))
-                prior = db.execute(
-                    "SELECT data FROM events WHERE entity_id=? AND persisted_at>=? "
+                ).fetchall()
+                event_rows += db.execute(
+                    "SELECT entity_id, data FROM events WHERE entity_id=? AND persisted_at>=? "
                     "AND event_time<? ORDER BY event_time DESC, id DESC LIMIT 1",
                     (light, cutoff, start.isoformat()),
-                ).fetchone()
-                if prior:
-                    events.append(EventRecord.model_validate_json(prior[0]))
+                ).fetchall()
                 # The cache keeps a steady light's state after its only snapshot expires.
-                current = store.current(db, light)
-                if current:
-                    readings.append(current)
+                current_rows += db.execute(
+                    "SELECT entity_id, data FROM current_state WHERE entity_id=?", (light,)
+                ).fetchall()
             # Every retained gap: one that recovered before the window still leaves the light
             # unknown until new evidence arrives. Gaps are few, bounded by retention.
-            gaps = [
-                CoverageGap.model_validate_json(row[0])
-                for row in db.execute(
-                    "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=?",
-                    (cutoff,),
-                )
-            ]
+            gap_rows: list[sqlite3.Row] = db.execute(
+                "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=?",
+                (cutoff,),
+            ).fetchall()
+        readings: dict[str, list[BaselineRecord | EventReading]] = {light: [] for light in lights}
+        for row in snapshot_rows:
+            readings[row[0]].append(BaselineRecord.model_validate_json(row[1]))
+        for row in current_rows:
+            readings[row[0]].append(current_reading.validate_json(row[1]))
+        events: dict[str, list[EventRecord]] = {light: [] for light in lights}
+        for row in event_rows:
+            events[row[0]].append(EventRecord.model_validate_json(row[1]))
+        gaps = [CoverageGap.model_validate_json(row[0]) for row in gap_rows]
         retained_since = datetime.fromisoformat(cutoff)
         return UsageReport(
             start=start.isoformat(),
@@ -752,8 +750,8 @@ def create_app(
                     now=now().astimezone(UTC),
                     timezone=timezone,
                     retained_since=retained_since,
-                    readings=readings,
-                    events=events,
+                    readings=readings[light],
+                    events=events[light],
                     gaps=gaps,
                 )
                 for light in lights

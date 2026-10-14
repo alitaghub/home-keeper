@@ -1,5 +1,8 @@
 # Synthetic demo, no hardware or Home Assistant: `docker compose -f compose.demo.yaml up --build --wait`.
 name: home-observer-demo
+# Add `--profile agent` to also start the chat agent (compose.agent.yaml).
+include:
+  - compose.agent.yaml
 services:
   api:
     build: .

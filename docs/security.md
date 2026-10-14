@@ -27,13 +27,33 @@
 - The demo collector uses an internal Docker network. The live collector also
   joins the `home-assistant` bridge network to reach Home Assistant. The API
   never joins that network. It has network access
-  needed by a trusted credential service. No model can use this service as a
-  tool. A future agent needs a separate network boundary and approved evidence
-  tools before it can be added.
+  needed by a trusted credential service.
+- The optional agent (`--profile agent`) is a separate container. It joins the
+  dashboard network to reach the API, an internal network to reach its own
+  Postgres, and the default network for egress to the model provider. It never
+  joins the `home-assistant` network and mounts no observer volume, so it cannot
+  reach Home Assistant, the token, the database or the service credential. It
+  calls only the public `/api/*` routes, through the `api` host name, and sends
+  the same mutation header as the dashboard. Its only writes are discovery
+  refresh and selection changes, and a selection change waits for your approval
+  in the chat. It runs read-only, without Linux capabilities.
+- Aegra, which serves the agent, and the chat page publish only on `127.0.0.1`.
+  The chat page calls Aegra directly, and Aegra's CORS allows only the chat
+  origin built from `CHAT_PORT`. Agent Chat UI's own `/api` proxy has no target,
+  because it allows every origin. Aegra runs without authentication
+  (`AUTH_TYPE=noop`): anyone who can reach its port can read and write every
+  chat thread and start the agent. CORS does not stop simple cross-site
+  requests from a page you visit, and Aegra has no `Host` check, so DNS
+  rebinding is not mitigated. Its Postgres publishes no port.
 
-Do not expose the dashboard publicly. It has no user authentication. This version
-makes no model calls, so no data leaves the home for a cloud model. A future cloud
-investigation mode must document the evidence it sends before enabling it.
+Do not expose the dashboard or the agent publicly. Neither has user
+authentication. Without the agent profile, Home Observer makes no model calls.
+With it, your questions and the agent's tool results go to the model provider
+you configure in `AGENT_MODEL`. Tool results contain light names, states,
+timestamps and usage numbers from the public API. The Home Assistant token, the
+database and the service credential never leave. Chat threads stay in the local
+Postgres volume, and the provider also receives each thread's earlier messages
+as context. See [agent.md](agent.md).
 
 See [architecture.md](architecture.md) for how these parts connect, and
 [home-assistant.md](home-assistant.md) for how the token is created and stored.
