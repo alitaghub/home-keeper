@@ -1,0 +1,18 @@
+{
+  "recommendations": [
+    "hverlin.mise-vscode",
+    "ms-python.python",
+    "detachhead.basedpyright",
+    "charliermarsh.ruff",
+    "biomejs.biome",
+    "vitest.explorer",
+    "ms-playwright.playwright",
+    "editorconfig.editorconfig"
+  ],
+  "unwantedRecommendations": [
+    "ms-python.vscode-pylance",
+    "ms-python.black-formatter",
+    "ms-python.isort",
+    "ms-python.pylint"
+  ]
+}

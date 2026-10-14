@@ -14,6 +14,11 @@ The pre-commit hook formats and lints staged files only (Ruff for Python, Biome
 for the web app). Types and tests run in `mise run check` and CI. You need Docker
 with Compose for `mise run dev` and `mise run e2e`.
 
+### VS Code
+
+Accept the recommended extensions and disable Pylance for this workspace;
+basedpyright reports the same type errors as CI.
+
 ## Workflow
 
 1. Branch from `main`.
