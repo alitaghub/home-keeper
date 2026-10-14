@@ -1,86 +1,119 @@
 # Home Observer
 
 [![CI](https://github.com/alitaghub/home-observer/actions/workflows/ci.yaml/badge.svg)](https://github.com/alitaghub/home-observer/actions/workflows/ci.yaml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A local smart-home monitor with explicit device discovery and selection. Run a
-hardware-free synthetic demo, or connect an existing Home Assistant instance and
-record selected individual Hue lights. Nothing is monitored until you select it.
-There is no AI agent or device control yet.
+Home Observer records what your smart-home devices actually do. It reads them
+through [Home Assistant](https://www.home-assistant.io/), keeps the evidence on
+your machine, and never sends a command to a device.
 
-## Start the demo
+The long-term goal is an agent that understands your home and runs it for you.
+An agent can only act well on a home it can see, so this project starts with
+seeing: a trustworthy, typed record of state changes, with honest gaps where
+collection stopped.
 
-Install Docker Engine with Compose on Linux, or Docker Desktop with Compose on
-Windows/WSL2 or macOS. From this repository:
+![The Home Observer dashboard with two monitored lamps](docs/images/dashboard.png)
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph home["Your home"]
+        hue["Hue lights"] --> ha["Home Assistant"]
+    end
+
+    subgraph observer["Home Observer"]
+        collector["Collector"] --> api["API"] --> db[("SQLite")]
+    end
+
+    ha -- "read only" --> collector
+    dashboard["Dashboard"] <--> api
+```
+
+1. The **collector** discovers devices in Home Assistant and lists them in the
+   dashboard.
+2. You pick the lights to monitor. Nothing is recorded before you do.
+3. The collector takes a baseline snapshot of each selected light, then streams
+   its state changes: on/off, brightness, color, availability.
+4. The **API** validates every record and stores it in SQLite. If collection
+   stops, it records a gap instead of guessing what happened.
+5. The **dashboard** shows current state, a timeline of changes, and every gap.
+
+[docs/architecture.md](docs/architecture.md) has the full picture, the selection
+flow and the terms the code uses.
+
+## Design principles
+
+- **Read-only.** The connector makes fixed reads and one event subscription. It
+  has no code path that changes a device.
+- **Opt-in.** Discovery is not permission. Each light is recorded only after you
+  select it, and a removal takes effect even if a slow read is still in flight.
+- **Evidence, not guesses.** Every event keeps three timestamps: when Home
+  Assistant fired it, when the collector received it, and when the API stored it.
+  Interruptions show up as gaps. The app never invents a change it did not see.
+- **Local.** Everything binds to `127.0.0.1`. The Home Assistant token stays in
+  the collector container. Nothing goes to a cloud service.
+
+## Try the demo
+
+The demo runs a synthetic home: no hardware and no Home Assistant needed. You
+need Docker with Compose.
 
 ```sh
 docker compose up --build --wait
 ```
 
-Open <http://127.0.0.1:8000> and click **Monitor** on a lamp. If port 8000 is
-taken, publish on another loopback port:
+Open <http://127.0.0.1:8000> and click **Monitor** on a lamp. Changes appear in
+**Recorded changes** within a few seconds. If port 8000 is taken, run
+`OBSERVER_PORT=18000 docker compose up --build --wait` instead.
+
+Stop it with `docker compose down`. Your selections and history stay in Docker
+volumes. [docs/demo.md](docs/demo.md) explains what the demo shows.
+
+## Connect your home
+
+Home Observer talks to Home Assistant, not to the Hue Bridge. If you don't run
+Home Assistant yet, a guided script sets one up in a container:
 
 ```sh
-OBSERVER_PORT=18000 docker compose up --build --wait
+./scripts/start-home.sh
 ```
 
-Stop the stack with `docker compose down`. Selected devices and history stay in
-named volumes. [docs/demo.md](docs/demo.md) explains what the demo shows and how
-to restart or reset it.
+If you already have one, follow [docs/home-assistant.md](docs/home-assistant.md)
+to create a token and start live mode.
 
-## Use your own home
+## Documentation
 
-Home Observer reads from Home Assistant, not from the Hue Bridge directly. It
-needs a Home Assistant token stored in a file outside this repository.
+| Guide                                            | Read it to                                                         |
+| ------------------------------------------------ | ------------------------------------------------------------------ |
+| [Architecture](docs/architecture.md)             | Understand the parts, the data flow, and the domain terms          |
+| [Demo](docs/demo.md)                             | See what the synthetic home does and how to reset it               |
+| [Home Assistant and Hue](docs/home-assistant.md) | Connect a real home and check it against a real light              |
+| [Collection and gaps](docs/collection.md)        | Learn what each record proves, how gaps work, and retention        |
+| [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
+| [Security](docs/security.md)                     | Understand the trust boundaries around the token, API and browser  |
 
-- [docs/home-assistant.md](docs/home-assistant.md): guided local setup, connecting
-  an existing Home Assistant with Hue, and restarting or stopping live mode.
-- [docs/networking.md](docs/networking.md): which address the collector container
-  can reach on WSL2, macOS and Linux, and what has been tested.
-- [docs/live-test-checklist.md](docs/live-test-checklist.md): the Phase 1 check
-  against one real Hue light.
+## Repository layout
 
-## How it works
-
-- [docs/architecture.md](docs/architecture.md): the collectors, the API and who
-  writes to SQLite.
-- [docs/collection.md](docs/collection.md): what each collection pass records,
-  the evidence limits, retention, and how gaps and recovery work.
-- [docs/security.md](docs/security.md): the security boundary around the token,
-  the API and the dashboard.
-- [docs/verification-history.md](docs/verification-history.md): what each story
-  verified, and what is still untested.
-
-## Repository map
-
-| Path            | What lives there                                                          |
-| --------------- | ------------------------------------------------------------------------- |
-| `apps/observer` | Python service: FastAPI API, demo and live collectors, unit and integration tests |
-| `apps/web`      | Dashboard: Vite + React + TypeScript, API types generated from OpenAPI    |
-| `e2e`           | Compose smoke scripts, a fake Home Assistant, and the Playwright suite    |
-| `scripts`       | Guided Home Assistant setup (`start-home.sh`, `connect-home.sh`)          |
-| `docs`          | Operator and design docs                                                  |
-| `packages`      | Reserved for shared libraries once a second app needs one. Empty today.   |
-
-Python uses a uv workspace (root `pyproject.toml`, `uv.lock`). The web side uses
-a pnpm workspace (root `package.json`, `pnpm-workspace.yaml`). The Docker image
-builds the dashboard in a Node stage, and FastAPI serves it.
+| Path            | What lives there                                                   |
+| --------------- | ------------------------------------------------------------------ |
+| `apps/observer` | Python service: FastAPI API, collectors, SQLite store, tests        |
+| `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
+| `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |
+| `scripts`       | Guided Home Assistant setup                                        |
+| `docs`          | User and design docs                                               |
 
 ## Develop
 
-[mise](https://mise.jdx.dev/) pins every tool (Python 3.13, uv, Node.js 24,
-pnpm, actionlint, zizmor, lefthook) and defines the tasks.
+[mise](https://mise.jdx.dev/) installs every tool at a pinned version and runs
+the tasks.
 
 ```sh
-mise run setup      # install tools and dependencies, then the pre-commit hook
-mise run check      # everything CI runs except the Compose e2e
-mise run dev        # demo stack, then the Vite dev server with /api proxied to it
-mise run e2e        # Compose smoke scripts and Playwright against a fresh stack
-mise run gen:api    # regenerate apps/web/src/api/schema.d.ts after an API change
+mise run setup      # tools, dependencies, and the pre-commit hook
+mise run check      # lint, types, tests, build: what CI runs
+mise run dev        # demo stack plus the Vite dev server
+mise run e2e        # Docker stack, smoke tests, Playwright
 ```
-
-`mise tasks` lists the rest (`fmt`, `lint`, `typecheck`, `test`). Set
-`OBSERVER_PORT` for `dev` and `e2e` too when 8000 is taken, for example
-`OBSERVER_PORT=18000 mise run e2e`.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. Coding
 agents start at [AGENTS.md](AGENTS.md).

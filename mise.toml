@@ -78,7 +78,9 @@ OBSERVER_API_ORIGIN="http://127.0.0.1:${OBSERVER_PORT:-8000}" pnpm --filter @hom
 [tasks.e2e]
 description = "Run the Compose smoke scripts and the Playwright suite against a fresh stack"
 run = """
-trap 'docker compose down' EXIT
+# On failure, keep the stack's logs for debugging (CI uploads them).
+trap 'status=$?; [ "$status" -eq 0 ] || docker compose logs --no-color > compose-logs.txt; docker compose down' EXIT
+docker compose -f compose.home-assistant.yaml config --quiet
 docker compose up --build --wait
 uv run python e2e/compose_smoke.py
 uv run python e2e/compose_live_smoke.py
