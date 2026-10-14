@@ -17,8 +17,8 @@ with Compose for `mise run dev` and `mise run e2e`.
 ## Workflow
 
 1. Branch from `main`.
-2. Make the change. Run `mise run check`. If you touched Docker, Compose,
-   `scripts/` or the UI, also run `mise run e2e`.
+2. Make the change. Run `mise run check`. If you touched Docker, Compose
+   or the UI, also run `mise run e2e`.
 3. If you changed a public `/api/*` route, run `mise run gen:api` and commit the
    regenerated `apps/web/src/api/schema.d.ts`. CI fails when it is stale.
 4. Open a pull request against `main` and fill in the template: the problem, the
@@ -43,7 +43,7 @@ Each job runs one mise task, so a green local run means a green CI run.
 | Job          | Runs             | What it checks                                                        |
 | ------------ | ---------------- | --------------------------------------------------------------------- |
 | `Check`      | `mise run check` | Lint, format, types, tests with coverage, build, API types, workflows |
-| `End-to-end` | `mise run e2e`   | Compose stack, demo and live smoke scripts, Playwright                |
+| `End-to-end` | `mise run e2e`   | Demo, own-HA and bundled-HA Compose smoke scripts, Playwright         |
 
 On failure, `End-to-end` uploads the Compose logs and the Playwright report.
 

@@ -53,6 +53,7 @@ def create_app(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     reconciliation_seconds: int = 60,
     source_id: str = "demo",
+    home_assistant_url: str | None = None,
     retention_days: int = 30,
     allowed_hosts: tuple[str, ...] = ("testserver", "127.0.0.1:8000", "localhost:8000"),
     allowed_origins: tuple[str, ...] = ("http://127.0.0.1:8000", "http://localhost:8000"),
@@ -171,6 +172,7 @@ def create_app(
             )
             return CatalogResponse(
                 source_id=source_id,
+                home_assistant_url=home_assistant_url,
                 refreshed_at=refreshed[0] if refreshed else None,
                 freshness="pending"
                 if age is None

@@ -1,9 +1,10 @@
 # Collection, evidence and gaps
 
 What the collector records, what that evidence does and does not prove, and how
-interruptions show up. Commands use the demo stack. For live mode, add
-`-f compose.yaml -f compose.live.yaml` as described in
-[home-assistant.md](home-assistant.md).
+interruptions show up. Commands use the home stack (`compose.yaml`). For the
+demo, add `-f compose.demo.yaml`. For your own Home Assistant, use
+`-f compose.yaml -f compose.external.yaml` as described in
+[home-assistant.md](home-assistant.md#use-your-own-home-assistant).
 
 ## Collection and evidence limits
 
@@ -18,8 +19,8 @@ can lengthen the interval. Change the interval without storing a secret:
 OBSERVER_RECONCILIATION_SECONDS=30 docker compose up --build --wait
 ```
 
-For live mode, add `-f compose.yaml -f compose.live.yaml` to that command. Use a
-positive interval in seconds. Freshness becomes stale after twice the interval
+For the demo, run `OBSERVER_RECONCILIATION_SECONDS=30 docker compose -f compose.demo.yaml up --build --wait`.
+Use a positive interval in seconds. Freshness becomes stale after twice the interval
 or a reported collector failure. Authentication, connection and certificate
 errors appear as safe status messages. A failed refresh retains the previous
 catalog marked stale. A missing selected entity gets its own collection gap while healthy selected lights
@@ -79,7 +80,7 @@ Retention defaults to 30 days. Set a positive number of days on the API service:
 OBSERVER_RETENTION_DAYS=7 docker compose up --build --wait
 ```
 
-For live mode, add `-f compose.yaml -f compose.live.yaml`. Retention uses the API
+For the demo, add `-f compose.demo.yaml`. Retention uses the API
 persistence time. Requests trigger cleanup at most once per minute. History reads apply the cutoff
 immediately; expired rows can remain on disk until the next cleanup request.
 Active selections and their latest known state stay available in a separate
@@ -135,17 +136,17 @@ recorded collection windows remains unknown; no view claims uninterrupted histor
 
 ### Test a gap without hardware
 
-Select a demo light and wait for fresh evidence:
+Start the demo, select a light and wait for fresh evidence:
 
 ```sh
-docker compose stop collector
+docker compose -f compose.demo.yaml stop collector
 # Leave it stopped for more than 20 seconds at the default interval.
 # Read the dashboard: collection should become stale and show a gap.
-docker compose start collector
+docker compose -f compose.demo.yaml start collector
 # After the next collection pass, the gap should show recovery.
 ```
 
-`docker compose restart api` verifies persisted restart gaps. For live mode use
-both Compose files with these commands. The synthetic home resets its sequence
+`docker compose -f compose.demo.yaml restart api` verifies persisted restart
+gaps. For the home stack, drop `-f compose.demo.yaml`. The synthetic home resets its sequence
 when the collector starts; that reset is a recovery snapshot, not inferred
 historical device activity.

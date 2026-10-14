@@ -1,61 +1,102 @@
-# Home Assistant and Hue
+# Home Assistant
 
-Home Observer connects to Home Assistant, not directly to the Hue Bridge. Use
-the guided setup if you do not run Home Assistant yet. Otherwise skip to
-[Connect Home Assistant and Hue](#connect-home-assistant-and-hue).
+Home Observer reads devices through Home Assistant. It never talks to device
+vendors or bridges directly. Home Assistant owns every device connection.
 
-Container `localhost` is not the computer running Docker. Read
-[networking.md](networking.md) before you pick the Home Assistant address.
+By default, `docker compose up` starts a bundled Home Assistant and sets it up
+for you. If you already run Home Assistant, see
+[Use your own Home Assistant](#use-your-own-home-assistant).
 
-## Guided local setup (optional)
+## Bundled Home Assistant
 
-If you do not have Home Assistant, run this from WSL or a Linux terminal:
-
-```sh
-./scripts/start-home.sh
-```
-
-The script starts a separate Home Assistant Container, waits for its local web
-page, and opens a three-stage wizard: account creation, Hue Bridge pairing, then
-Home Observer connection. Enter passwords in Home Assistant and paste the token
-only into the wizard's hidden terminal input. The wizard stores the token outside
-this repo, with mode `600` and owner `10001` for the connector. It may ask for your
-local sudo password to set that owner. Public connection settings go to
-`~/.local/state/home-observer/local-live.env` (or `$XDG_STATE_HOME/home-observer`).
-Nothing is sent to CI or an AI model. Device selection remains explicit.
-
-Home Assistant opens at <http://127.0.0.1:8123>, and the monitor at
-<http://127.0.0.1:8000>. This optional container publishes only a loopback port.
-It uses a separate persistent configuration volume and network joined only by
-the trusted connector, not the Observer API. It has no privileged mode, host
-networking, USB or Bluetooth access. WSL/container multicast discovery may fail:
-add Philips Hue in Home Assistant using the bridge IP from the Hue app. No router
-administration or subnet scan is performed. Container installation has no Home
-Assistant apps; see the [official installation guide](https://www.home-assistant.io/installation/linux/).
-The upstream guide requires Docker Engine rather than Docker Desktop. Linux/WSL
-Engine is the development target for this optional setup; macOS and Docker Desktop
-have not been verified. For them, use a separately installed Home Assistant.
-
-### Restart the configured monitor
-
-To restart the configured monitor without repeating the wizard:
+From the repository root:
 
 ```sh
-docker compose --env-file "${XDG_STATE_HOME:-$HOME/.local/state}/home-observer/local-live.env" \
-  -f compose.yaml -f compose.live.yaml -f compose.local-live.yaml up --build --wait
+docker compose up --build --wait
 ```
 
-Stop Home Assistant while keeping its configuration:
+This starts four services:
+
+- `homeassistant`: Home Assistant `2026.10.1`, published on
+  <http://127.0.0.1:8123> (set `HA_PORT` to change the port).
+- `ha-setup`: a one-shot container that sets up Home Assistant, then exits.
+- `api`: the Observer API and dashboard, published on <http://127.0.0.1:8000>
+  (set `OBSERVER_PORT` to change the port).
+- `collector`: the live collector that reads Home Assistant.
+
+### What setup does
+
+`ha-setup` completes Home Assistant onboarding through its HTTP API, with no
+clicks:
+
+1. It creates the owner user `owner` with a random password.
+2. It finishes onboarding. Analytics stays disabled. Location, time zone and
+   units keep Home Assistant's defaults; change them in Home Assistant.
+3. It creates a long-lived token for the collector and stores it in the
+   `ha-token` volume with mode `600`. Besides `ha-setup`, which writes and
+   checks it, only the collector mounts that volume, read-only.
+4. It stores the owner login with mode `600` in the `ha-owner` volume. Only
+   `ha-setup` mounts that volume.
+
+Print the login at any time. Setup never writes the password to its log:
 
 ```sh
-docker compose -p home-observer-ha -f compose.home-assistant.yaml down
+docker compose run --rm --no-deps ha-setup login
 ```
 
-## Connect Home Assistant and Hue
+You can change the password in Home Assistant under your profile. The stored
+copy then goes stale, but setup does not need it again.
 
-The default demo/live Compose files do not install Home Assistant. Use the optional
-guided setup above, or first run Home Assistant separately
-and pair your Hue Bridge through its [Hue integration](https://www.home-assistant.io/integrations/hue/).
+`ha-setup` runs on every `up`:
+
+- A valid token is stored: it does nothing.
+- Home Assistant is not onboarded yet: it onboards it.
+- Home Assistant is onboarded but no token is stored, or Home Assistant rejects
+  the token (for example, you revoked it): `up` fails. Reset with
+  `docker compose down --volumes`, which also deletes Observer history, or use
+  [your own Home Assistant](#use-your-own-home-assistant) with a token you create.
+
+### Connect your devices
+
+1. Print the login with the command above.
+2. Open <http://127.0.0.1:8123> and log in as `owner`.
+3. Go to **Settings → Devices & services → Add integration** and add your
+   devices. For Philips Hue, use the [Hue integration](https://www.home-assistant.io/integrations/hue/)
+   and enter the bridge IP address from the Hue app.
+4. Open <http://127.0.0.1:8000> and click **Refresh discovery**.
+
+Setup is not specific to Hue. You can add any integration Home Assistant
+supports. Home Observer records only individual Hue lights today; other
+entities appear under **Show other entities**. When no supported device exists
+yet, the dashboard links to the Home Assistant integrations page.
+
+### Limits
+
+- Home Assistant runs on a Docker bridge network, not host networking.
+  Multicast and mDNS discovery may not see your LAN. If a device is not
+  offered, add its integration by IP address.
+- USB and Bluetooth integrations are not supported in this setup.
+- Home Assistant runs with its upstream container identity, without privileged
+  mode. It publishes only a loopback port.
+- Container installs have no Home Assistant apps. See the
+  [official installation guide](https://www.home-assistant.io/installation/linux/).
+- Linux and WSL2 with Docker Engine are tested, including pairing a real Hue
+  Bridge. macOS with Docker Desktop should work but has not been tested.
+
+### Stop and reset
+
+```sh
+# Stop, keeping Home Assistant, its token and Observer history:
+docker compose down
+# Delete everything, including your Home Assistant setup:
+docker compose down --volumes
+```
+
+## Use your own Home Assistant
+
+`compose.external.yaml` replaces the bundled Home Assistant and `ha-setup` with
+a Home Assistant you already run. Container `localhost` is not the computer
+running Docker. Read [networking.md](networking.md) before you pick the address.
 
 ### Create a token
 
@@ -79,14 +120,17 @@ sudo chmod 600 /absolute/path/to/ha-token
 Docker Desktop file-sharing permissions may differ. Confirm that the mounted
 file is readable by container user `10001` without making it publicly readable.
 
-### Start live mode
+### Start
 
-Set the connection origin and absolute token file path, then start live mode:
+Set the connection origin and absolute token file path, then start with both
+Compose files:
 
 ```sh
 export OBSERVER_HA_URL=https://home-assistant.example.test:8123
 export OBSERVER_HA_TOKEN_FILE=/absolute/path/to/ha-token
-docker compose -f compose.yaml -f compose.live.yaml up --build --wait
+# Optional: the address your browser uses, for the dashboard's link to Home Assistant.
+export OBSERVER_HA_PUBLIC_URL=https://home-assistant.example.test:8123
+docker compose -f compose.yaml -f compose.external.yaml up --build --wait
 ```
 
 Use your actual Home Assistant origin, without credentials, a query string or an
@@ -95,7 +139,10 @@ on. Install a certificate trusted by the container; invalid certificates fail
 collection. HTTP is supported for a trusted local network, but does not encrypt
 the token in transit.
 
-### Discover and select lights
+Use both Compose files for every command, for example
+`docker compose -f compose.yaml -f compose.external.yaml down`.
+
+## Discover and select lights
 
 Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
 shows supported lamps by default, using their device names. Room groups, scenes,
@@ -114,19 +161,12 @@ restarting. Stable entity registry identity keeps selection and history across
 an entity name change. A new registry entry reusing an old entity ID does not
 inherit approval.
 
-### Live data and stopping
+## Home and demo data
 
-Live mode uses its own `live-data` SQLite volume. Keep demo and live data separate.
-The API rejects a database containing another source. Stop the demo before
-starting live mode because both publish the same localhost port. To stop live
-mode while retaining data:
-
-```sh
-docker compose -f compose.yaml -f compose.live.yaml down
-```
-
-Use both Compose files for live start, restart and stop commands. Adding
-`--volumes` to the live stop command deletes its named volumes.
+The home stack and the demo use separate Compose projects and volumes. The demo
+runs as project `home-observer-demo`. The API rejects a database containing
+another source. Stop one stack before starting the other, because both publish
+the same localhost port.
 
 ## Check it with a real light
 
@@ -146,7 +186,7 @@ Test one individual Hue light end to end:
    gap opens and then closes.
 
 [collection.md](collection.md#test-a-gap-without-hardware) has the commands for
-steps 4 to 6. Add `-f compose.yaml -f compose.live.yaml` to each.
+steps 4 to 6. For the home stack, drop `-f compose.demo.yaml` from each.
 
 When you report a failure, share the dashboard's error message and your Home
 Assistant version. Never share the token or raw registry payloads.

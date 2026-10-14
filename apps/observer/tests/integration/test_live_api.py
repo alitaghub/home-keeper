@@ -110,3 +110,14 @@ def test_registry_identity_preserves_selection_on_rename_without_granting_replac
             ).status_code
             == 409
         )
+
+
+def test_catalog_tells_the_dashboard_where_home_assistant_is(tmp_path: Path) -> None:
+    app = create_app(
+        tmp_path / "linked.sqlite",
+        TOKEN,
+        source_id="home_assistant",
+        home_assistant_url="http://127.0.0.1:8123",
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/catalog").json()["home_assistant_url"] == "http://127.0.0.1:8123"

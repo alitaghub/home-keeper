@@ -28,6 +28,7 @@
       }
     ],
     "freshness": "fresh",
+    "home_assistant_url": null,
     "refreshed_at": "2026-10-12T10:00:07+00:00",
     "source_id": "demo"
   }

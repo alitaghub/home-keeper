@@ -18,10 +18,12 @@ function groupByDevice(entities: Entity[]) {
 
 export function Catalog({
   entities,
+  homeAssistantUrl,
   selected,
   onToggle,
 }: {
   entities: Entity[] | null;
+  homeAssistantUrl: string | null;
   selected: string[];
   onToggle: (id: string, selected: boolean) => void;
 }) {
@@ -32,9 +34,24 @@ export function Catalog({
       <div id="catalog" className="light-grid">
         {entities && !lights.length && (
           <p className="empty">
-            {entities.length
-              ? "No supported lamps found. Check the Hue integration in Home Assistant."
-              : "Waiting for discovery."}
+            {homeAssistantUrl ? (
+              <>
+                No supported devices yet.{" "}
+                <a
+                  id="connect-devices"
+                  href={`${homeAssistantUrl}/config/integrations/dashboard`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Connect your devices in Home Assistant
+                </a>
+                , then refresh discovery. Home Observer records individual Hue lights.
+              </>
+            ) : entities.length ? (
+              "No supported lamps found. Check your integrations in Home Assistant."
+            ) : (
+              "Waiting for discovery."
+            )}
           </p>
         )}
         {lights.map((entity) => {

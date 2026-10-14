@@ -1,6 +1,6 @@
 """Bounded external smoke test for a running synthetic Compose deployment.
 
-Run after `docker compose up --build -d`; it uses no internal credentials.
+Run after `docker compose -f compose.demo.yaml up --build -d`; it uses no internal credentials.
 """
 
 import argparse
@@ -71,7 +71,10 @@ def main() -> None:
 
     if not args.skip_bindings:
         config = json.loads(
-            subprocess.check_output(["docker", "compose", "config", "--format", "json"], timeout=10)
+            subprocess.check_output(
+                ["docker", "compose", "-f", "compose.demo.yaml", "config", "--format", "json"],
+                timeout=10,
+            )
         )
         published: list[str] = []
         for name, service in config["services"].items():

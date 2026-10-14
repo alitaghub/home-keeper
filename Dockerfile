@@ -22,6 +22,7 @@ RUN uv sync --locked --no-dev --no-editable --package home-observer
 ENV PATH="/app/.venv/bin:$PATH"
 # Shared secret and data volumes use a fixed, unprivileged identity.
 RUN groupadd --gid 10001 observer && useradd --uid 10001 --gid 10001 observer \
-    && mkdir /data /secrets && chown observer:observer /data /secrets
+    && mkdir /data /secrets /ha-token /ha-owner \
+    && chown observer:observer /data /secrets /ha-token /ha-owner
 USER 10001:10001
 CMD ["python", "-m", "home_observer.runtime"]
