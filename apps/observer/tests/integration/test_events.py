@@ -77,6 +77,23 @@ def test_resent_event_under_newer_revision_is_a_duplicate_of_the_stored_record(
         assert after["bulb-a"]["confirmed_at"] is not None
 
 
+def test_resent_event_id_rejects_changed_evidence_and_stale_revisions(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "reject.sqlite", TOKEN, now=lambda: NOW)) as client:
+        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
+        revision = select(client)
+        assert client.post("/internal/events", json=event(revision), headers=AUTH).json()[
+            "recorded"
+        ]
+        newer = select(client, "bulb-b")
+        for payload, code in (
+            (event(newer, new={"state": "off"}), "event_identity_conflict"),
+            (event(revision), "selection_changed"),
+        ):
+            response = client.post("/internal/events", json=payload, headers=AUTH)
+            assert response.status_code == 409, response.text
+            assert response.json()["detail"]["code"] == code
+
+
 def test_retention_preserves_selection_current_state_and_validates_scope(tmp_path: Path) -> None:
     clock = [NOW]
     with TestClient(
