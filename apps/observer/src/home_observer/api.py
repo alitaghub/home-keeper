@@ -425,10 +425,12 @@ def create_app(
                     mode="json", exclude_unset=True
                 )
                 # A stable source ID cannot silently refer to different evidence.
+                # The revision is admission context, not evidence: event IDs exclude
+                # it, and the record keeps the revision it was first stored under.
                 comparable = {
                     key: value
                     for key, value in stored.items()
-                    if key not in ("persisted_at", "received_at")
+                    if key not in ("persisted_at", "received_at", "selection_revision")
                 }
                 if comparable != {
                     key: value
@@ -436,6 +438,7 @@ def create_app(
                     if key
                     not in (
                         "received_at",
+                        "selection_revision",
                         "kind",
                         "coverage_gap_ids",
                         "transition_time",
