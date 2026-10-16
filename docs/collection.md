@@ -155,8 +155,10 @@ or the next application startup still expose interrupted collection.
 On reconnect, the live collector refreshes the registry and current selection,
 installs the selected event subscription, and reads current snapshots. A bounded
 reader holds events arriving during those reads. It saves snapshots and events
-before reporting recovery. Removing or adding a selection invalidates an older
-collector revision, including a delayed recovery signal. Renamed identities keep
+before reporting recovery. A change that arrives after a read returns but before
+its snapshot is saved stays the current state; the older snapshot does not
+replace it and does not fail the pass. Removing or adding a selection
+invalidates an older collector revision, including a delayed recovery signal. Renamed identities keep
 history; a replacement entity never inherits permission.
 
 Recovery snapshots link to gap evidence and mark transition time as unknown.
