@@ -276,11 +276,21 @@ def create_app(
                 or not entity.supported
             ):
                 raise conflict("selection_changed", "Selection no longer permits this observation")
+            # Only an earlier snapshot makes this one stale. An event received after the read
+            # returned is newer evidence; current-state ordering keeps it ahead of this snapshot.
+            previous_snapshot = db.execute(
+                "SELECT snapshot_received_at FROM current_state WHERE entity_id=?",
+                (payload.entity_id,),
+            ).fetchone()
+            if (
+                previous_snapshot
+                and previous_snapshot[0]
+                and payload.received_at < datetime.fromisoformat(previous_snapshot[0])
+            ):
+                raise conflict("observation_older", "Observation is older than latest snapshot")
             confirmed = db.execute(
                 "SELECT received_at FROM confirmed WHERE entity_id=?", (payload.entity_id,)
             ).fetchone()
-            if confirmed and payload.received_at < datetime.fromisoformat(confirmed[0]):
-                raise conflict("observation_older", "Observation is older than latest confirmation")
             data = payload.model_dump(mode="json", exclude={"selection_revision"})
             latest = store.current(db, payload.entity_id)
             # Only an authoritative snapshot lacking a recorded change exposes a gap.
@@ -362,10 +372,11 @@ def create_app(
                     payload.collection_started_at or payload.received_at, payload.received_at
                 ),
             )
-            db.execute(
-                "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
-                (payload.entity_id, payload.received_at.isoformat(), persisted.isoformat()),
-            )
+            if confirmed is None or payload.received_at >= datetime.fromisoformat(confirmed[0]):
+                db.execute(
+                    "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
+                    (payload.entity_id, payload.received_at.isoformat(), persisted.isoformat()),
+                )
             return {
                 "accepted": True,
                 "baseline": baseline.model_dump(mode="json", exclude_unset=True),

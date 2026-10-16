@@ -78,6 +78,14 @@ class Store:
             columns = {row[1] for row in db.execute("PRAGMA table_info(current_state)")}
             if "snapshot_started_at" not in columns:
                 db.execute("ALTER TABLE current_state ADD COLUMN snapshot_started_at TEXT")
+            if "snapshot_received_at" not in columns:
+                db.execute("ALTER TABLE current_state ADD COLUMN snapshot_received_at TEXT")
+                # A stored snapshot's receipt is a lower bound until the next snapshot arrives.
+                db.execute(
+                    "UPDATE current_state "
+                    "SET snapshot_received_at=json_extract(data, '$.received_at') "
+                    "WHERE json_extract(data, '$.kind') != 'event'"
+                )
             columns = {row[1] for row in db.execute("PRAGMA table_info(baselines)")}
             if "persisted_at" not in columns:
                 db.execute("ALTER TABLE baselines ADD COLUMN persisted_at TEXT")
@@ -187,19 +195,23 @@ class Store:
         snapshot: SnapshotRead | None = None,
     ) -> None:
         previous = db.execute(
-            "SELECT source_time, snapshot_started_at FROM current_state WHERE entity_id=?",
+            "SELECT source_time, snapshot_started_at, snapshot_received_at "
+            "FROM current_state WHERE entity_id=?",
             (entity_id,),
         ).fetchone()
         instant = datetime.fromisoformat(source_time).astimezone(UTC)
         boundary = previous["snapshot_started_at"] if previous else None
+        snapshot_received_at = previous["snapshot_received_at"] if previous else None
         if snapshot is not None:
             if not cls.snapshot_can_replace(db, entity_id, instant, snapshot):
                 db.execute(
-                    "UPDATE current_state SET snapshot_started_at=? WHERE entity_id=?",
-                    (snapshot.started_at.isoformat(), entity_id),
+                    "UPDATE current_state SET snapshot_started_at=?, snapshot_received_at=? "
+                    "WHERE entity_id=?",
+                    (snapshot.started_at.isoformat(), snapshot.received_at.isoformat(), entity_id),
                 )
                 return
             boundary = snapshot.started_at.isoformat()
+            snapshot_received_at = snapshot.received_at.isoformat()
         else:
             # Keep delayed observations in history without crossing a newer HTTP read boundary.
             if (
@@ -212,8 +224,15 @@ class Store:
                 return
         db.execute(
             "INSERT OR REPLACE INTO current_state "
-            "(entity_id,source_time,data,snapshot_started_at) VALUES(?,?,?,?)",
-            (entity_id, instant.isoformat(), data.model_dump_json(exclude_unset=True), boundary),
+            "(entity_id,source_time,data,snapshot_started_at,snapshot_received_at) "
+            "VALUES(?,?,?,?,?)",
+            (
+                entity_id,
+                instant.isoformat(),
+                data.model_dump_json(exclude_unset=True),
+                boundary,
+                snapshot_received_at,
+            ),
         )
 
     @staticmethod

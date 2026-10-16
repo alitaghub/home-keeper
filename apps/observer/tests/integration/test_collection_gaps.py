@@ -2,7 +2,9 @@
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
+from queue import Empty, Queue
 from threading import Event, Thread
 
 from fastapi.testclient import TestClient
@@ -12,8 +14,9 @@ from websockets.http11 import Request, Response
 from websockets.sync.server import ServerConnection, serve
 
 from home_observer.api import create_app
-from home_observer.home_assistant import HomeAssistantConnector
+from home_observer.home_assistant import HomeAssistantConnector, SubscriptionKey
 from home_observer.live import CollectionSession
+from home_observer.models import Catalog, ChangeEvent, Entity, LightState, Observation
 
 REGISTRY = [{"id": "a", "entity_id": "light.a", "platform": "hue", "translation_key": "hue_light"}]
 
@@ -104,3 +107,122 @@ def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path: Path) 
             connector.close()
             server.shutdown()
             worker.join(timeout=5)
+
+
+class QueuedSubscription:
+    def __init__(self, key: SubscriptionKey) -> None:
+        self.key = key
+        self.pending: Queue[ChangeEvent] = Queue()
+        self.taken = Event()
+
+    def receive(self, timeout: float = 1) -> ChangeEvent | None:
+        try:
+            event = self.pending.get(timeout=timeout)
+        except Empty:
+            return None
+        self.taken.set()
+        return event
+
+    def close(self) -> None:
+        pass
+
+
+class EventAfterReadConnector:
+    """Home Assistant delivers a change after a state read returned, before it is posted."""
+
+    subscription_key: SubscriptionKey = (("a", 1, "light.a"),)
+
+    def __init__(self) -> None:
+        self.subscription = QueuedSubscription(self.subscription_key)
+        self.event_after_read = False
+
+    def discover(self) -> Catalog:
+        return Catalog(
+            source_id="home_assistant",
+            entities=[Entity(id="ha:a", name="Light", supported=True)],
+        )
+
+    def approve(self, selected: dict[str, int]) -> None:
+        pass
+
+    def subscribe_selected(self) -> QueuedSubscription:
+        return self.subscription
+
+    def read_selected(self, identity: str, revision: int) -> Observation:
+        started_at = datetime.now(UTC)
+        observation = Observation(
+            state="on",
+            availability="available",
+            brightness=100,
+            last_updated=datetime(2025, 1, 1, 10, tzinfo=UTC),
+            entity_id=identity,
+            source_entity_id="light.a",
+            source_id="home_assistant",
+            selection_revision=revision,
+            received_at=datetime.now(UTC),
+            collection_started_at=started_at,
+        )
+        if self.event_after_read:
+            changed_at = datetime.now(UTC)
+            self.subscription.pending.put(
+                ChangeEvent(
+                    id="change-after-read",
+                    entity_id=identity,
+                    source_entity_id="light.a",
+                    source_id="home_assistant",
+                    selection_revision=revision,
+                    event_time=changed_at,
+                    received_at=changed_at,
+                    old=LightState(state="on", brightness=100),
+                    new=LightState(state="on", brightness=180),
+                )
+            )
+            assert self.subscription.taken.wait(5)
+            # Let the buffer thread queue the event so the post-read drain posts it first.
+            time.sleep(0.05)
+        return observation
+
+    def close(self) -> None:
+        pass
+
+
+def test_event_received_after_read_keeps_pass_and_recovers_gap(tmp_path: Path) -> None:
+    connector = EventAfterReadConnector()
+    app = create_app(tmp_path / "race.sqlite", "internal-secret", source_id="home_assistant")
+    with TestClient(app, headers={"Authorization": "Bearer internal-secret"}) as api:
+        session = CollectionSession(api, connector)
+        try:
+            assert session.reconcile()
+            api.put(
+                "/api/selection/ha:a", json={"selected": True}, headers={"X-Home-Observer": "1"}
+            ).raise_for_status()
+            assert session.reconcile()
+            api.post(
+                "/internal/coverage",
+                json={
+                    "source_id": "home_assistant",
+                    "status": "interrupted",
+                    "reason": "heartbeat",
+                    "received_at": datetime.now(UTC).isoformat(),
+                },
+            ).raise_for_status()
+            [seeded] = api.get("/api/coverage").json()["gaps"]
+
+            connector.event_after_read = True
+            assert session.reconcile(), session.last_error
+
+            gaps = api.get("/api/coverage").json()["gaps"]
+            assert [(gap["id"], gap["recovered_at"] is not None) for gap in gaps] == [
+                (seeded["id"], True)
+            ]
+            [light] = api.get("/api/monitored").json()["entities"]
+            assert light["baseline"]["brightness"] == 180
+            # The race only happened if the event was saved before the older snapshot.
+            [event] = api.get("/api/events").json()["events"]
+            recovery = api.get("/api/baselines", params={"entity_id": "ha:a"}).json()["baselines"][
+                0
+            ]
+            assert recovery["kind"] == "recovery"
+            assert event["persisted_at"] < recovery["persisted_at"]
+        finally:
+            session.close()

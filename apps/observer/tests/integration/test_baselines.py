@@ -128,3 +128,21 @@ def test_history_pages_are_bounded_and_retention_filters_before_cleanup(tmp_path
         clock[0] += timedelta(days=31)
         assert client.get("/api/baselines", params=params).json()["baselines"] == []
         assert client.get("/api/monitored").json()["entities"][0]["baseline"]["brightness"] == 3
+
+
+def test_snapshot_older_than_previous_snapshot_is_rejected(tmp_path: Path) -> None:
+    with TestClient(app_for(tmp_path / "older.sqlite")) as client:
+        assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
+        revision = select(client)
+        assert client.post(
+            "/internal/baselines", json=observation(revision), headers=AUTH
+        ).is_success
+        older = (NOW - timedelta(seconds=1)).isoformat()
+        rejected = client.post(
+            "/internal/baselines",
+            json=observation(revision, received_at=older, state="off"),
+            headers=AUTH,
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"]["code"] == "observation_older"
+        assert [record["state"] for record in baseline_list(client)] == ["on"]
