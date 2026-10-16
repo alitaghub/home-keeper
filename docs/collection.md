@@ -107,6 +107,16 @@ The numbers only count what the evidence shows:
 
 - A snapshot counts from the moment it was read, and a change from the moment
   Home Assistant fired it. A later snapshot never rewrites an earlier stretch.
+
+  If Home Assistant's clock runs ahead of the observer's, a snapshot can say a
+  light last changed after the moment it was read. Usage still counts that
+  snapshot from when it was read, but the current state keeps it and ignores
+  changes stamped earlier. Until delayed changes arrive, the usage report and
+  the current state can disagree about that light. They agree again once the
+  change matching the snapshot, a newer change, or a later snapshot is
+  recorded. If that change was lost, they disagree until the light changes
+  again or a new snapshot is read. Keep both clocks in sync with NTP to avoid
+  this.
 - A light on before `start` counts from `start`. Only recorded off-to-on
   changes count as switch-ons.
 - Collection gaps count as neither on nor off. After recovery, time stays
