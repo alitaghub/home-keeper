@@ -49,6 +49,9 @@ from home_observer.store import SnapshotRead, Store, current_reading
 from home_observer.usage import light_usage
 
 UTC_ZONE = ZoneInfo("UTC")
+# Delivery context, not evidence: event IDs exclude these fields, so a re-sent event
+# may differ in them. The stored record keeps the values it was first recorded with.
+EVENT_CONTEXT_KEYS = frozenset({"received_at", "selection_revision"})
 
 
 def create_app(
@@ -439,19 +442,14 @@ def create_app(
                 comparable = {
                     key: value
                     for key, value in stored.items()
-                    if key not in ("persisted_at", "received_at")
+                    if key not in EVENT_CONTEXT_KEYS | {"persisted_at"}
                 }
                 if comparable != {
                     key: value
                     for key, value in data.items()
                     if key
-                    not in (
-                        "received_at",
-                        "kind",
-                        "coverage_gap_ids",
-                        "transition_time",
-                        "collection_started_at",
-                    )
+                    not in EVENT_CONTEXT_KEYS
+                    | {"kind", "coverage_gap_ids", "transition_time", "collection_started_at"}
                 }:
                     raise conflict("event_identity_conflict", "Event identity conflict")
                 return {"accepted": True, "recorded": False, "duplicate": True}

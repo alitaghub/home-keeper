@@ -51,6 +51,49 @@ def test_event_replay_ordering_selection_and_restart(tmp_path: Path) -> None:
         assert client.get("/api/events").json()["events"] == events
 
 
+def test_resent_event_under_newer_revision_is_a_duplicate_of_the_stored_record(
+    tmp_path: Path,
+) -> None:
+    clock = [NOW]
+    with TestClient(create_app(tmp_path / "resend.sqlite", TOKEN, now=lambda: clock[0])) as client:
+        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
+        revision = select(client)
+        client.post("/internal/baselines", json=observation(revision), headers=AUTH)
+        assert client.post("/internal/events", json=event(revision), headers=AUTH).json()[
+            "recorded"
+        ]
+        stored = client.get("/api/events").json()["events"]
+        monitored = client.get("/api/monitored").json()
+        newer = select(client, "bulb-b")
+        assert newer > revision
+        clock[0] += timedelta(seconds=5)
+        response = client.post("/internal/events", json=event(newer), headers=AUTH)
+        assert response.status_code == 200, response.text
+        assert response.json() == {"accepted": True, "recorded": False, "duplicate": True}
+        assert client.get("/api/events").json()["events"] == stored
+        assert stored[0]["selection_revision"] == revision
+        after = {e["id"]: e for e in client.get("/api/monitored").json()["entities"]}
+        assert after["bulb-a"] == monitored["entities"][0]
+        assert after["bulb-a"]["confirmed_at"] is not None
+
+
+def test_resent_event_id_rejects_changed_evidence_and_stale_revisions(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "reject.sqlite", TOKEN, now=lambda: NOW)) as client:
+        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
+        revision = select(client)
+        assert client.post("/internal/events", json=event(revision), headers=AUTH).json()[
+            "recorded"
+        ]
+        newer = select(client, "bulb-b")
+        for payload, code in (
+            (event(newer, new={"state": "off"}), "event_identity_conflict"),
+            (event(revision), "selection_changed"),
+        ):
+            response = client.post("/internal/events", json=payload, headers=AUTH)
+            assert response.status_code == 409, response.text
+            assert response.json()["detail"]["code"] == code
+
+
 def test_retention_preserves_selection_current_state_and_validates_scope(tmp_path: Path) -> None:
     clock = [NOW]
     with TestClient(
