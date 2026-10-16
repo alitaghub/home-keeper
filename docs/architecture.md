@@ -50,6 +50,7 @@ flowchart LR
 | Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the collector's token. Never runs again after that. |
 | Demo      | `demo.py`                              | Replaces the live collector with a synthetic home. Same API calls, no hardware.             |
 | API       | `api.py`, `models.py`                  | Validates every record, owns the selection, and records collection gaps.                    |
+| Recorder  | `recorder.py`                          | Admits baselines and events, stores them, and decides which one is a light's current state. |
 | Store     | `store.py`                             | SQLite schema, transactions, retention.                                                     |
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |
 | Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
@@ -108,6 +109,7 @@ streams events as Home Assistant sends them.
 | Selection   | The lights you chose to monitor, plus a revision number the API owns.                        |
 | Baseline    | A snapshot of a light's state. Taken at selection, during polling, and after recovery.       |
 | Event       | One observed change, with old and new values and three timestamps (fired, received, saved).  |
+| Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the light's current state. |
 | Gap         | A period when collection was interrupted. Open until a recovery snapshot closes it.          |
 | Freshness   | How recently Home Assistant answered. It says nothing about whether the bulb itself answered. |
 

@@ -21,7 +21,7 @@ from home_observer.models import (
     UnknownInterval,
     UnknownReason,
 )
-from home_observer.store import SnapshotRead, event_outranks_snapshot
+from home_observer.recorder import SnapshotRead, event_outranks_snapshot
 
 
 @dataclass(frozen=True)

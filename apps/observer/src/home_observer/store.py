@@ -1,9 +1,8 @@
 import sqlite3
 from collections.abc import Generator
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import TypeAdapter
@@ -12,27 +11,12 @@ from home_observer.models import (
     CoverageGap,
     CurrentReading,
     Entity,
-    EventReading,
     GapReason,
     HealthReport,
     SelectionSnapshot,
 )
 
 current_reading: TypeAdapter[CurrentReading] = TypeAdapter(CurrentReading)
-
-
-class SnapshotRead(NamedTuple):
-    """When an authoritative HTTP state read started and when its result arrived."""
-
-    started_at: datetime
-    received_at: datetime
-
-
-def event_outranks_snapshot(
-    event_received_at: datetime, event_time: datetime, snapshot_time: datetime, read: SnapshotRead
-) -> bool:
-    """Whether an event captured during an HTTP read is newer than the read's sampled state."""
-    return event_received_at >= read.started_at and event_time > snapshot_time
 
 
 class Store:
@@ -159,81 +143,6 @@ class Store:
         )
         # Snapshot receipt time is not retention time: use the API persistence timestamp.
         db.execute("DELETE FROM baselines WHERE persisted_at < ?", (cutoff,))
-
-    @staticmethod
-    def snapshot_can_replace(
-        db: sqlite3.Connection, entity_id: str, source_time: datetime, snapshot: SnapshotRead
-    ) -> bool:
-        received_at = snapshot.received_at
-        previous = db.execute(
-            "SELECT source_time, data FROM current_state WHERE entity_id=?", (entity_id,)
-        ).fetchone()
-        if previous is None:
-            return True
-        value = current_reading.validate_json(previous["data"])
-        receipt = datetime.fromisoformat(value.received_at)
-        if received_at < receipt:
-            return False
-        return not (
-            isinstance(value, EventReading)
-            and event_outranks_snapshot(
-                receipt,
-                datetime.fromisoformat(previous["source_time"]),
-                source_time,
-                snapshot,
-            )
-        )
-
-    @classmethod
-    def update_current(
-        cls,
-        db: sqlite3.Connection,
-        entity_id: str,
-        source_time: str,
-        data: CurrentReading,
-        *,
-        snapshot: SnapshotRead | None = None,
-    ) -> None:
-        previous = db.execute(
-            "SELECT source_time, snapshot_started_at, snapshot_received_at "
-            "FROM current_state WHERE entity_id=?",
-            (entity_id,),
-        ).fetchone()
-        instant = datetime.fromisoformat(source_time).astimezone(UTC)
-        boundary = previous["snapshot_started_at"] if previous else None
-        snapshot_received_at = previous["snapshot_received_at"] if previous else None
-        if snapshot is not None:
-            if not cls.snapshot_can_replace(db, entity_id, instant, snapshot):
-                db.execute(
-                    "UPDATE current_state SET snapshot_started_at=?, snapshot_received_at=? "
-                    "WHERE entity_id=?",
-                    (snapshot.started_at.isoformat(), snapshot.received_at.isoformat(), entity_id),
-                )
-                return
-            boundary = snapshot.started_at.isoformat()
-            snapshot_received_at = snapshot.received_at.isoformat()
-        else:
-            # Keep delayed observations in history without crossing a newer HTTP read boundary.
-            if (
-                boundary
-                and isinstance(data, EventReading)
-                and datetime.fromisoformat(data.received_at) < datetime.fromisoformat(boundary)
-            ):
-                return
-            if previous and instant < datetime.fromisoformat(previous["source_time"]):
-                return
-        db.execute(
-            "INSERT OR REPLACE INTO current_state "
-            "(entity_id,source_time,data,snapshot_started_at,snapshot_received_at) "
-            "VALUES(?,?,?,?,?)",
-            (
-                entity_id,
-                instant.isoformat(),
-                data.model_dump_json(exclude_unset=True),
-                boundary,
-                snapshot_received_at,
-            ),
-        )
 
     @staticmethod
     def last_confirmed(db: sqlite3.Connection, entity_id: str | None = None) -> str | None:
