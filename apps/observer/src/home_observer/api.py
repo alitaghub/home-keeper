@@ -6,7 +6,6 @@ from collections.abc import Callable
 from datetime import MAXYEAR, UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -36,7 +35,6 @@ from home_observer.models import (
     HealthReport,
     HealthStatus,
     Identity,
-    LightState,
     MonitoredEntities,
     MonitoredEntity,
     Observation,
@@ -45,13 +43,11 @@ from home_observer.models import (
     UsageReport,
     to_utc,
 )
-from home_observer.store import SnapshotRead, Store, current_reading
+from home_observer.recorder import Recorder, Rejected, update_current
+from home_observer.store import Store, current_reading
 from home_observer.usage import light_usage
 
 UTC_ZONE = ZoneInfo("UTC")
-# Delivery context, not evidence: event IDs exclude these fields, so a re-sent event
-# may differ in them. The stored record keeps the values it was first recorded with.
-EVENT_CONTEXT_KEYS = frozenset({"received_at", "selection_revision"})
 
 
 def create_app(
@@ -107,9 +103,10 @@ def create_app(
                 continue
             value = BaselineRecord.model_validate_json(row["data"])
             source_time = value.last_updated or value.received_at
-            store.update_current(db, row["entity_id"], source_time, value)
+            update_current(db, row["entity_id"], source_time, value)
         if store.last_confirmed(db):
             store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "restart")
+    recorder = Recorder(store, source_id, now)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     next_cleanup = 0.0
@@ -119,6 +116,11 @@ def create_app(
 
     def conflict(code: str, message: str) -> HTTPException:
         return HTTPException(409, {"code": code, "message": message})
+
+    def rejection(rejected: Rejected) -> HTTPException:
+        if rejected.code == "future_timestamp":
+            return HTTPException(422, rejected.message)
+        return conflict(rejected.code, rejected.message)
 
     @app.middleware("http")
     async def browser_boundary(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -264,126 +266,10 @@ def create_app(
 
     @app.post("/internal/baselines", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_observation(payload: Observation):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        persisted = now().astimezone(UTC)
-        if payload.received_at > persisted:
-            raise HTTPException(422, "Future receipt timestamp")
-        with store.transaction() as db:
-            current = store.selection(db)
-            entity = store.entity(db, payload.entity_id)
-            if (
-                payload.selection_revision != current.revision
-                or payload.entity_id not in current.entity_ids
-                or entity is None
-                or not entity.supported
-            ):
-                raise conflict("selection_changed", "Selection no longer permits this observation")
-            # Only an earlier snapshot makes this one stale. An event received after the read
-            # returned is newer evidence; current-state ordering keeps it ahead of this snapshot.
-            previous_snapshot = db.execute(
-                "SELECT snapshot_received_at FROM current_state WHERE entity_id=?",
-                (payload.entity_id,),
-            ).fetchone()
-            if (
-                previous_snapshot
-                and previous_snapshot[0]
-                and payload.received_at < datetime.fromisoformat(previous_snapshot[0])
-            ):
-                raise conflict("observation_older", "Observation is older than latest snapshot")
-            confirmed = db.execute(
-                "SELECT received_at FROM confirmed WHERE entity_id=?", (payload.entity_id,)
-            ).fetchone()
-            data = payload.model_dump(mode="json", exclude={"selection_revision"})
-            latest = store.current(db, payload.entity_id)
-            # Only an authoritative snapshot lacking a recorded change exposes a gap.
-            # A newer buffered event wins over an older reconciliation snapshot.
-            if confirmed and latest:
-                keys = LightState.model_fields.keys()
-                previous_state = LightState.model_validate(
-                    latest.model_dump(include=set(keys), exclude_unset=True)
-                )
-                snapshot_time = payload.last_updated or payload.received_at
-                if (
-                    LightState.model_validate(
-                        {key: getattr(payload, key) for key in keys}
-                    ).meaningful()
-                    != previous_state.meaningful()
-                    and store.snapshot_can_replace(
-                        db,
-                        payload.entity_id,
-                        snapshot_time,
-                        SnapshotRead(
-                            payload.collection_started_at or payload.received_at,
-                            payload.received_at,
-                        ),
-                    )
-                    and not store.open_gaps(db, payload.entity_id)
-                ):
-                    store.interrupt(
-                        db, source_id, persisted.isoformat(), "reconciliation", payload.entity_id
-                    )
-            gaps = store.open_gaps(db, payload.entity_id)
-            data["kind"] = (
-                "recovery" if confirmed and gaps else "reconciliation" if confirmed else "baseline"
-            )
-            if gaps:
-                data["coverage_gap_ids"] = [gap.id for gap in gaps]
-                data["transition_time"] = "unknown"
-
-            previous = db.execute(
-                "SELECT data FROM baselines WHERE entity_id=? ORDER BY rowid DESC LIMIT 1",
-                (payload.entity_id,),
-            ).fetchone()
-            baseline = BaselineRecord.model_validate_json(previous[0]) if previous else None
-            comparable = {
-                key: value
-                for key, value in data.items()
-                if key
-                not in (
-                    "received_at",
-                    "kind",
-                    "coverage_gap_ids",
-                    "transition_time",
-                    "collection_started_at",
-                )
-            }
-            old = baseline.model_dump(mode="json", include=set(comparable)) if baseline else None
-            new_recovery = bool(gaps) and (
-                not baseline or baseline.coverage_gap_ids != data.get("coverage_gap_ids")
-            )
-            if baseline is None or comparable != old or new_recovery:
-                baseline = BaselineRecord.model_validate(
-                    data | {"id": str(uuid4()), "persisted_at": persisted.isoformat()}
-                )
-                db.execute(
-                    "INSERT INTO baselines(id,entity_id,data,persisted_at) VALUES(?, ?, ?, ?)",
-                    (
-                        baseline.id,
-                        payload.entity_id,
-                        baseline.model_dump_json(exclude_unset=True),
-                        persisted.isoformat(),
-                    ),
-                )
-            source_time = payload.last_updated or payload.received_at
-            store.update_current(
-                db,
-                payload.entity_id,
-                source_time.isoformat(),
-                baseline,
-                snapshot=SnapshotRead(
-                    payload.collection_started_at or payload.received_at, payload.received_at
-                ),
-            )
-            if confirmed is None or payload.received_at >= datetime.fromisoformat(confirmed[0]):
-                db.execute(
-                    "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
-                    (payload.entity_id, payload.received_at.isoformat(), persisted.isoformat()),
-                )
-            return {
-                "accepted": True,
-                "baseline": baseline.model_dump(mode="json", exclude_unset=True),
-            }
+        baseline = recorder.observe(payload)
+        if isinstance(baseline, Rejected):
+            raise rejection(baseline)
+        return {"accepted": True, "baseline": baseline.model_dump(mode="json", exclude_unset=True)}
 
     # Stored readings omit unset light attributes; excluding unset fields returns them as stored.
     @app.get("/api/baselines", response_model=BaselinesPage, response_model_exclude_unset=True)
@@ -412,89 +298,14 @@ def create_app(
 
     @app.post("/internal/events", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_event(payload: ChangeEvent):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        persisted = now().astimezone(UTC)
-        if payload.received_at > persisted or payload.event_time > payload.received_at:
-            raise HTTPException(422, "Future event or receipt timestamp")
-        with store.transaction() as db:
-            current = store.selection(db)
-            entity = store.entity(db, payload.entity_id)
-            if (
-                payload.selection_revision != current.revision
-                or payload.entity_id not in current.entity_ids
-                or entity is None
-                or not entity.supported
-            ):
-                raise conflict("selection_changed", "Selection no longer permits this event")
-            previous = db.execute(
-                "SELECT data FROM events WHERE source_id=? AND id=?", (source_id, payload.id)
-            ).fetchone()
-            data = payload.model_dump(mode="json")
-            for key in ("old", "new"):
-                state = getattr(payload, key)
-                data[key] = state.model_dump(mode="json", exclude_none=True) if state else None
-            if previous:
-                stored = EventRecord.model_validate_json(previous[0]).model_dump(
-                    mode="json", exclude_unset=True
-                )
-                # A stable source ID cannot silently refer to different evidence.
-                comparable = {
-                    key: value
-                    for key, value in stored.items()
-                    if key not in EVENT_CONTEXT_KEYS | {"persisted_at"}
-                }
-                if comparable != {
-                    key: value
-                    for key, value in data.items()
-                    if key
-                    not in EVENT_CONTEXT_KEYS
-                    | {"kind", "coverage_gap_ids", "transition_time", "collection_started_at"}
-                }:
-                    raise conflict("event_identity_conflict", "Event identity conflict")
-                return {"accepted": True, "recorded": False, "duplicate": True}
-            old = payload.old.meaningful() if payload.old else None
-            new = payload.new.meaningful() if payload.new else None
-            if old == new:
-                return {"accepted": True, "recorded": False, "duplicate": False}
-            data["persisted_at"] = persisted.isoformat()
-            db.execute(
-                "INSERT INTO events VALUES(?, ?, ?, ?, ?, ?)",
-                (
-                    source_id,
-                    payload.id,
-                    payload.entity_id,
-                    payload.event_time.isoformat(),
-                    persisted.isoformat(),
-                    json.dumps(data),
-                ),
-            )
-            current_value = payload.new or LightState(state="unknown")
-            if current_value:
-                value = EventReading.model_validate(
-                    current_value.model_dump(mode="json", exclude_none=True)
-                    | {
-                        "id": payload.id,
-                        "entity_id": payload.entity_id,
-                        "source_entity_id": payload.source_entity_id,
-                        "source_id": source_id,
-                        "kind": "event",
-                        "event_time": payload.event_time.isoformat(),
-                        "received_at": payload.received_at.isoformat(),
-                        "persisted_at": persisted.isoformat(),
-                    }
-                )
-                store.update_current(db, payload.entity_id, payload.event_time.isoformat(), value)
-            # Older deliveries may add evidence but cannot refresh a newer confirmation backwards.
-            confirmed = db.execute(
-                "SELECT received_at FROM confirmed WHERE entity_id=?", (payload.entity_id,)
-            ).fetchone()
-            if confirmed is None or payload.received_at.isoformat() >= confirmed[0]:
-                db.execute(
-                    "INSERT OR REPLACE INTO confirmed VALUES(?, ?, ?)",
-                    (payload.entity_id, payload.received_at.isoformat(), persisted.isoformat()),
-                )
-            return {"accepted": True, "recorded": True, "duplicate": False}
+        outcome = recorder.record(payload)
+        if isinstance(outcome, Rejected):
+            raise rejection(outcome)
+        return {
+            "accepted": True,
+            "recorded": outcome == "recorded",
+            "duplicate": outcome == "duplicate",
+        }
 
     @app.get("/api/events", response_model=EventsPage, response_model_exclude_unset=True)
     def events(
