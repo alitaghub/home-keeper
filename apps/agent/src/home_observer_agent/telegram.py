@@ -12,7 +12,7 @@ import time
 from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import uuid4
 
 import httpx
@@ -25,7 +25,17 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     field_validator,
+    model_validator,
 )
+
+CONFIGURATION_ERROR = (
+    "Set TELEGRAM_BOT_TOKEN and a comma-separated TELEGRAM_ALLOWED_USER_IDS "
+    "containing positive numeric user IDs."
+)
+
+
+class SettingsError(ValueError):
+    """Fixed configuration diagnostic that never includes supplied values."""
 
 
 class Settings(BaseModel):
@@ -40,7 +50,7 @@ class Settings(BaseModel):
     def token_required(cls, value: SecretStr) -> SecretStr:
         if not value.get_secret_value().strip():
             raise ValueError("TELEGRAM_BOT_TOKEN must not be empty.")
-        return value
+        return SecretStr(value.get_secret_value().strip())
 
     @field_validator("allowed_user_ids")
     @classmethod
@@ -52,25 +62,22 @@ class Settings(BaseModel):
     @classmethod
     def from_env(cls) -> Self:
         try:
-            token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
-            ids = os.environ["TELEGRAM_ALLOWED_USER_IDS"].split(",")
-            if not token or not ids or any(not value.strip().isdigit() for value in ids):
-                raise ValueError
-            allowed = frozenset(int(value.strip()) for value in ids)
-            if any(value <= 0 for value in allowed):
-                raise ValueError
-            return cls(
-                bot_token=SecretStr(token),
-                allowed_user_ids=allowed,
-                agent_url=os.environ.get("TELEGRAM_AGENT_URL", "http://agent:2026"),
-                state_path=os.environ.get("TELEGRAM_STATE_PATH", "/state/telegram.sqlite3"),
-                api_url=os.environ.get("TELEGRAM_API_URL", "https://api.telegram.org"),
-            )
+            values: dict[str, object] = {
+                "bot_token": os.environ["TELEGRAM_BOT_TOKEN"],
+                "allowed_user_ids": [
+                    value.strip() for value in os.environ["TELEGRAM_ALLOWED_USER_IDS"].split(",")
+                ],
+            }
+            for field, variable in (
+                ("agent_url", "TELEGRAM_AGENT_URL"),
+                ("state_path", "TELEGRAM_STATE_PATH"),
+                ("api_url", "TELEGRAM_API_URL"),
+            ):
+                if variable in os.environ:
+                    values[field] = os.environ[variable]
+            return cls.model_validate(values)
         except (KeyError, ValueError):
-            raise ValueError(
-                "Set TELEGRAM_BOT_TOKEN and a comma-separated TELEGRAM_ALLOWED_USER_IDS "
-                "containing positive numeric user IDs."
-            ) from None
+            raise SettingsError(CONFIGURATION_ERROR) from None
 
 
 class Wire(BaseModel):
@@ -78,7 +85,7 @@ class Wire(BaseModel):
 
 
 class User(Wire):
-    id: int
+    id: int = Field(gt=0)
 
 
 class Chat(Wire):
@@ -128,9 +135,15 @@ class Values(Wire):
     messages: list[AgentMessage] = Field(default_factory=list)
 
 
+class ActionArguments(Wire):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    entity_id: str
+
+
 class Action(Wire):
     name: Literal["monitor_light", "stop_monitoring"]
-    args: dict[str, JsonValue]
+    args: ActionArguments
     description: str = ""
 
 
@@ -142,6 +155,17 @@ class Review(Wire):
 class Approval(Wire):
     action_requests: list[Action] = Field(min_length=1)
     review_configs: list[Review]
+
+    @model_validator(mode="after")
+    def consistent_reviews(self) -> Self:
+        if len(self.action_requests) != len(self.review_configs):
+            raise ValueError("Every action requires a matching review configuration.")
+        for action, review in zip(self.action_requests, self.review_configs, strict=True):
+            if action.name != review.action_name or not {"approve", "reject"} <= set(
+                review.allowed_decisions
+            ):
+                raise ValueError("Every action must support approval and rejection.")
+        return self
 
 
 class Interrupt(Wire):
@@ -171,10 +195,29 @@ class Pending(BaseModel):
     decisions: list[Literal["approve", "reject"] | None]
 
 
-class Conversation(BaseModel):
+class IdleConversation(BaseModel):
     thread_id: str
-    status: Literal["idle", "submitting", "pending"] = "idle"
+    status: Literal["idle"] = "idle"
+    pending: None = None
+
+
+class SubmittingConversation(BaseModel):
+    thread_id: str
+    status: Literal["submitting"] = "submitting"
+    # Retained only to reconcile an uncertain approval submission, never to retry it.
     pending: Pending | None = None
+
+
+class PendingConversation(BaseModel):
+    thread_id: str
+    status: Literal["pending"] = "pending"
+    pending: Pending
+
+
+type Conversation = Annotated[
+    IdleConversation | SubmittingConversation | PendingConversation, Field(discriminator="status")
+]
+CONVERSATION = TypeAdapter(Conversation)
 
 
 class TransportError(Exception):
@@ -199,6 +242,71 @@ UNCERTAIN = (
 FAILURE = "The agent could not answer. Please try a new question or use /new."
 REMINDER = "Choose Approve or Reject on the pending request, or use /new."
 STALE = "This approval is no longer available. Use the current buttons or /new."
+UNSUPPORTED_APPROVAL = "Unsupported approval request. Use /new or browser chat."
+MESSAGE_LIMIT = 4096
+
+
+def select_final_answer(before: Values, current: Values) -> str:
+    old_ids = {message.id for message in before.messages if message.id is not None}
+    candidates = [
+        message
+        for index, message in enumerate(current.messages)
+        if (message.type == "ai" or message.role == "assistant")
+        and not message.tool_calls
+        and (
+            (message.id is not None and message.id not in old_ids)
+            or (message.id is None and index >= len(before.messages))
+        )
+    ]
+    text = ""
+    if candidates:
+        content = candidates[-1].content
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            blocks: list[str] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    value = block.get("text")
+                    if isinstance(value, str):
+                        blocks.append(value)
+            text = "\n".join(blocks)
+    return text if text.strip() else FAILURE
+
+
+def match_callback_reference(
+    callback: Callback, conversation: Conversation | None
+) -> tuple[int, Literal["approve", "reject"]] | None:
+    parts = callback.data.split(":")
+    pending = conversation.pending if isinstance(conversation, PendingConversation) else None
+    if (
+        callback.message is None
+        or conversation is None
+        or conversation.status != "pending"
+        or pending is None
+        or len(parts) != len(("token", "index", "decision"))
+    ):
+        return None
+    token, raw_index, decision = parts
+    if (
+        token != pending.token
+        or not raw_index.isascii()
+        or not raw_index.isdigit()
+        or len(raw_index) > len(str(len(pending.decisions)))
+        or decision not in ("approve", "reject")
+    ):
+        return None
+    # Bound ASCII digits before conversion: Unicode digits and huge integers can raise.
+    index = int(raw_index)
+    if (
+        callback.message.chat.id != callback.sender.id
+        or index >= len(pending.decisions)
+        or index >= len(pending.message_ids)
+        or pending.message_ids[index] != callback.message.message_id
+        or pending.decisions[index] is not None
+    ):
+        return None
+    return index, decision
 
 
 class TelegramBot:
@@ -219,6 +327,8 @@ class TelegramBot:
             "CREATE TABLE IF NOT EXISTS progress "
             "(id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL);"
             "INSERT OR IGNORE INTO progress VALUES (1, 0);"
+            "CREATE TABLE IF NOT EXISTS bot_owner "
+            "(id INTEGER PRIMARY KEY CHECK(id=1), bot_id INTEGER NOT NULL);"
             "CREATE TABLE IF NOT EXISTS conversations "
             "(user_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
         )
@@ -277,13 +387,24 @@ class TelegramBot:
                 "A Telegram webhook is configured. Remove it with deleteWebhook "
                 "before starting this polling bot."
             )
-        self._telegram("getMe", {})
+        try:
+            bot_user = User.model_validate(self._telegram("getMe", {}))
+        except ValidationError:
+            raise TransportError("Telegram returned an invalid bot identity from getMe.") from None
+        owner = self.db.execute("SELECT bot_id FROM bot_owner WHERE id=1").fetchone()
+        if owner and owner[0] != bot_user.id:
+            raise TransportError(
+                "This Telegram state volume belongs to a different bot. "
+                "Restore that bot's token or configure a separate state volume for this bot."
+            )
+        self.db.execute("INSERT OR IGNORE INTO bot_owner VALUES (1, ?)", (bot_user.id,))
+        self.db.commit()
 
     def _load(self, user_id: int) -> Conversation | None:
         row = self.db.execute(
             "SELECT state FROM conversations WHERE user_id=?", (user_id,)
         ).fetchone()
-        return Conversation.model_validate_json(row[0]) if row else None
+        return CONVERSATION.validate_json(row[0]) if row else None
 
     def _save(self, user_id: int, conversation: Conversation) -> None:
         self.db.execute(
@@ -296,9 +417,12 @@ class TelegramBot:
         self, chat_id: int, text: str, buttons: list[list[dict[str, str]]] | None = None
     ) -> int:
         result: JsonValue = None
-        for start in range(0, len(text), 4096):
-            body: dict[str, JsonValue] = {"chat_id": chat_id, "text": text[start : start + 4096]}
-            if buttons is not None and start + 4096 >= len(text):
+        for start in range(0, len(text), MESSAGE_LIMIT):
+            body: dict[str, JsonValue] = {
+                "chat_id": chat_id,
+                "text": text[start : start + MESSAGE_LIMIT],
+            }
+            if buttons is not None and start + MESSAGE_LIMIT >= len(text):
                 body["reply_markup"] = TypeAdapter(JsonValue).validate_python(
                     {"inline_keyboard": buttons}
                 )
@@ -363,13 +487,13 @@ class TelegramBot:
             return
         conversation = self._load(user_id)
         if command == "/new":
-            conversation = Conversation(thread_id=str(uuid4()))
+            conversation = IdleConversation(thread_id=str(uuid4()))
             self._agent("POST", "/threads", {"thread_id": conversation.thread_id})
             self._save(user_id, conversation)
             self._send(message.chat.id, "Started a fresh conversation. Old history is kept.")
             return
         if conversation is None:
-            conversation = Conversation(thread_id=str(uuid4()))
+            conversation = IdleConversation(thread_id=str(uuid4()))
             self._agent("POST", "/threads", {"thread_id": conversation.thread_id})
             self._save(user_id, conversation)
         if conversation.status == "submitting":
@@ -383,14 +507,15 @@ class TelegramBot:
             if self._interrupts(state):
                 self._send(message.chat.id, UNCERTAIN)
                 return
-            conversation.status = "idle"
-            conversation.pending = None
+            conversation = IdleConversation(thread_id=conversation.thread_id)
             self._save(user_id, conversation)
         if conversation.status == "pending":
             self._send(message.chat.id, REMINDER)
             return
         before = self._state(conversation)
-        conversation.status = "submitting"
+        conversation = SubmittingConversation(
+            thread_id=conversation.thread_id, pending=conversation.pending
+        )
         self._save(user_id, conversation)
         result = self._agent(
             "POST",
@@ -418,24 +543,13 @@ class TelegramBot:
         interrupts = self._interrupts(state)
         if interrupts:
             if len(interrupts) != 1:
-                self._send(chat_id, "Unsupported approval request. Use /new or browser chat.")
+                self._send(chat_id, UNSUPPORTED_APPROVAL)
                 return
             interrupt = interrupts[0]
             try:
                 approval = Approval.model_validate(interrupt.value)
-                if len(approval.action_requests) != len(approval.review_configs):
-                    raise ValueError
-                for action, review in zip(
-                    approval.action_requests, approval.review_configs, strict=True
-                ):
-                    if action.name != review.action_name or not {"approve", "reject"} <= set(
-                        review.allowed_decisions
-                    ):
-                        raise ValueError
-                    if not isinstance(action.args.get("entity_id"), str):
-                        raise TypeError
-            except (ValidationError, ValueError, TypeError):
-                self._send(chat_id, "Unsupported approval request. Use /new or browser chat.")
+            except ValidationError:
+                self._send(chat_id, UNSUPPORTED_APPROVAL)
                 return
             pending = Pending(
                 token=secrets.token_hex(12),
@@ -443,12 +557,11 @@ class TelegramBot:
                 approval=approval,
                 decisions=[None] * len(approval.action_requests),
             )
-            conversation.status = "pending"
-            conversation.pending = pending
+            conversation = PendingConversation(thread_id=conversation.thread_id, pending=pending)
             self._save(user_id, conversation)
             for index, action in enumerate(approval.action_requests):
                 verb = "Start" if action.name == "monitor_light" else "Stop"
-                text = f"{verb} monitoring {action.args['entity_id']}?"
+                text = f"{verb} monitoring {action.args.entity_id}?"
                 if action.description:
                     text += "\n" + action.description
                 buttons = [
@@ -460,35 +573,9 @@ class TelegramBot:
                 pending.message_ids.append(self._send(chat_id, text, buttons))
                 self._save(user_id, conversation)
             return
-        conversation.status = "idle"
-        conversation.pending = None
+        conversation = IdleConversation(thread_id=conversation.thread_id)
         self._save(user_id, conversation)
-        values = Values.model_validate(result)
-        old_ids = {message.id for message in before.values.messages if message.id is not None}
-        candidates = [
-            message
-            for index, message in enumerate(values.messages)
-            if (message.type == "ai" or message.role == "assistant")
-            and not message.tool_calls
-            and (
-                (message.id is not None and message.id not in old_ids)
-                or (message.id is None and index >= len(before.values.messages))
-            )
-        ]
-        text = ""
-        if candidates:
-            content = candidates[-1].content
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                blocks: list[str] = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        value = block.get("text")
-                        if isinstance(value, str):
-                            blocks.append(value)
-                text = "\n".join(blocks)
-        self._send(chat_id, text if text.strip() else FAILURE)
+        self._send(chat_id, select_final_answer(before.values, Values.model_validate(result)))
 
     def _callback(self, callback: Callback) -> None:
         try:
@@ -505,36 +592,12 @@ class TelegramBot:
         ):
             return
         conversation = self._load(callback.sender.id)
-        parts = callback.data.split(":")
-        pending = conversation.pending if conversation else None
-        if (
-            conversation is None
-            or conversation.status != "pending"
-            or pending is None
-            or len(parts) != len(("token", "index", "decision"))
-        ):
+        reference = match_callback_reference(callback, conversation)
+        if reference is None or not isinstance(conversation, PendingConversation):
             self._send(message.chat.id, STALE)
             return
-        token, raw_index, decision = parts
-        if (
-            token != pending.token
-            or not raw_index.isascii()
-            or not raw_index.isdigit()
-            or len(raw_index) > len(str(len(pending.decisions)))
-            or decision not in ("approve", "reject")
-        ):
-            self._send(message.chat.id, STALE)
-            return
-        index = int(raw_index)
-        if (
-            message.chat.id != callback.sender.id
-            or index >= len(pending.decisions)
-            or index >= len(pending.message_ids)
-            or pending.message_ids[index] != message.message_id
-            or pending.decisions[index] is not None
-        ):
-            self._send(message.chat.id, STALE)
-            return
+        index, decision = reference
+        pending = conversation.pending
         before = self._state(conversation)
         interrupts = self._interrupts(before)
         if (
@@ -557,7 +620,9 @@ class TelegramBot:
             )
         if any(value is None for value in pending.decisions):
             return
-        conversation.status = "submitting"
+        conversation = SubmittingConversation(
+            thread_id=conversation.thread_id, pending=conversation.pending
+        )
         self._save(callback.sender.id, conversation)
         result = self._agent(
             "POST",
@@ -605,10 +670,13 @@ def main() -> None:
     except TransportError as exc:
         logging.error("Telegram bot stopped: %s", exc)
         raise SystemExit(1) from None
-    except (ValueError, sqlite3.Error):
+    except SettingsError:
+        logging.error("Telegram bot stopped: %s", CONFIGURATION_ERROR)
+        raise SystemExit(1) from None
+    except (sqlite3.Error, OSError, ValidationError):
         logging.error(
-            "Telegram bot stopped. Check token, allowlist, webhook, single-worker ownership, "
-            "state storage, and service connectivity."
+            "Telegram bot stopped: cannot open or read TELEGRAM_STATE_PATH. "
+            "Check the state volume, write permissions, and saved-state integrity."
         )
         raise SystemExit(1) from None
     except KeyboardInterrupt:

@@ -18,9 +18,16 @@ from home_observer_agent.graph import build_agent
 class FakeTelegram:
     requests: list[httpx.Request] = field(default_factory=list[httpx.Request])
     next_message_id: int = 100
+    bot_id: int = 12345
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.url.path.endswith("/getMe"):
+            return httpx.Response(
+                200, json={"ok": True, "result": {"id": self.bot_id, "is_bot": True}}
+            )
+        if request.url.path.endswith("/getWebhookInfo"):
+            return httpx.Response(200, json={"ok": True, "result": {"url": ""}})
         self.next_message_id += 1
         return httpx.Response(
             200,
@@ -77,7 +84,7 @@ class GraphAegra:
         self.thread_ids: list[str] = []
         self.fail_next_run = False
         self.fail_after_next_run = False
-        self.run_number = 0
+        self.runs: list[dict[str, str]] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
 
@@ -85,11 +92,7 @@ class GraphAegra:
         path = request.url.path
         if path == "/threads" and request.method == "POST":
             body: dict[str, Any] = json.loads(request.content)
-            thread_id = (
-                body.get("thread_id")
-                or body.get("threadId")
-                or f"thread-{len(self.thread_ids) + 1}"
-            )
+            thread_id = body["thread_id"]
             self.thread_ids.append(thread_id)
             return httpx.Response(200, json={"thread_id": thread_id, "status": "idle"})
         parts = path.strip("/").split("/")
@@ -98,7 +101,6 @@ class GraphAegra:
         thread_id = parts[1]
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         if parts[2:] == ["runs", "wait"] and request.method == "POST":
-            self.run_number += 1
             if self.fail_next_run:
                 self.fail_next_run = False
                 raise httpx.ReadTimeout("submission result unknown", request=request)
@@ -142,7 +144,7 @@ class GraphAegra:
                 },
             )
         if parts[2:] == ["runs"]:
-            return httpx.Response(200, json=[])
+            return httpx.Response(200, json=self.runs)
         if len(parts) == 2:
             return httpx.Response(
                 200,

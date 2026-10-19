@@ -23,7 +23,8 @@ devices.
    If you do not know the IDs yet, temporarily use
    `TELEGRAM_ALLOWED_USER_IDS=9223372036854775807`. Start the bot, then have each
    person send it `/start` privately. It refuses access and returns that person's
-   numeric ID. Replace the temporary value with those IDs and restart the bot.
+   numeric ID. Replace the temporary value with those IDs and recreate the bot container
+   as shown below.
 
 2. Enable both profiles with your usual stack:
 
@@ -98,6 +99,24 @@ not automatically run it again. It checks the existing conversation and tells
 you if the result is uncertain. Wait for that run to finish or use `/new`.
 A network failure can lose or duplicate a reply. Telegram keeps undelivered
 incoming updates for at most 24 hours, so a longer outage can lose questions.
+
+A crash can also lose a question just after the bot records it as received and
+before it reaches the agent. There may be no error reply. Send the question
+again if no answer arrives. The bot records receipt first so restarting cannot
+silently repeat a request that might already have run.
+
+If an uncertain request leaves the agent waiting for approval, or some approval
+buttons could not be delivered, use `/new`. The bot does not rebuild missing
+buttons. A normal restart preserves buttons that were already delivered and
+saved.
+
+The saved polling progress belongs to one bot's numeric ID. Rotating the token
+for that same bot keeps its state. To switch to a different bot, use a fresh
+Telegram state volume. The worker refuses to reuse another bot's volume rather
+than silently skip the new bot's messages. Keep the old volume as a backup;
+there is no need to delete Observer history or Aegra's conversations. Volumes
+created before this identity check bind to the configured bot on their first
+upgraded startup; keep the original bot configured for that startup.
 
 Only private text chats and approval buttons are supported. Groups, channels,
 message edits, voice, photos, and proactive notifications are outside scope.

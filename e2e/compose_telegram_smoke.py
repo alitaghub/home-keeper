@@ -14,8 +14,13 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 REPO = Path(__file__).resolve().parents[1]
 PROJECT = "observer-telegram-proof"
-FAKE_URL = "http://127.0.0.1:18312"
-OBSERVER_URL = "http://127.0.0.1:18003"
+FAKE_PORT = 18312
+OBSERVER_PORT = 18003
+AGENT_PORT = 18227
+CHAT_PORT = 18311
+FAKE_URL = f"http://127.0.0.1:{FAKE_PORT}"
+OBSERVER_URL = f"http://127.0.0.1:{OBSERVER_PORT}"
+AGENT_URL = f"http://127.0.0.1:{AGENT_PORT}"
 TIMEOUT = 90
 TOKEN = "123456:synthetic-telegram-token"
 
@@ -171,7 +176,7 @@ def main() -> None:
     command: [python, /fixture/fake_telegram.py]
     volumes:
       - {REPO / "e2e/fake_telegram.py"}:/fixture/fake_telegram.py:ro
-    ports: ['127.0.0.1:18312:8080']
+    ports: ['127.0.0.1:{FAKE_PORT}:8080']
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -182,7 +187,11 @@ def main() -> None:
       timeout: 3s
       retries: 30
 """)
-        env = os.environ | {"OBSERVER_PORT": "18003", "AGENT_PORT": "18227", "CHAT_PORT": "18311"}
+        env = os.environ | {
+            "OBSERVER_PORT": str(OBSERVER_PORT),
+            "AGENT_PORT": str(AGENT_PORT),
+            "CHAT_PORT": str(CHAT_PORT),
+        }
         command = [
             "docker",
             "compose",
@@ -226,7 +235,7 @@ def main() -> None:
                     compose("restart", "telegram", "agent")
                     wait_until(
                         "agent healthy after restart",
-                        lambda: httpx.get("http://127.0.0.1:18227/health", timeout=3).is_success,
+                        lambda: httpx.get(f"{AGENT_URL}/health", timeout=3).is_success,
                     )
                     # The graph and bot state both persist. The old prompt is still valid.
                     click(client, 5, prompt, "Approve")

@@ -12,7 +12,6 @@ def test_invalid_allowlist_fails_with_a_secret_free_diagnostic(
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", allowed)
     with pytest.raises(ValueError, match="TELEGRAM_ALLOWED_USER_IDS") as caught:
         Settings.from_env()
-    assert "TELEGRAM_ALLOWED_USER_IDS" in str(caught.value)
     assert "private-secret" not in str(caught.value)
 
 
@@ -32,3 +31,22 @@ def test_missing_token_fails_with_a_fixed_configuration_error(
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "11")
     with pytest.raises(ValueError, match="Set TELEGRAM_BOT_TOKEN"):
         Settings.from_env()
+
+
+@pytest.mark.parametrize("token", ["", "   "])
+def test_empty_or_whitespace_token_is_rejected(monkeypatch: pytest.MonkeyPatch, token: str) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", token)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "11")
+    with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN"):
+        Settings.from_env()
+
+
+def test_default_addresses_and_state_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:private-secret")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "11")
+    for name in ("TELEGRAM_AGENT_URL", "TELEGRAM_STATE_PATH", "TELEGRAM_API_URL"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings.from_env()
+    assert settings.agent_url == "http://agent:2026"
+    assert settings.state_path == "/state/telegram.sqlite3"
+    assert settings.api_url == "https://api.telegram.org"

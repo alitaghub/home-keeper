@@ -4,7 +4,6 @@ import json
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
-from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter
 
@@ -37,14 +36,12 @@ class TelegramHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_GET(self) -> None:
-        path = urlsplit(self.path)
-        if path.path == "/sent":
+        if self.path == "/sent":
             self.reply(self.sent)
-        elif path.path == "/health":
+        elif self.path == "/health":
             self.reply({"ok": True})
         else:
-            params: dict[str, JsonValue] = {k: v[0] for k, v in parse_qs(path.query).items()}
-            self.method(path.path, params)
+            self.send_error(404)
 
     def do_POST(self) -> None:
         size = int(self.headers.get("Content-Length", "0"))
@@ -80,8 +77,8 @@ class TelegramHandler(BaseHTTPRequestHandler):
                         "result": [
                             update
                             for update in self.updates
-                            if isinstance(identity := update.get("update_id"), int)
-                            and identity >= offset
+                            if isinstance(update_id := update.get("update_id"), int)
+                            and update_id >= offset
                         ],
                     }
                 )
@@ -101,7 +98,7 @@ class TelegramHandler(BaseHTTPRequestHandler):
                         },
                     }
                 )
-            case "answerCallbackQuery" | "editMessageReplyMarkup" | "setMyCommands":
+            case "answerCallbackQuery" | "editMessageReplyMarkup":
                 self.reply({"ok": True, "result": True})
             case _:
                 self.send_error(404)
