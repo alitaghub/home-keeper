@@ -38,7 +38,9 @@ docker compose --profile agent up --build --wait                     # bundled H
 docker compose -f compose.demo.yaml --profile agent up --build --wait  # synthetic demo
 ```
 
-Open the chat at <http://127.0.0.1:3000>.
+Open the chat at <http://127.0.0.1:3000>. To use Telegram too, see
+[Telegram setup](telegram.md). It uses this same agent with separate
+conversations and explicit monitoring approvals.
 
 The profile adds three containers:
 

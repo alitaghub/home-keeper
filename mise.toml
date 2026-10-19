@@ -98,4 +98,5 @@ E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${OBSERVER_PORT:-8000}}" pnpm --f
 AZURE_OPENAI_ENDPOINT=https://placeholder.invalid AZURE_OPENAI_API_KEY=placeholder \
   docker compose -f compose.demo.yaml --profile agent up --build --wait
 uv run python e2e/compose_agent_smoke.py
+uv run python e2e/compose_telegram_smoke.py
 """

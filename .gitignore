@@ -14,5 +14,6 @@ coverage/
 test-results/
 playwright-report/
 compose-logs.txt
+telegram-compose-logs.txt
 .claude/settings.local.json
 .claude/worktrees/

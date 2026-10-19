@@ -1,7 +1,7 @@
 # The opt-in agent: Aegra serving the agent graph, its Postgres, and Agent Chat UI.
 # compose.yaml and compose.demo.yaml include this file; start it with
 #   docker compose --profile agent up --build --wait
-# Every service is in the `agent` profile, so stacks started without it are unchanged.
+# Telegram is a separate opt-in profile; enable it together with `agent`.
 services:
   postgres:
     profiles: [agent]
@@ -94,8 +94,32 @@ services:
     depends_on:
       agent:
         condition: service_healthy
+  telegram:
+    profiles: [telegram]
+    build:
+      context: .
+      dockerfile: apps/agent/Dockerfile
+    command: [python, -m, home_observer_agent.telegram]
+    restart: on-failure:3
+    environment:
+      TELEGRAM_BOT_TOKEN:
+      TELEGRAM_ALLOWED_USER_IDS:
+      TELEGRAM_AGENT_URL: http://agent:2026
+      TELEGRAM_STATE_PATH: /state/telegram.sqlite3
+    volumes:
+      - telegram-state:/state
+    # Only Aegra and outbound Telegram. No Observer history, HA token, or database network.
+    networks: [default]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      agent:
+        condition: service_healthy
 networks:
   agent-db:
     internal: true
 volumes:
   agent-postgres:
+  telegram-state:
