@@ -41,6 +41,10 @@ class SentMessage(BaseModel):
     reply_markup: Markup = Field(default_factory=Markup)
 
 
+class Selection(BaseModel):
+    entity_ids: list[str]
+
+
 MESSAGES = TypeAdapter(list[SentMessage])
 
 
@@ -58,6 +62,11 @@ def wait_until(description: str, predicate: Callable[[], bool]) -> None:
 
 def sent(client: httpx.Client) -> list[SentMessage]:
     return MESSAGES.validate_json(client.get("/sent").raise_for_status().content)
+
+
+def selection(client: httpx.Client) -> list[str]:
+    response = client.get("/api/selection").raise_for_status()
+    return Selection.model_validate_json(response.content).entity_ids
 
 
 def wait_text(client: httpx.Client, text: str, user: int = 101) -> SentMessage:
@@ -231,7 +240,7 @@ def main() -> None:
                 post_text(client, 4, "monitor light.hue_desk")
                 prompt = wait_text(client, "light.hue_desk?")
                 with httpx.Client(base_url=OBSERVER_URL, timeout=10, trust_env=False) as observer:
-                    assert observer.get("/api/selection").json()["entity_ids"] == []
+                    assert selection(observer) == []
                     compose("restart", "telegram", "agent")
                     wait_until(
                         "agent healthy after restart",
@@ -241,10 +250,7 @@ def main() -> None:
                     click(client, 5, prompt, "Approve")
                     wait_until(
                         "approved selection",
-                        lambda: (
-                            observer.get("/api/selection").json()["entity_ids"]
-                            == ["light.hue_desk"]
-                        ),
+                        lambda: selection(observer) == ["light.hue_desk"],
                     )
                     wait_text(client, "Result:")
                     post_text(client, 6, "stop light.hue_desk")
@@ -264,10 +270,10 @@ def main() -> None:
                             == 2
                         ),
                     )
-                    assert observer.get("/api/selection").json()["entity_ids"] == ["light.hue_desk"]
+                    assert selection(observer) == ["light.hue_desk"]
                     click(client, 8, stop_prompt, "Approve")
                     wait_text(client, "no longer available")
-                    assert observer.get("/api/selection").json()["entity_ids"] == ["light.hue_desk"]
+                    assert selection(observer) == ["light.hue_desk"]
                 post_text(client, 9, "/new")
                 wait_text(client, "fresh conversation")
                 post_text(client, 10, "fresh")

@@ -1,5 +1,8 @@
 import json
+from collections.abc import Iterator
+from contextlib import ExitStack
 from pathlib import Path
+from typing import Any, Protocol
 
 import httpx
 import pytest
@@ -8,10 +11,52 @@ from langchain_core.messages import AIMessage
 from pydantic import SecretStr
 from telegram_support import FakeTelegram, GraphAegra, clicked, incoming
 
-from home_observer_agent.telegram import PollError, Settings, TelegramBot, TransportError
+from home_observer_agent.telegram import STALE, PollError, Settings, TelegramBot, TransportError
 
 
-def test_only_allowed_private_messages_can_reach_the_agent(tmp_path: Path) -> None:
+class BotFactory(Protocol):
+    def __call__(
+        self,
+        settings: Settings,
+        *,
+        telegram_client: httpx.Client | None = None,
+        agent_client: httpx.Client | None = None,
+    ) -> TelegramBot: ...
+
+
+def family_settings(
+    tmp_path: Path,
+    *,
+    allowed_user_ids: frozenset[int] = frozenset({11}),
+    bot_token: SecretStr | None = None,
+) -> Settings:
+    return Settings(
+        bot_token=bot_token or SecretStr("123:secret"),
+        allowed_user_ids=allowed_user_ids,
+        state_path=str(tmp_path / "bot.sqlite3"),
+    )
+
+
+@pytest.fixture
+def make_bot() -> Iterator[BotFactory]:
+    with ExitStack() as cleanup:
+
+        def create(
+            settings: Settings,
+            *,
+            telegram_client: httpx.Client | None = None,
+            agent_client: httpx.Client | None = None,
+        ) -> TelegramBot:
+            bot = TelegramBot(settings, telegram_client=telegram_client, agent_client=agent_client)
+            cleanup.callback(bot.close)
+            return bot
+
+        yield create
+
+
+def test_only_allowed_private_messages_can_reach_the_agent(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     agent_requests: list[httpx.Request] = []
     telegram_requests: list[dict[str, object]] = []
 
@@ -23,12 +68,8 @@ def test_only_allowed_private_messages_can_reach_the_agent(tmp_path: Path) -> No
         agent_requests.append(request)
         raise AssertionError("Unauthorized messages must not reach Aegra")
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11, 22}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path, allowed_user_ids=frozenset({11, 22})),
         telegram_client=httpx.Client(transport=httpx.MockTransport(telegram)),
         agent_client=httpx.Client(transport=httpx.MockTransport(agent)),
     )
@@ -44,6 +85,7 @@ def test_only_allowed_private_messages_can_reach_the_agent(tmp_path: Path) -> No
 
 
 def test_family_members_keep_separate_saved_threads_and_new_preserves_old_history(
+    make_bot: BotFactory,
     tmp_path: Path,
 ) -> None:
 
@@ -57,16 +99,12 @@ def test_family_members_keep_separate_saved_threads_and_new_preserves_old_histor
         ],
         FakeObserver(),
     )
-    settings = Settings(
-        bot_token=SecretStr("123:secret"),
-        allowed_user_ids=frozenset({11, 22}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "First question"))
     bot.handle_update(incoming(2, 22, "Family question"))
     bot.close()
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(2, 22, "Family question"))
     bot.handle_update(incoming(3, 11, "Follow-up"))
     bot.handle_update(incoming(4, 11, "/new"))
@@ -96,7 +134,7 @@ def test_family_members_keep_separate_saved_threads_and_new_preserves_old_histor
 
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 def test_telegram_buttons_resume_real_monitoring_action_after_restart(
-    tmp_path: Path, decision: str
+    make_bot: BotFactory, tmp_path: Path, decision: str
 ) -> None:
 
     telegram = FakeTelegram()
@@ -113,12 +151,8 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
         ],
         observer,
     )
-    settings = Settings(
-        bot_token=SecretStr("123:secret"),
-        allowed_user_ids=frozenset({11}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    settings = family_settings(tmp_path)
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Watch this light"))
     assert observer.requests == []
     [prompt] = telegram.bodies()
@@ -127,7 +161,7 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
     data = next(button["callback_data"] for button in buttons if button["text"].lower() == decision)
     bot.close()
 
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(2, 11, "Please continue"))
     assert len(agent.submissions()) == 1
     bot.handle_update(clicked(3, 11, data, 101))
@@ -135,7 +169,7 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
     bot.close()
 
     assert len(agent.submissions()) == 2
-    assert telegram.bodies()[-1]["text"] != "Done."  # repeated button is stale, not another answer
+    assert telegram.bodies()[-1]["text"] == STALE
     assert "Done." in [body["text"] for body in telegram.bodies()]
     assert len(telegram.bodies("answerCallbackQuery")) == 2
     if decision == "reject":
@@ -150,6 +184,7 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
 
 
 def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_resume(
+    make_bot: BotFactory,
     tmp_path: Path,
 ) -> None:
 
@@ -168,12 +203,8 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
         ],
         observer,
     )
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11, 22}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path, allowed_user_ids=frozenset({11, 22})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -201,6 +232,7 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
 
 
 def test_plain_text_reply_contains_only_current_final_answer_and_splits_without_loss(
+    make_bot: BotFactory,
     tmp_path: Path,
 ) -> None:
 
@@ -218,12 +250,8 @@ def test_plain_text_reply_contains_only_current_final_answer_and_splits_without_
         ],
         FakeObserver(),
     )
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -236,7 +264,9 @@ def test_plain_text_reply_contains_only_current_final_answer_and_splits_without_
     assert "".join(body["text"] for body in replies) == text
 
 
-def test_uncertain_submitted_approval_is_not_replayed_after_restart(tmp_path: Path) -> None:
+def test_uncertain_submitted_approval_is_not_replayed_after_restart(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     telegram = FakeTelegram()
     observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
     agent = GraphAegra(
@@ -251,19 +281,15 @@ def test_uncertain_submitted_approval_is_not_replayed_after_restart(tmp_path: Pa
         ],
         observer,
     )
-    settings = Settings(
-        bot_token=SecretStr("123:secret"),
-        allowed_user_ids=frozenset({11}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    settings = family_settings(tmp_path)
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Monitor"))
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     agent.fail_after_next_run = True
     bot.handle_update(clicked(2, 11, data, 101))
     assert len(observer.requests) == 1
     bot.close()
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(clicked(2, 11, data, 101))
     bot.handle_update(clicked(3, 11, data, 101))
     bot.close()
@@ -272,7 +298,9 @@ def test_uncertain_submitted_approval_is_not_replayed_after_restart(tmp_path: Pa
     assert "uncertain" in str(telegram.bodies()[1]["text"]).lower()
 
 
-def test_new_and_removed_access_make_old_pending_buttons_unusable(tmp_path: Path) -> None:
+def test_new_and_removed_access_make_old_pending_buttons_unusable(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     telegram = FakeTelegram()
     observer = FakeObserver()
     agent = GraphAegra(
@@ -286,20 +314,16 @@ def test_new_and_removed_access_make_old_pending_buttons_unusable(tmp_path: Path
         ],
         observer,
     )
-    settings = Settings(
-        bot_token=SecretStr("123:secret"),
-        allowed_user_ids=frozenset({11, 22}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Monitor"))
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     bot.close()
     removed = settings.model_copy(update={"allowed_user_ids": frozenset({22})})
-    bot = TelegramBot(removed, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(removed, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(clicked(2, 11, data, 101))
     bot.close()
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(3, 11, "/new"))
     bot.handle_update(clicked(4, 11, data, 101))
     bot.close()
@@ -311,16 +335,12 @@ def test_new_and_removed_access_make_old_pending_buttons_unusable(tmp_path: Path
     "answer", [AIMessage(""), AIMessage(content=[{"type": "reasoning", "reasoning": "internal"}])]
 )
 def test_empty_or_internal_only_agent_answer_gets_a_fixed_failure(
-    tmp_path: Path, answer: AIMessage
+    make_bot: BotFactory, tmp_path: Path, answer: AIMessage
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Old answer"), answer], FakeObserver())
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -334,15 +354,12 @@ def test_empty_or_internal_only_agent_answer_gets_a_fixed_failure(
 
 
 def test_lost_submission_is_not_replayed_but_later_batch_updates_are_not_skipped(
+    make_bot: BotFactory,
     tmp_path: Path,
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Family answer")], FakeObserver())
-    settings = Settings(
-        bot_token=SecretStr("123:secret"),
-        allowed_user_ids=frozenset({11, 22}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
+    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
     updates = [incoming(1, 11, "First"), incoming(2, 22, "Family")]
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -350,7 +367,7 @@ def test_lost_submission_is_not_replayed_but_later_batch_updates_are_not_skipped
             return httpx.Response(200, json={"ok": True, "result": updates})
         return telegram.handle(request)
 
-    bot = TelegramBot(
+    bot = make_bot(
         settings,
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
@@ -358,7 +375,7 @@ def test_lost_submission_is_not_replayed_but_later_batch_updates_are_not_skipped
     agent.fail_next_run = True
     bot.poll_once()
     bot.close()
-    bot = TelegramBot(
+    bot = make_bot(
         settings,
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
@@ -370,6 +387,7 @@ def test_lost_submission_is_not_replayed_but_later_batch_updates_are_not_skipped
 
 
 def test_process_exit_during_first_submission_keeps_second_fetched_update_available(
+    make_bot: BotFactory,
     tmp_path: Path,
 ) -> None:
     class ProcessExit(BaseException):
@@ -378,11 +396,7 @@ def test_process_exit_during_first_submission_keeps_second_fetched_update_availa
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Family answer")], FakeObserver())
     updates = [incoming(1, 11, "First"), incoming(2, 22, "Family")]
-    settings = Settings(
-        bot_token=SecretStr("123:secret"),
-        allowed_user_ids=frozenset({11, 22}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
+    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
 
     def telegram_transport(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/getUpdates"):
@@ -394,7 +408,7 @@ def test_process_exit_during_first_submission_keeps_second_fetched_update_availa
             raise ProcessExit
         return agent.handle(request)
 
-    bot = TelegramBot(
+    bot = make_bot(
         settings,
         telegram_client=httpx.Client(transport=httpx.MockTransport(telegram_transport)),
         agent_client=httpx.Client(transport=httpx.MockTransport(agent_transport)),
@@ -402,7 +416,7 @@ def test_process_exit_during_first_submission_keeps_second_fetched_update_availa
     with pytest.raises(ProcessExit):
         bot.poll_once()
     bot.close()
-    bot = TelegramBot(
+    bot = make_bot(
         settings,
         telegram_client=httpx.Client(transport=httpx.MockTransport(telegram_transport)),
         agent_client=agent.client(),
@@ -413,7 +427,9 @@ def test_process_exit_during_first_submission_keeps_second_fetched_update_availa
     assert telegram.bodies()[-1]["text"] == "Family answer"
 
 
-def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(tmp_path: Path) -> None:
+def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     telegram = FakeTelegram()
     observer = FakeObserver()
     agent = GraphAegra(
@@ -446,12 +462,8 @@ def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(tmp_p
             return httpx.Response(200, json=body)
         return response
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -466,7 +478,7 @@ def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(tmp_p
 
 @pytest.mark.parametrize("mismatch", ["chat", "interrupt", "action"])
 def test_callback_must_match_the_actual_chat_interrupt_and_action(
-    tmp_path: Path, mismatch: str
+    make_bot: BotFactory, tmp_path: Path, mismatch: str
 ) -> None:
     telegram = FakeTelegram()
     observer = FakeObserver()
@@ -477,7 +489,8 @@ def test_callback_must_match_the_actual_chat_interrupt_and_action(
                 tool_calls=[
                     {"name": "monitor_light", "args": {"entity_id": "bulb-a"}, "id": "select"}
                 ],
-            )
+            ),
+            AIMessage("Rejected."),
         ],
         observer,
     )
@@ -495,12 +508,8 @@ def test_callback_must_match_the_actual_chat_interrupt_and_action(
             return httpx.Response(200, json=body)
         return response
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -519,13 +528,20 @@ def test_callback_must_match_the_actual_chat_interrupt_and_action(
             },
         }
     bot.handle_update(callback)
-    bot.close()
     assert len(agent.submissions()) == 1
     assert observer.requests == []
+    assert telegram.bodies()[-1]["text"] == STALE
+    changed = False
+    reject = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][1]["callback_data"]
+    bot.handle_update(clicked(3, 11, reject, 101))
+    bot.close()
+    assert len(agent.submissions()) == 2
+    assert observer.requests == []
+    assert telegram.bodies()[-1]["text"] == "Rejected."
 
 
 def test_known_rate_limit_waits_before_retry_without_submitting_an_agent_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_bot: BotFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     delays: list[float] = []
     monkeypatch.setattr("time.sleep", delays.append)
@@ -540,12 +556,8 @@ def test_known_rate_limit_waits_before_retry_without_submitting_an_agent_run(
         return httpx.Response(200, json={"ok": True, "result": []})
 
     agent = GraphAegra([AIMessage("Unused")], FakeObserver())
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -558,7 +570,7 @@ def test_known_rate_limit_waits_before_retry_without_submitting_an_agent_run(
 
 @pytest.mark.parametrize("error_code", [401, 404, 409])
 def test_invalid_token_or_polling_conflict_has_fixed_secret_free_error(
-    tmp_path: Path, error_code: int
+    make_bot: BotFactory, tmp_path: Path, error_code: int
 ) -> None:
     def transport(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -566,12 +578,8 @@ def test_invalid_token_or_polling_conflict_has_fixed_secret_free_error(
             json={"ok": False, "error_code": error_code, "description": "private-secret"},
         )
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:private-secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path, bot_token=SecretStr("123:private-secret")),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(PollError) as caught:
@@ -581,7 +589,9 @@ def test_invalid_token_or_polling_conflict_has_fixed_secret_free_error(
     assert "private-secret" not in str(caught.value)
 
 
-def test_preexisting_webhook_is_reported_without_deleting_it(tmp_path: Path) -> None:
+def test_preexisting_webhook_is_reported_without_deleting_it(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     requests: list[httpx.Request] = []
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -590,12 +600,8 @@ def test_preexisting_webhook_is_reported_without_deleting_it(tmp_path: Path) -> 
             200, json={"ok": True, "result": {"url": "https://other-deployment.test/webhook"}}
         )
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(TransportError, match="webhook is configured"):
@@ -605,15 +611,13 @@ def test_preexisting_webhook_is_reported_without_deleting_it(tmp_path: Path) -> 
     assert requests[0].url.path.endswith("/getWebhookInfo")
 
 
-def test_help_attachments_and_edited_messages_do_not_call_the_agent(tmp_path: Path) -> None:
+def test_help_attachments_and_edited_messages_do_not_call_the_agent(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Unused")], FakeObserver())
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -650,7 +654,9 @@ def test_help_attachments_and_edited_messages_do_not_call_the_agent(tmp_path: Pa
     assert "text" in bodies[2]["text"]
 
 
-def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(tmp_path: Path) -> None:
+def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     telegram = FakeTelegram()
     observer = FakeObserver()
     agent = GraphAegra(
@@ -664,18 +670,14 @@ def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(tmp_pat
         ],
         observer,
     )
-    settings = Settings(
-        bot_token=SecretStr("123:secret"),
-        allowed_user_ids=frozenset({11}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    settings = family_settings(tmp_path)
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Monitor"))
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     agent.fail_next_run = True
     bot.handle_update(clicked(2, 11, data, 101))
     bot.close()
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(clicked(3, 11, data, 101))
     bot.handle_update(incoming(4, 11, "Please continue"))
     bot.close()
@@ -684,7 +686,9 @@ def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(tmp_pat
     assert "uncertain" in str(telegram.bodies()[-1]["text"]).lower()
 
 
-def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(tmp_path: Path) -> None:
+def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     telegram = FakeTelegram()
     observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
     agent = GraphAegra(
@@ -708,12 +712,8 @@ def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(tmp_
             )
         return telegram.handle(request)
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -737,6 +737,7 @@ def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(tmp_
 
 
 def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_button(
+    make_bot: BotFactory,
     tmp_path: Path,
 ) -> None:
     telegram = FakeTelegram()
@@ -753,12 +754,8 @@ def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_butt
         ],
         observer,
     )
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -776,17 +773,15 @@ def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_butt
 
 
 @pytest.mark.parametrize("status", ["pending", "running"])
-def test_uncertain_active_run_blocks_same_user_until_finished(tmp_path: Path, status: str) -> None:
+def test_uncertain_active_run_blocks_same_user_until_finished(
+    make_bot: BotFactory, tmp_path: Path, status: str
+) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra(
         [AIMessage("Finished answer"), AIMessage("Follow-up answer")], FakeObserver()
     )
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -803,20 +798,18 @@ def test_uncertain_active_run_blocks_same_user_until_finished(tmp_path: Path, st
     assert telegram.bodies()[-1]["text"] == "Follow-up answer"
 
 
-def test_token_rotation_keeps_same_bot_state_but_other_bot_cannot_own_it(tmp_path: Path) -> None:
+def test_token_rotation_keeps_same_bot_state_but_other_bot_cannot_own_it(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("First answer"), AIMessage("Follow-up answer")], FakeObserver())
-    settings = Settings(
-        bot_token=SecretStr("123:old-secret"),
-        allowed_user_ids=frozenset({11}),
-        state_path=str(tmp_path / "bot.sqlite3"),
-    )
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    settings = family_settings(tmp_path, bot_token=SecretStr("123:old-secret"))
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.validate_startup()
     bot.handle_update(incoming(1, 11, "First"))
     bot.close()
     rotated = settings.model_copy(update={"bot_token": SecretStr("123:new-secret")})
-    bot = TelegramBot(rotated, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(rotated, telegram_client=telegram.client(), agent_client=agent.client())
     bot.validate_startup()
     bot.handle_update(incoming(1, 11, "First"))
     bot.handle_update(incoming(2, 11, "Follow-up"))
@@ -825,28 +818,27 @@ def test_token_rotation_keeps_same_bot_state_but_other_bot_cannot_own_it(tmp_pat
     assert len(submissions) == 2
     assert submissions[0].url.path == submissions[1].url.path
     telegram.bot_id = 99999
-    bot = TelegramBot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     with pytest.raises(TransportError, match="different bot"):
         bot.validate_startup()
     bot.close()
-    assert not telegram.bodies("getUpdates")
+    telegram.bot_id = 12345
+    bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
+    bot.validate_startup()
+    bot.close()
 
 
 @pytest.mark.parametrize("method", ["sendMessage", "answerCallbackQuery"])
 @pytest.mark.parametrize("code", [401, 404, 409])
 def test_fatal_telegram_errors_escape_update_handling(
-    tmp_path: Path, method: str, code: int
+    make_bot: BotFactory, tmp_path: Path, method: str, code: int
 ) -> None:
     def transport(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/" + method)
         return httpx.Response(code, json={"ok": False, "error_code": code})
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     update = incoming(1, 11, "/help") if method == "sendMessage" else clicked(1, 11, "stale", 101)
@@ -858,9 +850,9 @@ def test_fatal_telegram_errors_escape_update_handling(
         bot.close()
 
 
-@pytest.mark.parametrize("retry_after", ["missing", None, -1, 0, "soon"])
+@pytest.mark.parametrize("retry_after", ["missing", None, -1, 0, "soon", 47])
 def test_consecutive_rate_limits_retry_once_with_fallback_then_return_to_poller(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retry_after: object
+    make_bot: BotFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retry_after: object
 ) -> None:
     delays: list[float] = []
     monkeypatch.setattr("time.sleep", delays.append)
@@ -872,30 +864,26 @@ def test_consecutive_rate_limits_retry_once_with_fallback_then_return_to_poller(
             429, json={"ok": False, "error_code": 429, "parameters": {"retry_after": retry_after}}
         )
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     try:
         with pytest.raises(PollError) as caught:
             bot.poll_once()
         assert not caught.value.fatal
-        assert caught.value.retry_after == 1
+        assert caught.value.retry_after == (47 if retry_after == 47 else 1)
     finally:
         bot.close()
     assert len(requests) == 2
-    assert delays == [1]
+    assert delays == ([47] if retry_after == 47 else [1])
 
 
 @pytest.mark.parametrize(
     "shape", ["count", "name", "missing_reject", "entity", "multiple_interrupts"]
 )
 def test_malformed_initial_approval_has_no_buttons_or_selection_write(
-    tmp_path: Path, shape: str
+    make_bot: BotFactory, tmp_path: Path, shape: str
 ) -> None:
     telegram = FakeTelegram()
     observer = FakeObserver()
@@ -930,12 +918,8 @@ def test_malformed_initial_approval_has_no_buttons_or_selection_write(
             return httpx.Response(200, json=body)
         return response
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -949,6 +933,7 @@ def test_malformed_initial_approval_has_no_buttons_or_selection_write(
 
 
 def test_split_approval_puts_buttons_on_final_chunk_and_removes_them_after_decision(
+    make_bot: BotFactory,
     tmp_path: Path,
 ) -> None:
     telegram = FakeTelegram()
@@ -976,12 +961,8 @@ def test_split_approval_puts_buttons_on_final_chunk_and_removes_them_after_decis
             return httpx.Response(200, json=body)
         return response
 
-    bot = TelegramBot(
-        Settings(
-            bot_token=SecretStr("123:secret"),
-            allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
-        ),
+    bot = make_bot(
+        family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -1001,3 +982,160 @@ def test_split_approval_puts_buttons_on_final_chunk_and_removes_them_after_decis
         "reply_markup": {"inline_keyboard": []},
     }
     assert telegram.bodies()[-1]["text"] == "Rejected."
+
+
+@pytest.mark.parametrize("failure", ["network", "malformed_json", "server_error", "non_ok"])
+def test_transient_telegram_boundary_errors_are_nonfatal_and_secret_free(
+    make_bot: BotFactory, tmp_path: Path, failure: str
+) -> None:
+    def transport(request: httpx.Request) -> httpx.Response:
+        if failure == "network":
+            raise httpx.ConnectError("123:secret Private payload", request=request)
+        if failure == "malformed_json":
+            return httpx.Response(200, content=b"123:secret not-json")
+        if failure == "server_error":
+            return httpx.Response(
+                503, json={"ok": False, "error_code": 503, "description": "123:secret"}
+            )
+        return httpx.Response(200, json={"ok": False, "description": "123:secret"})
+
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    with pytest.raises(PollError) as caught:
+        bot.poll_once()
+    assert not caught.value.fatal
+    assert "123:secret" not in str(caught.value)
+    assert "Private" not in str(caught.value)
+
+
+def test_polling_advances_outgoing_offset_after_handled_update(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    requests: list[dict[str, object]] = []
+    telegram = FakeTelegram()
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getUpdates"):
+            requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "result": [incoming(5, 11, "/help")] if len(requests) == 1 else [],
+                },
+            )
+        return telegram.handle(request)
+
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    bot.poll_once()
+    bot.poll_once()
+    assert [request["offset"] for request in requests] == [0, 6]
+
+
+def test_failed_final_delivery_allows_new_question_without_replaying_previous_run(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    agent = GraphAegra([AIMessage("First answer"), AIMessage("Second answer")], FakeObserver())
+    sends = 0
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal sends
+        if request.url.path.endswith("/sendMessage"):
+            sends += 1
+            if sends == 1:
+                raise httpx.ReadTimeout("Ambiguous delivery", request=request)
+        return telegram.handle(request)
+
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        agent_client=agent.client(),
+    )
+    bot.handle_update(incoming(1, 11, "First question"))
+    bot.handle_update(incoming(2, 11, "Second question"))
+    assert len(agent.submissions()) == 2
+    assert sends == 3  # Ambiguous first send, uncertainty notice, new answer; no answer resend.
+    assert telegram.bodies()[-1]["text"] == "Second answer"
+
+
+@pytest.mark.parametrize("operation", ["fallback", "keyboard_edit"])
+def test_fatal_telegram_delivery_during_recovery_or_cleanup_stops_worker(
+    make_bot: BotFactory, tmp_path: Path, operation: str
+) -> None:
+    telegram = FakeTelegram()
+    observer = FakeObserver()
+    agent = GraphAegra(
+        [
+            AIMessage(
+                "",
+                tool_calls=[
+                    {"name": "monitor_light", "args": {"entity_id": "bulb-a"}, "id": "select"}
+                ],
+            )
+        ],
+        observer,
+    )
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        target = "sendMessage" if operation == "fallback" else "editMessageReplyMarkup"
+        if request.url.path.endswith("/" + target):
+            return httpx.Response(401, json={"ok": False, "error_code": 401})
+        return telegram.handle(request)
+
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        agent_client=agent.client(),
+    )
+    if operation == "fallback":
+        agent.fail_next_run = True
+        update = incoming(1, 11, "Question")
+    else:
+        bot.handle_update(incoming(1, 11, "Monitor"))
+        data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        update = clicked(2, 11, data, 101)
+    with pytest.raises(PollError) as caught:
+        bot.handle_update(update)
+    assert caught.value.fatal
+    assert observer.requests == []
+
+
+def test_boolean_sent_message_id_is_not_a_valid_approval_reference(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    agent = GraphAegra(
+        [
+            AIMessage(
+                "",
+                tool_calls=[
+                    {"name": "monitor_light", "args": {"entity_id": "bulb-a"}, "id": "select"}
+                ],
+            )
+        ],
+        FakeObserver(),
+    )
+    # Captured Telegram HTTP payloads are parsed at this test boundary.
+    sent: list[dict[str, Any]] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/sendMessage"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": True}})
+        return telegram.handle(request)
+
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        agent_client=agent.client(),
+    )
+    bot.handle_update(incoming(1, 11, "Monitor"))
+    data = str(sent[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"])
+    bot.handle_update(clicked(2, 11, data, 1))
+    assert len(agent.submissions()) == 1

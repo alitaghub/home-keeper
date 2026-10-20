@@ -114,8 +114,8 @@ class GraphAegra:
                 raise httpx.ReadTimeout("response lost after execution", request=request)
             values = dict(self.graph.get_state(config).values)
             values["messages"] = [
-                item.model_dump(mode="json") if isinstance(item, BaseMessage) else item
-                for item in values.get("messages", [])
+                message.model_dump(mode="json") if isinstance(message, BaseMessage) else message
+                for message in values.get("messages", [])
             ]
             return httpx.Response(200, json=values)
         state = self.graph.get_state(config)
@@ -125,20 +125,22 @@ class GraphAegra:
                 json={
                     "values": {
                         "messages": [
-                            item.model_dump(mode="json")
-                            for item in state.values.get("messages", [])
+                            message.model_dump(mode="json")
+                            for message in state.values.get("messages", [])
                         ]
                     },
                     "next": list(state.next),
                     "tasks": [
                         {
                             "interrupts": [
-                                {"id": item.id, "value": item.value} for item in state.interrupts
+                                {"id": interrupt.id, "value": interrupt.value}
+                                for interrupt in state.interrupts
                             ]
                         }
                     ],
                     "interrupts": [
-                        {"id": item.id, "value": item.value} for item in state.interrupts
+                        {"id": interrupt.id, "value": interrupt.value}
+                        for interrupt in state.interrupts
                     ],
                     "checkpoint": {"thread_id": thread_id},
                 },

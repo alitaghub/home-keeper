@@ -84,6 +84,10 @@ settings. The full command is:
 docker compose --profile agent --profile telegram up -d --force-recreate telegram
 ```
 
+Compose waits for the agent to become healthy, then starts the bot process.
+The bot has no Compose healthcheck, so `up --wait` does not prove that Telegram
+polling works. Send `/help` privately to verify it after setup.
+
 Stopping only `telegram` leaves browser chat and collection running. Normal
 `down` keeps the bot's small SQLite state volume and Aegra's conversation
 volume. `down --volumes` deletes them along with the stack's other saved data.
@@ -93,8 +97,9 @@ second polling worker produce a diagnostic without printing the token. Keep
 the token in `.env`; do not put it in a command URL or share it in logs.
 
 One worker handles messages sequentially. A slow answer delays the next
-person's message. There is no custom queue, concurrent worker pool, or delivery
-guarantee. When a request might already have reached the agent, the bot does
+person's message and approval-button acknowledgement. The agent HTTP client
+uses a 300-second timeout. There is no custom queue, concurrent
+worker pool, or delivery guarantee. When a request might already have reached the agent, the bot does
 not automatically run it again. It checks the existing conversation and tells
 you if the result is uncertain. Wait for that run to finish or use `/new`.
 A network failure can lose or duplicate a reply. Telegram keeps undelivered
@@ -108,7 +113,8 @@ silently repeat a request that might already have run.
 If an uncertain request leaves the agent waiting for approval, or some approval
 buttons could not be delivered, use `/new`. The bot does not rebuild missing
 buttons. A normal restart preserves buttons that were already delivered and
-saved.
+saved. If a completed answer was lost during an uncertain request, the bot
+does not recover that old answer when it accepts the next question.
 
 The saved polling progress belongs to one bot's numeric ID. Rotating the token
 for that same bot keeps its state. To switch to a different bot, use a fresh

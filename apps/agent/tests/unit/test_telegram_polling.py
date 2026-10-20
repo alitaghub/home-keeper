@@ -14,7 +14,7 @@ def test_worker_caps_backoff_resets_after_success_and_stops_on_fatal_error(
         [
             *[PollError("Unavailable") for _ in range(7)],
             None,
-            PollError("Unavailable"),
+            PollError("Unavailable", retry_after=45),
             PollError("Token rejected", fatal=True),
         ]
     )
@@ -42,7 +42,7 @@ def test_worker_caps_backoff_resets_after_success_and_stops_on_fatal_error(
     monkeypatch.setattr("time.sleep", delays.append)
     with caplog.at_level(logging.WARNING), pytest.raises(SystemExit, match="1"):
         telegram.main()
-    assert delays == [1, 2, 4, 8, 16, 30, 30, 1]
+    assert delays == [1, 2, 4, 8, 16, 30, 30, 45]
     assert calls == ["startup", *["poll"] * 10, "close"]
     assert "Token rejected" in caplog.text
     assert "123:secret" not in caplog.text

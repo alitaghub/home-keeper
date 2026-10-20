@@ -9,7 +9,6 @@ import os
 import secrets
 import sqlite3
 import time
-from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -123,6 +122,14 @@ class TelegramResult(Wire):
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class WebhookInfo(Wire):
+    url: str
+
+
+class SentMessage(Wire):
+    message_id: int = Field(gt=0)
+
+
 class AgentMessage(Wire):
     id: str | None = None
     type: str = ""
@@ -187,12 +194,16 @@ class Run(Wire):
     status: str
 
 
+type Decision = Literal["approve", "reject"]
+DECISION = TypeAdapter(Decision)
+
+
 class Pending(BaseModel):
     token: str
     interrupt_id: str
     approval: Approval
     message_ids: list[int] = Field(default_factory=list)
-    decisions: list[Literal["approve", "reject"] | None]
+    decisions: list[Decision | None]
 
 
 class IdleConversation(BaseModel):
@@ -204,8 +215,6 @@ class IdleConversation(BaseModel):
 class SubmittingConversation(BaseModel):
     thread_id: str
     status: Literal["submitting"] = "submitting"
-    # Retained only to reconcile an uncertain approval submission, never to retry it.
-    pending: Pending | None = None
 
 
 class PendingConversation(BaseModel):
@@ -223,10 +232,21 @@ CONVERSATION = TypeAdapter(Conversation)
 class TransportError(Exception):
     """A fixed diagnostic safe to show without an HTTP request URL."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class PollError(TransportError):
-    def __init__(self, message: str, *, retry_after: int = 1, fatal: bool = False) -> None:
-        super().__init__(message)
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: int = 1,
+        fatal: bool = False,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code)
         self.retry_after = retry_after
         self.fatal = fatal
 
@@ -275,25 +295,24 @@ def select_final_answer(before: Values, current: Values) -> str:
 
 
 def match_callback_reference(
-    callback: Callback, conversation: Conversation | None
-) -> tuple[int, Literal["approve", "reject"]] | None:
+    callback: Callback, conversation: PendingConversation
+) -> tuple[int, Decision] | None:
     parts = callback.data.split(":")
-    pending = conversation.pending if isinstance(conversation, PendingConversation) else None
+    pending = conversation.pending
     if (
-        callback.message is None
-        or conversation is None
-        or conversation.status != "pending"
-        or pending is None
-        or len(parts) != len(("token", "index", "decision"))
+        callback.message is None or len(parts) != 3  # noqa: PLR2004 -- token:index:decision is the wire format
     ):
         return None
-    token, raw_index, decision = parts
+    token, raw_index, raw_decision = parts
+    try:
+        decision = DECISION.validate_python(raw_decision)
+    except ValidationError:
+        return None
     if (
         token != pending.token
         or not raw_index.isascii()
         or not raw_index.isdigit()
         or len(raw_index) > len(str(len(pending.decisions)))
-        or decision not in ("approve", "reject")
     ):
         return None
     # Bound ASCII digits before conversion: Unicode digits and huge integers can raise.
@@ -351,20 +370,27 @@ class TelegramBot:
             raise PollError("Telegram request failed; delivery may be uncertain.") from None
         if not result.ok or not response.is_success:
             if result.error_code in (401, 404):
-                raise PollError("Telegram rejected the bot token.", fatal=True)
+                raise PollError(
+                    "Telegram rejected the bot token.",
+                    fatal=True,
+                    status_code=result.error_code,
+                )
             if result.error_code == HTTPStatus.CONFLICT:
                 raise PollError(
                     "Telegram polling conflict: remove the webhook or stop the other bot worker.",
                     fatal=True,
+                    status_code=result.error_code,
                 )
             retry = result.parameters.get("retry_after", 1)
+            delay = retry if type(retry) is int and retry > 0 else 1
             if result.error_code == HTTPStatus.TOO_MANY_REQUESTS and retry_rate_limit:
                 # A known rejection is safe to retry; uncertain deliveries never are.
-                time.sleep(retry if isinstance(retry, int) and retry > 0 else 1)
+                time.sleep(delay)
                 return self._telegram(method, body, retry_rate_limit=False)
             raise PollError(
                 "Telegram request failed.",
-                retry_after=retry if isinstance(retry, int) and retry > 0 else 1,
+                retry_after=delay,
+                status_code=result.error_code or response.status_code,
             )
         return result.result
 
@@ -375,14 +401,20 @@ class TelegramBot:
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise TransportError(
+                "Agent request failed; its outcome may be uncertain.",
+                status_code=exc.response.status_code,
+            ) from None
         except (httpx.HTTPError, ValueError):
             raise TransportError("Agent request failed; its outcome may be uncertain.") from None
 
     def validate_startup(self) -> None:
-        info = self._telegram("getWebhookInfo", {})
-        if not isinstance(info, dict) or not isinstance(info.get("url"), str):
-            raise TransportError("Telegram returned invalid webhook information.")
-        if info["url"]:
+        try:
+            info = WebhookInfo.model_validate(self._telegram("getWebhookInfo", {}))
+        except ValidationError:
+            raise TransportError("Telegram returned invalid webhook information.") from None
+        if info.url:
             raise TransportError(
                 "A Telegram webhook is configured. Remove it with deleteWebhook "
                 "before starting this polling bot."
@@ -413,9 +445,7 @@ class TelegramBot:
         )
         self.db.commit()
 
-    def _send(
-        self, chat_id: int, text: str, buttons: list[list[dict[str, str]]] | None = None
-    ) -> int:
+    def _send(self, chat_id: int, text: str, buttons: JsonValue = None) -> int:
         result: JsonValue = None
         for start in range(0, len(text), MESSAGE_LIMIT):
             body: dict[str, JsonValue] = {
@@ -423,14 +453,12 @@ class TelegramBot:
                 "text": text[start : start + MESSAGE_LIMIT],
             }
             if buttons is not None and start + MESSAGE_LIMIT >= len(text):
-                body["reply_markup"] = TypeAdapter(JsonValue).validate_python(
-                    {"inline_keyboard": buttons}
-                )
+                body["reply_markup"] = {"inline_keyboard": buttons}
             result = self._telegram("sendMessage", body)
-        message_id = result.get("message_id") if isinstance(result, dict) else None
-        if isinstance(message_id, int):
-            return message_id
-        raise TransportError("Telegram returned an invalid sent-message reference.")
+        try:
+            return SentMessage.model_validate(result).message_id
+        except ValidationError:
+            raise TransportError("Telegram returned an invalid sent-message reference.") from None
 
     def _state(self, conversation: Conversation) -> State:
         return State.model_validate(self._agent("GET", f"/threads/{conversation.thread_id}/state"))
@@ -458,14 +486,25 @@ class TelegramBot:
         except (TransportError, ValidationError) as exc:
             if isinstance(exc, PollError) and exc.fatal:
                 raise
+            logging.warning(
+                "Telegram update handling failed: operation=%s exception=%s status=%s.",
+                "callback" if parsed.callback_query else "message",
+                type(exc).__name__,
+                exc.status_code if isinstance(exc, TransportError) else None,
+            )
             message = parsed.message or (
                 parsed.callback_query.message if parsed.callback_query else None
             )
             if message and message.chat.type == "private":
                 sender = parsed.callback_query.sender if parsed.callback_query else message.sender
                 if sender and sender.id in self.settings.allowed_user_ids:
-                    with suppress(TransportError):
+                    try:
                         self._send(message.chat.id, UNCERTAIN)
+                    except PollError as delivery_error:
+                        if delivery_error.fatal:
+                            raise
+                    except TransportError:
+                        pass
 
     def _message(self, message: Message) -> None:  # noqa: PLR0911 -- commands exit before agent submission
         if message.chat.type != "private" or message.sender is None:
@@ -485,17 +524,13 @@ class TelegramBot:
                 message.chat.id, "Please send a text question; attachments are not supported."
             )
             return
-        conversation = self._load(user_id)
         if command == "/new":
-            conversation = IdleConversation(thread_id=str(uuid4()))
-            self._agent("POST", "/threads", {"thread_id": conversation.thread_id})
-            self._save(user_id, conversation)
+            self._new_conversation(user_id)
             self._send(message.chat.id, "Started a fresh conversation. Old history is kept.")
             return
+        conversation = self._load(user_id)
         if conversation is None:
-            conversation = IdleConversation(thread_id=str(uuid4()))
-            self._agent("POST", "/threads", {"thread_id": conversation.thread_id})
-            self._save(user_id, conversation)
+            conversation = self._new_conversation(user_id)
         if conversation.status == "submitting":
             runs = self._agent("GET", f"/threads/{conversation.thread_id}/runs")
             if not isinstance(runs, list) or any(
@@ -513,19 +548,37 @@ class TelegramBot:
             self._send(message.chat.id, REMINDER)
             return
         before = self._state(conversation)
-        conversation = SubmittingConversation(
-            thread_id=conversation.thread_id, pending=conversation.pending
+        self._submit(
+            user_id,
+            message.chat.id,
+            conversation,
+            before,
+            {"input": {"messages": [{"role": "user", "content": message.text}]}},
         )
+
+    def _new_conversation(self, user_id: int) -> IdleConversation:
+        conversation = IdleConversation(thread_id=str(uuid4()))
+        self._agent("POST", "/threads", {"thread_id": conversation.thread_id})
         self._save(user_id, conversation)
-        result = self._agent(
+        return conversation
+
+    def _submit(
+        self,
+        user_id: int,
+        chat_id: int,
+        conversation: Conversation,
+        before: State,
+        request: dict[str, JsonValue],
+    ) -> None:
+        conversation = SubmittingConversation(thread_id=conversation.thread_id)
+        # Persist intent before either a new run or an approval can reach the agent.
+        self._save(user_id, conversation)
+        run_output = self._agent(
             "POST",
             f"/threads/{conversation.thread_id}/runs/wait",
-            {
-                "assistant_id": "agent",
-                "input": {"messages": [{"role": "user", "content": message.text}]},
-            },
+            {"assistant_id": "agent", **request},
         )
-        self._finish(user_id, message.chat.id, conversation, before, result)
+        self._finish(user_id, chat_id, conversation, before, run_output)
 
     @staticmethod
     def _interrupts(state: State) -> list[Interrupt]:
@@ -537,7 +590,7 @@ class TelegramBot:
         chat_id: int,
         conversation: Conversation,
         before: State,
-        result: JsonValue,
+        run_output: JsonValue,
     ) -> None:
         state = self._state(conversation)
         interrupts = self._interrupts(state)
@@ -564,7 +617,7 @@ class TelegramBot:
                 text = f"{verb} monitoring {action.args.entity_id}?"
                 if action.description:
                     text += "\n" + action.description
-                buttons = [
+                buttons: JsonValue = [
                     [
                         {"text": "Approve", "callback_data": f"{pending.token}:{index}:approve"},
                         {"text": "Reject", "callback_data": f"{pending.token}:{index}:reject"},
@@ -575,7 +628,7 @@ class TelegramBot:
             return
         conversation = IdleConversation(thread_id=conversation.thread_id)
         self._save(user_id, conversation)
-        self._send(chat_id, select_final_answer(before.values, Values.model_validate(result)))
+        self._send(chat_id, select_final_answer(before.values, Values.model_validate(run_output)))
 
     def _callback(self, callback: Callback) -> None:
         try:
@@ -592,8 +645,11 @@ class TelegramBot:
         ):
             return
         conversation = self._load(callback.sender.id)
+        if not isinstance(conversation, PendingConversation):
+            self._send(message.chat.id, STALE)
+            return
         reference = match_callback_reference(callback, conversation)
-        if reference is None or not isinstance(conversation, PendingConversation):
+        if reference is None:
             self._send(message.chat.id, STALE)
             return
         index, decision = reference
@@ -609,7 +665,7 @@ class TelegramBot:
             return
         pending.decisions[index] = decision
         self._save(callback.sender.id, conversation)
-        with suppress(TransportError):
+        try:
             self._telegram(
                 "editMessageReplyMarkup",
                 {
@@ -618,23 +674,22 @@ class TelegramBot:
                     "reply_markup": {"inline_keyboard": []},
                 },
             )
+        except PollError as delivery_error:
+            if delivery_error.fatal:
+                raise
         if any(value is None for value in pending.decisions):
             return
-        conversation = SubmittingConversation(
-            thread_id=conversation.thread_id, pending=conversation.pending
-        )
-        self._save(callback.sender.id, conversation)
-        result = self._agent(
-            "POST",
-            f"/threads/{conversation.thread_id}/runs/wait",
+        self._submit(
+            callback.sender.id,
+            message.chat.id,
+            conversation,
+            before,
             {
-                "assistant_id": "agent",
                 "command": {
                     "resume": {"decisions": [{"type": value} for value in pending.decisions]}
-                },
+                }
             },
         )
-        self._finish(callback.sender.id, message.chat.id, conversation, before, result)
 
     def poll_once(self) -> None:
         offset = self.db.execute("SELECT offset FROM progress WHERE id=1").fetchone()[0]
@@ -655,16 +710,19 @@ def main() -> None:
     bot: TelegramBot | None = None
     try:
         bot = TelegramBot(Settings.from_env())
-        bot.validate_startup()
+        ready = False
         delay = 1
         while True:
             try:
+                if not ready:
+                    bot.validate_startup()
+                    ready = True
                 bot.poll_once()
                 delay = 1
             except PollError as exc:
                 if exc.fatal:
                     raise
-                logging.warning("Telegram polling unavailable; reconnecting.")
+                logging.warning("Telegram startup or polling unavailable; reconnecting.")
                 time.sleep(max(delay, exc.retry_after))
                 delay = min(delay * 2, 30)
     except TransportError as exc:
