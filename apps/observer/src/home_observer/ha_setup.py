@@ -92,11 +92,11 @@ class Setup:
         )
 
     def run(self) -> None:
-        steps = self.wait_for_onboarding_status()
         if self.token_file.exists():
             self.check_stored_token()
             logging.info("Home Assistant already set up; stored token is valid")
             return
+        steps = self.wait_for_onboarding_status()
         if any(step.done for step in steps):
             raise SetupError(
                 "Home Assistant is already onboarded but no Observer token is stored. " + RESET_HINT
@@ -112,12 +112,23 @@ class Setup:
         )
 
     def wait_for_onboarding_status(self) -> list[OnboardingStep]:
+        response = self.wait_for_ready_response("/api/onboarding")
+        if response.status_code == HTTPStatus.NOT_FOUND:
+            raise SetupError(
+                "Home Assistant is already onboarded but no Observer token is stored. " + RESET_HINT
+            )
+        response.raise_for_status()
+        return [OnboardingStep.model_validate(step) for step in response.json()]
+
+    def wait_for_ready_response(
+        self, path: str, *, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
         deadline = time.monotonic() + READY_TIMEOUT_SECONDS
         while True:
             try:
-                response = self.http.get("/api/onboarding")
-                if response.status_code == HTTPStatus.OK:
-                    return [OnboardingStep.model_validate(step) for step in response.json()]
+                response = self.http.get(path, headers=headers)
+                if not response.is_server_error:
+                    return response
             except httpx.HTTPError:
                 pass
             if time.monotonic() > deadline:
@@ -126,7 +137,9 @@ class Setup:
 
     def check_stored_token(self) -> None:
         token = self.token_file.read_text().strip()
-        response = self.http.get("/api/", headers={"Authorization": f"Bearer {token}"})
+        response = self.wait_for_ready_response(
+            "/api/", headers={"Authorization": f"Bearer {token}"}
+        )
         if response.status_code == HTTPStatus.UNAUTHORIZED:
             raise SetupError("Home Assistant rejected the stored Observer token. " + RESET_HINT)
         response.raise_for_status()

@@ -107,6 +107,53 @@ def test_valid_stored_token_leaves_home_assistant_untouched(tmp_path: Path) -> N
     assert (tmp_path / "token").read_text() == "kept"
 
 
+def test_stored_token_restarts_without_the_removed_onboarding_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "token").write_text("kept")
+    paths: list[str] = []
+
+    def home(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/api/onboarding":
+            return httpx.Response(404)
+        assert request.url.path == "/api/"
+        assert request.headers["Authorization"] == "Bearer kept"
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr("home_observer.ha_setup.READY_TIMEOUT_SECONDS", 0)
+    Setup(
+        ORIGIN, tmp_path / "token", tmp_path / "login.json", transport=httpx.MockTransport(home)
+    ).run()
+
+    assert paths == ["/api/"]
+    assert (tmp_path / "token").read_text() == "kept"
+    assert not (tmp_path / "login.json").exists()
+
+
+def test_stored_token_waits_for_home_assistant_to_finish_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "token").write_text("kept")
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def home(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        assert request.url.path == "/api/"
+        if len(calls) == 1:
+            raise httpx.ConnectError("Starting", request=request)
+        return httpx.Response(503 if len(calls) == 2 else 200, json={})
+
+    monkeypatch.setattr("home_observer.ha_setup.time.sleep", sleeps.append)
+    Setup(
+        ORIGIN, tmp_path / "token", tmp_path / "login.json", transport=httpx.MockTransport(home)
+    ).run()
+
+    assert calls == ["/api/"] * 3
+    assert len(sleeps) == 2
+
+
 def test_onboarded_home_assistant_without_a_token_fails_with_reset_guidance(
     tmp_path: Path,
 ) -> None:
