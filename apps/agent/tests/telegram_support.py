@@ -1,17 +1,75 @@
 """HTTP fixtures for Telegram adapter tests; the agent graph remains real."""
 
 import json
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, TypedDict, overload
 
 import httpx
 from agent_support import FakeObserver, ScriptedChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
+from pydantic import JsonValue, TypeAdapter
 
 from home_observer_agent.graph import build_agent
+
+
+class Button(TypedDict):
+    text: str
+    callback_data: str
+
+
+class Keyboard(TypedDict):
+    inline_keyboard: list[list[Button]]
+
+
+class TelegramBody(Mapping[str, object]):
+    """Validate captured request fields here so scenarios receive concrete types."""
+
+    def __init__(self, request: httpx.Request) -> None:
+        self.payload = TypeAdapter(dict[str, JsonValue]).validate_json(request.content)
+
+    @overload
+    def __getitem__(self, key: Literal["text", "callback_query_id"]) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["reply_markup"]) -> Keyboard: ...
+    @overload
+    def __getitem__(self, key: Literal["chat_id", "message_id", "offset"]) -> int: ...
+    @overload
+    def __getitem__(self, key: str) -> object: ...
+
+    def __getitem__(self, key: str) -> object:
+        value = self.payload[key]
+        if key in ("text", "callback_query_id"):
+            return TypeAdapter(str).validate_python(value, strict=True)
+        if key in ("chat_id", "message_id", "offset"):
+            return TypeAdapter(int).validate_python(value, strict=True)
+        if key == "reply_markup":
+            return TypeAdapter(Keyboard).validate_python(value)
+        return value
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.payload)
+
+    def __len__(self) -> int:
+        return len(self.payload)
+
+
+def telegram_body(request: httpx.Request) -> TelegramBody:
+    return TelegramBody(request)
+
+
+def monitoring_request(
+    entity_id: str = "bulb-a",
+    *,
+    name: Literal["monitor_light", "stop_monitoring"] = "monitor_light",
+    call_id: str = "select",
+) -> AIMessage:
+    return AIMessage(
+        "", tool_calls=[{"name": name, "args": {"entity_id": entity_id}, "id": call_id}]
+    )
 
 
 @dataclass
@@ -37,10 +95,10 @@ class FakeTelegram:
     def client(self) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(self.handle))
 
-    def bodies(self, method: str = "sendMessage") -> list[dict[str, Any]]:
+    def bodies(self, method: str = "sendMessage") -> list[TelegramBody]:
         # Telegram JSON is external data; tests inspect it at the HTTP boundary.
         return [
-            json.loads(request.content)
+            telegram_body(request)
             for request in self.requests
             if request.url.path.endswith("/" + method)
         ]
@@ -60,14 +118,19 @@ def incoming(
     }
 
 
-def clicked(update_id: int, user_id: int, data: str, message_id: int) -> dict[str, object]:
+def clicked(
+    update_id: int, user_id: int, data: str, message_id: int, *, chat_id: int | None = None
+) -> dict[str, object]:
     return {
         "update_id": update_id,
         "callback_query": {
             "id": f"callback-{update_id}",
             "from": {"id": user_id},
             "data": data,
-            "message": {"message_id": message_id, "chat": {"id": user_id, "type": "private"}},
+            "message": {
+                "message_id": message_id,
+                "chat": {"id": user_id if chat_id is None else chat_id, "type": "private"},
+            },
         },
     }
 
@@ -81,7 +144,6 @@ class GraphAegra:
             ScriptedChatModel(responses=responses), observer.client(), InMemorySaver()
         )
         self.requests: list[httpx.Request] = []
-        self.thread_ids: list[str] = []
         self.fail_next_run = False
         self.fail_after_next_run = False
         self.runs: list[dict[str, str]] = []
@@ -93,7 +155,6 @@ class GraphAegra:
         if path == "/threads" and request.method == "POST":
             body: dict[str, Any] = json.loads(request.content)
             thread_id = body["thread_id"]
-            self.thread_ids.append(thread_id)
             return httpx.Response(200, json={"thread_id": thread_id, "status": "idle"})
         parts = path.strip("/").split("/")
         if len(parts) < 2 or parts[0] != "threads":
@@ -138,11 +199,6 @@ class GraphAegra:
                             ]
                         }
                     ],
-                    "interrupts": [
-                        {"id": interrupt.id, "value": interrupt.value}
-                        for interrupt in state.interrupts
-                    ],
-                    "checkpoint": {"thread_id": thread_id},
                 },
             )
         if parts[2:] == ["runs"]:

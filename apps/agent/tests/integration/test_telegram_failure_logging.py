@@ -1,10 +1,9 @@
-import json
 import logging
 
 import httpx
 import pytest
 from pydantic import SecretStr
-from telegram_support import FakeTelegram, incoming
+from telegram_support import FakeTelegram, incoming, telegram_body
 
 from home_observer_agent.telegram import UNCERTAIN, Settings, TelegramBot
 
@@ -19,7 +18,7 @@ def test_update_failure_leaves_an_operator_diagnostic(
 
     def telegram_transport(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/getUpdates"):
-            offsets.append(json.loads(request.content)["offset"])
+            offsets.append(telegram_body(request)["offset"])
             return httpx.Response(
                 200, json={"ok": True, "result": [incoming(1, 11, "Private question")]}
             )
@@ -56,7 +55,9 @@ def test_update_failure_leaves_an_operator_diagnostic(
 
     assert "private-token" not in caplog.text
     assert "Private" not in caplog.text
-    assert caplog.records, (
-        f"{failure}: update was acknowledged and user got only UNCERTAIN, "
-        "but no operator warning/error was logged"
+    expected = (
+        "operation=message exception=TransportError status=503"
+        if failure == "http_503"
+        else "operation=message exception=ValidationError status=None"
     )
+    assert any(expected in record.getMessage() for record in caplog.records)

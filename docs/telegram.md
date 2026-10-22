@@ -93,8 +93,12 @@ Stopping only `telegram` leaves browser chat and collection running. Normal
 volume. `down --volumes` deletes them along with the stack's other saved data.
 
 Missing settings, invalid IDs, rejected tokens, a preexisting webhook, or a
-second polling worker produce a diagnostic without printing the token. Keep
-the token in `.env`; do not put it in a command URL or share it in logs.
+second polling worker produce a diagnostic without printing the token. The
+Compose worker restarts until stopped, so a temporary process crash does not
+leave it offline permanently. Fix configuration errors shown in its logs, or
+stop the service while correcting them. Keep the token in `.env`; do not put
+it in a command URL or share it in logs. Rate-limit waits are logged and honor
+Telegram's requested cooldown. Stopping the container closes the worker cleanly.
 
 One worker handles messages sequentially. A slow answer delays the next
 person's message and approval-button acknowledgement. The agent HTTP client

@@ -100,12 +100,10 @@ services:
       context: .
       dockerfile: apps/agent/Dockerfile
     command: [python, -m, home_observer_agent.telegram]
-    restart: on-failure:3
+    restart: unless-stopped
     environment:
       TELEGRAM_BOT_TOKEN:
       TELEGRAM_ALLOWED_USER_IDS:
-      TELEGRAM_AGENT_URL: http://agent:2026
-      TELEGRAM_STATE_PATH: /state/telegram.sqlite3
     volumes:
       - telegram-state:/state
     # Only Aegra and outbound Telegram. No Observer history, HA token, or database network.

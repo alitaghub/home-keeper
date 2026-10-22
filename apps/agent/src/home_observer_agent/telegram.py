@@ -7,11 +7,15 @@ Aegra remains the only owner of conversations and tool execution.
 import logging
 import os
 import secrets
+import signal
 import sqlite3
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from types import FrameType
+from typing import Annotated, Literal, Self, TypedDict, assert_never
 from uuid import uuid4
 
 import httpx
@@ -187,7 +191,6 @@ class Task(Wire):
 class State(Wire):
     values: Values = Field(default_factory=Values)
     tasks: list[Task] = Field(default_factory=list)
-    next: list[str] = Field(default_factory=list)
 
 
 class Run(Wire):
@@ -209,7 +212,6 @@ class Pending(BaseModel):
 class IdleConversation(BaseModel):
     thread_id: str
     status: Literal["idle"] = "idle"
-    pending: None = None
 
 
 class SubmittingConversation(BaseModel):
@@ -237,18 +239,22 @@ class TransportError(Exception):
         self.status_code = status_code
 
 
+class FatalTelegramError(Exception):
+    """An operator must resolve token or polling ownership before processing more updates."""
+
+
 class PollError(TransportError):
+    """Recoverable failure; retry_after is remaining wait or the ordinary reconnect delay."""
+
     def __init__(
         self,
         message: str,
         *,
         retry_after: int = 1,
-        fatal: bool = False,
         status_code: int | None = None,
     ) -> None:
         super().__init__(message, status_code=status_code)
         self.retry_after = retry_after
-        self.fatal = fatal
 
 
 HELP = (
@@ -264,6 +270,41 @@ REMINDER = "Choose Approve or Reject on the pending request, or use /new."
 STALE = "This approval is no longer available. Use the current buttons or /new."
 UNSUPPORTED_APPROVAL = "Unsupported approval request. Use /new or browser chat."
 MESSAGE_LIMIT = 4096
+POLL_TIMEOUT = 25
+# Leave headroom for network delivery after Telegram completes its long poll.
+TELEGRAM_HTTP_TIMEOUT = POLL_TIMEOUT + 15
+AGENT_HTTP_TIMEOUT = 300
+INITIAL_BACKOFF = 1
+MAX_BACKOFF = 30
+MAX_SLEEP_CHUNK = 30
+AGENT_REQUEST_FAILED = "Agent request failed; its outcome may be uncertain."
+
+
+class InlineButton(TypedDict):
+    text: str
+    callback_data: str
+
+
+type InlineKeyboard = list[list[InlineButton]]
+
+
+def sleep_interruptibly(seconds: int) -> None:
+    remaining = seconds
+    while remaining > 0:
+        chunk = min(remaining, MAX_SLEEP_CHUNK)
+        time.sleep(chunk)
+        remaining -= chunk
+
+
+def deliver_best_effort(delivery: Callable[[], object]) -> None:
+    # Missing acknowledgements, button cleanup, or failure notices must not replay work.
+    # Fatal configuration errors have a separate type and always escape this handler.
+    with suppress(TransportError):
+        delivery()
+
+
+def _terminate(_signum: int, _frame: FrameType | None) -> None:
+    raise KeyboardInterrupt
 
 
 def select_final_answer(before: Values, current: Values) -> str:
@@ -337,8 +378,8 @@ class TelegramBot:
         agent_client: httpx.Client | None = None,
     ) -> None:
         self.settings = settings
-        self.telegram = telegram_client or httpx.Client(timeout=40)
-        self.agent = agent_client or httpx.Client(timeout=300)
+        self.telegram = telegram_client or httpx.Client(timeout=TELEGRAM_HTTP_TIMEOUT)
+        self.agent = agent_client or httpx.Client(timeout=AGENT_HTTP_TIMEOUT)
         if settings.state_path != ":memory:":
             Path(settings.state_path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(settings.state_path)
@@ -358,41 +399,40 @@ class TelegramBot:
         self.telegram.close()
         self.agent.close()
 
-    def _telegram(
-        self, method: str, body: dict[str, JsonValue], *, retry_rate_limit: bool = True
-    ) -> JsonValue:
+    def _telegram(self, method: str, body: dict[str, JsonValue]) -> JsonValue:
         token = self.settings.bot_token.get_secret_value()
         url = f"{self.settings.api_url.rstrip('/')}/bot{token}/{method}"
-        try:
-            response = self.telegram.post(url, json=body)
-            result = TelegramResult.model_validate_json(response.content)
-        except (httpx.HTTPError, ValidationError, ValueError):
-            raise PollError("Telegram request failed; delivery may be uncertain.") from None
-        if not result.ok or not response.is_success:
-            if result.error_code in (401, 404):
-                raise PollError(
-                    "Telegram rejected the bot token.",
-                    fatal=True,
-                    status_code=result.error_code,
-                )
+        retries_remaining = 1
+        while True:
+            try:
+                response = self.telegram.post(url, json=body)
+                result = TelegramResult.model_validate_json(response.content)
+            except (httpx.HTTPError, ValidationError, ValueError):
+                raise PollError("Telegram request failed; delivery may be uncertain.") from None
+            if result.ok and response.is_success:
+                return result.result
+            if result.error_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.NOT_FOUND):
+                raise FatalTelegramError("Telegram rejected the bot token.")
             if result.error_code == HTTPStatus.CONFLICT:
-                raise PollError(
-                    "Telegram polling conflict: remove the webhook or stop the other bot worker.",
-                    fatal=True,
-                    status_code=result.error_code,
+                raise FatalTelegramError(
+                    "Telegram polling conflict: remove the webhook or stop the other bot worker."
                 )
-            retry = result.parameters.get("retry_after", 1)
-            delay = retry if type(retry) is int and retry > 0 else 1
-            if result.error_code == HTTPStatus.TOO_MANY_REQUESTS and retry_rate_limit:
-                # A known rejection is safe to retry; uncertain deliveries never are.
-                time.sleep(delay)
-                return self._telegram(method, body, retry_rate_limit=False)
+            retry = result.parameters.get("retry_after", INITIAL_BACKOFF)
+            delay = retry if type(retry) is int and retry > 0 else INITIAL_BACKOFF
+            if result.error_code == HTTPStatus.TOO_MANY_REQUESTS:
+                # Finish every explicit cooldown before any caller can send a fallback message.
+                logging.warning("Telegram rate limit: waiting %s seconds before continuing.", delay)
+                sleep_interruptibly(delay)
+                if retries_remaining:
+                    retries_remaining -= 1
+                    continue
+                # The cooldown has elapsed; the poller only needs its ordinary reconnect backoff.
+                delay = INITIAL_BACKOFF
             raise PollError(
                 "Telegram request failed.",
                 retry_after=delay,
                 status_code=result.error_code or response.status_code,
             )
-        return result.result
 
     def _agent(self, method: str, path: str, body: dict[str, JsonValue] | None = None) -> JsonValue:
         try:
@@ -403,11 +443,11 @@ class TelegramBot:
             return response.json()
         except httpx.HTTPStatusError as exc:
             raise TransportError(
-                "Agent request failed; its outcome may be uncertain.",
+                AGENT_REQUEST_FAILED,
                 status_code=exc.response.status_code,
             ) from None
         except (httpx.HTTPError, ValueError):
-            raise TransportError("Agent request failed; its outcome may be uncertain.") from None
+            raise TransportError(AGENT_REQUEST_FAILED) from None
 
     def validate_startup(self) -> None:
         try:
@@ -445,7 +485,7 @@ class TelegramBot:
         )
         self.db.commit()
 
-    def _send(self, chat_id: int, text: str, buttons: JsonValue = None) -> int:
+    def _send(self, chat_id: int, text: str, buttons: InlineKeyboard | None = None) -> int:
         result: JsonValue = None
         for start in range(0, len(text), MESSAGE_LIMIT):
             body: dict[str, JsonValue] = {
@@ -453,7 +493,15 @@ class TelegramBot:
                 "text": text[start : start + MESSAGE_LIMIT],
             }
             if buttons is not None and start + MESSAGE_LIMIT >= len(text):
-                body["reply_markup"] = {"inline_keyboard": buttons}
+                body["reply_markup"] = {
+                    "inline_keyboard": [
+                        [
+                            {"text": button["text"], "callback_data": button["callback_data"]}
+                            for button in row
+                        ]
+                        for row in buttons
+                    ]
+                }
             result = self._telegram("sendMessage", body)
         try:
             return SentMessage.model_validate(result).message_id
@@ -484,27 +532,24 @@ class TelegramBot:
             elif parsed.message is not None:
                 self._message(parsed.message)
         except (TransportError, ValidationError) as exc:
-            if isinstance(exc, PollError) and exc.fatal:
-                raise
             logging.warning(
                 "Telegram update handling failed: operation=%s exception=%s status=%s.",
                 "callback" if parsed.callback_query else "message",
                 type(exc).__name__,
                 exc.status_code if isinstance(exc, TransportError) else None,
             )
-            message = parsed.message or (
-                parsed.callback_query.message if parsed.callback_query else None
-            )
-            if message and message.chat.type == "private":
-                sender = parsed.callback_query.sender if parsed.callback_query else message.sender
-                if sender and sender.id in self.settings.allowed_user_ids:
-                    try:
-                        self._send(message.chat.id, UNCERTAIN)
-                    except PollError as delivery_error:
-                        if delivery_error.fatal:
-                            raise
-                    except TransportError:
-                        pass
+            self._report_uncertain(parsed)
+
+    def _report_uncertain(self, update: Update) -> None:
+        message = update.message or (
+            update.callback_query.message if update.callback_query else None
+        )
+        if message is None or message.chat.type != "private":
+            return
+        sender = update.callback_query.sender if update.callback_query else message.sender
+        if sender is None or sender.id not in self.settings.allowed_user_ids:
+            return
+        deliver_best_effort(lambda: self._send(message.chat.id, UNCERTAIN))
 
     def _message(self, message: Message) -> None:  # noqa: PLR0911 -- commands exit before agent submission
         if message.chat.type != "private" or message.sender is None:
@@ -613,11 +658,17 @@ class TelegramBot:
             conversation = PendingConversation(thread_id=conversation.thread_id, pending=pending)
             self._save(user_id, conversation)
             for index, action in enumerate(approval.action_requests):
-                verb = "Start" if action.name == "monitor_light" else "Stop"
+                match action.name:
+                    case "monitor_light":
+                        verb = "Start"
+                    case "stop_monitoring":
+                        verb = "Stop"
+                    case _:
+                        assert_never(action.name)
                 text = f"{verb} monitoring {action.args.entity_id}?"
                 if action.description:
                     text += "\n" + action.description
-                buttons: JsonValue = [
+                buttons: InlineKeyboard = [
                     [
                         {"text": "Approve", "callback_data": f"{pending.token}:{index}:approve"},
                         {"text": "Reject", "callback_data": f"{pending.token}:{index}:reject"},
@@ -631,12 +682,10 @@ class TelegramBot:
         self._send(chat_id, select_final_answer(before.values, Values.model_validate(run_output)))
 
     def _callback(self, callback: Callback) -> None:
-        try:
-            self._telegram("answerCallbackQuery", {"callback_query_id": callback.id})
-        except PollError as exc:
-            # Telegram expires acknowledgements independently of saved approval state.
-            if exc.fatal:
-                raise
+        # Telegram expires acknowledgements independently of saved approval state.
+        deliver_best_effort(
+            lambda: self._telegram("answerCallbackQuery", {"callback_query_id": callback.id})
+        )
         message = callback.message
         if (
             message is None
@@ -665,8 +714,8 @@ class TelegramBot:
             return
         pending.decisions[index] = decision
         self._save(callback.sender.id, conversation)
-        try:
-            self._telegram(
+        deliver_best_effort(
+            lambda: self._telegram(
                 "editMessageReplyMarkup",
                 {
                     "chat_id": message.chat.id,
@@ -674,9 +723,7 @@ class TelegramBot:
                     "reply_markup": {"inline_keyboard": []},
                 },
             )
-        except PollError as delivery_error:
-            if delivery_error.fatal:
-                raise
+        )
         if any(value is None for value in pending.decisions):
             return
         self._submit(
@@ -695,7 +742,11 @@ class TelegramBot:
         offset = self.db.execute("SELECT offset FROM progress WHERE id=1").fetchone()[0]
         updates = self._telegram(
             "getUpdates",
-            {"offset": offset, "timeout": 25, "allowed_updates": ["message", "callback_query"]},
+            {
+                "offset": offset,
+                "timeout": POLL_TIMEOUT,
+                "allowed_updates": ["message", "callback_query"],
+            },
         )
         if not isinstance(updates, list):
             raise PollError("Telegram returned invalid updates.")
@@ -708,24 +759,27 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     bot: TelegramBot | None = None
+    previous_handler = signal.signal(signal.SIGTERM, _terminate)
     try:
         bot = TelegramBot(Settings.from_env())
         ready = False
-        delay = 1
+        delay = INITIAL_BACKOFF
         while True:
             try:
                 if not ready:
                     bot.validate_startup()
                     ready = True
                 bot.poll_once()
-                delay = 1
+                delay = INITIAL_BACKOFF
             except PollError as exc:
-                if exc.fatal:
-                    raise
-                logging.warning("Telegram startup or polling unavailable; reconnecting.")
-                time.sleep(max(delay, exc.retry_after))
-                delay = min(delay * 2, 30)
-    except TransportError as exc:
+                cooldown = max(delay, exc.retry_after)
+                logging.warning(
+                    "Telegram startup or polling unavailable; waiting %s seconds before retry.",
+                    cooldown,
+                )
+                sleep_interruptibly(cooldown)
+                delay = min(delay * 2, MAX_BACKOFF)
+    except (TransportError, FatalTelegramError) as exc:
         logging.error("Telegram bot stopped: %s", exc)
         raise SystemExit(1) from None
     except SettingsError:
@@ -740,8 +794,11 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        if bot is not None:
-            bot.close()
+        try:
+            if bot is not None:
+                bot.close()
+        finally:
+            signal.signal(signal.SIGTERM, previous_handler)
 
 
 if __name__ == "__main__":

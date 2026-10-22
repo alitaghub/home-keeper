@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, JsonValue, TypeAdapter
 
 REPO = Path(__file__).resolve().parents[1]
 PROJECT = "observer-telegram-proof"
@@ -43,6 +43,26 @@ class SentMessage(BaseModel):
 
 class Selection(BaseModel):
     entity_ids: list[str]
+
+
+class ComposeVolume(BaseModel):
+    source: str
+
+
+class ComposeService(BaseModel):
+    ports: list[JsonValue] = Field(default_factory=list)
+    networks: dict[str, JsonValue] = Field(default_factory=dict)
+    environment: dict[str, str | None] = Field(default_factory=dict)
+    volumes: list[ComposeVolume] = Field(default_factory=list)
+    restart: str = ""
+
+
+class ComposeConfig(BaseModel):
+    services: dict[str, ComposeService]
+
+
+class ReplayStatus(BaseModel):
+    delivered: int = Field(ge=0)
 
 
 MESSAGES = TypeAdapter(list[SentMessage])
@@ -79,13 +99,15 @@ def wait_text(client: httpx.Client, text: str, user: int = 101) -> SentMessage:
     return matches()[-1]
 
 
-def post_text(client: httpx.Client, number: int, text: str, user: int = 101) -> None:
+def post_text(
+    client: httpx.Client, update_id: int, text: str, user: int = 101, *, replay: bool = False
+) -> None:
     client.post(
-        "/updates",
+        "/replay" if replay else "/updates",
         json={
-            "update_id": number,
+            "update_id": update_id,
             "message": {
-                "message_id": number,
+                "message_id": update_id,
                 "from": {"id": user, "is_bot": False, "first_name": "Family"},
                 "chat": {"id": user, "type": "private"},
                 "text": text,
@@ -95,7 +117,10 @@ def post_text(client: httpx.Client, number: int, text: str, user: int = 101) -> 
 
 
 def click(
-    client: httpx.Client, number: int, message: SentMessage, decision: Literal["Approve", "Reject"]
+    client: httpx.Client,
+    update_id: int,
+    message: SentMessage,
+    decision: Literal["Approve", "Reject"],
 ) -> None:
     button = next(
         button
@@ -106,9 +131,9 @@ def click(
     client.post(
         "/updates",
         json={
-            "update_id": number,
+            "update_id": update_id,
             "callback_query": {
-                "id": f"callback-{number}",
+                "id": f"callback-{update_id}",
                 "from": {"id": message.chat_id, "is_bot": False, "first_name": "Family"},
                 "chat_instance": "fixture",
                 "message": {
@@ -135,21 +160,19 @@ def check_profiles() -> None:
                 capture_output=True,
                 text=True,
             )
-            # Compose JSON is an external boundary; inspect only the deployment properties we prove.
-            config = json.loads(result.stdout)
-            services = config["services"]
+            config = ComposeConfig.model_validate_json(result.stdout)
+            services = config.services
             assert ("telegram" in services) == ("telegram" in profiles)
             if "telegram" in services:
                 bot = services["telegram"]
-                assert not bot.get("ports")
-                assert set(bot["networks"]) == {"default"}
-                assert set(bot["environment"]) == {
+                assert not bot.ports
+                assert set(bot.networks) == {"default"}
+                assert set(bot.environment) == {
                     "TELEGRAM_BOT_TOKEN",
                     "TELEGRAM_ALLOWED_USER_IDS",
-                    "TELEGRAM_AGENT_URL",
-                    "TELEGRAM_STATE_PATH",
                 }
-                assert [volume["source"] for volume in bot["volumes"]] == ["telegram-state"]
+                assert [volume.source for volume in bot.volumes] == ["telegram-state"]
+                assert bot.restart == "unless-stopped"
 
 
 def main() -> None:
@@ -244,7 +267,9 @@ def main() -> None:
                     compose("restart", "telegram", "agent")
                     wait_until(
                         "agent healthy after restart",
-                        lambda: httpx.get(f"{AGENT_URL}/health", timeout=3).is_success,
+                        lambda: (
+                            httpx.get(f"{AGENT_URL}/health", timeout=3, trust_env=False).is_success
+                        ),
                     )
                     # The graph and bot state both persist. The old prompt is still valid.
                     click(client, 5, prompt, "Approve")
@@ -282,7 +307,16 @@ def main() -> None:
                 post_text(client, 11, "after restart")
                 wait_text(client, "Reply 2: after restart")
                 # Redelivery cannot start another run after the bot reopens its state file.
-                post_text(client, 11, "after restart")
+                post_text(client, 11, "after restart", replay=True)
+                wait_until(
+                    "stale update delivered despite the polling offset",
+                    lambda: (
+                        ReplayStatus.model_validate_json(
+                            client.get("/replay").raise_for_status().content
+                        ).delivered
+                        == 1
+                    ),
+                )
                 post_text(client, 12, "last")
                 wait_text(client, "Reply 3: last")
                 assert (

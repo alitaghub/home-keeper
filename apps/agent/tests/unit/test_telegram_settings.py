@@ -50,3 +50,22 @@ def test_default_addresses_and_state_path(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.agent_url == "http://agent:2026"
     assert settings.state_path == "/state/telegram.sqlite3"
     assert settings.api_url == "https://api.telegram.org"
+
+
+def test_missing_allowlist_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:secret")
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
+    with pytest.raises(ValueError, match="TELEGRAM_ALLOWED_USER_IDS"):
+        Settings.from_env()
+
+
+def test_operator_can_override_addresses_and_state_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:secret")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "11")
+    monkeypatch.setenv("TELEGRAM_AGENT_URL", "http://alternate-agent:2026")
+    monkeypatch.setenv("TELEGRAM_API_URL", "http://telegram.test:8000")
+    monkeypatch.setenv("TELEGRAM_STATE_PATH", "/custom/bot.sqlite3")
+    settings = Settings.from_env()
+    assert settings.agent_url == "http://alternate-agent:2026"
+    assert settings.api_url == "http://telegram.test:8000"
+    assert settings.state_path == "/custom/bot.sqlite3"

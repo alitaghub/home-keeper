@@ -4,11 +4,10 @@ import pytest
 from home_observer_agent import telegram
 
 
-@pytest.mark.parametrize("fatal_code", [None, 401, 404, 409])
-def test_temporary_startup_failure_recovers_without_process_restart(
+def run_startup(
     monkeypatch: pytest.MonkeyPatch,
     fatal_code: int | None,
-) -> None:
+) -> tuple[list[str], list[float], object]:
     requests: list[str] = []
     delays: list[float] = []
 
@@ -47,14 +46,23 @@ def test_temporary_startup_failure_recovers_without_process_restart(
     except SystemExit as exc:
         exit_code = exc.code
 
-    if fatal_code is not None:
-        assert exit_code == 1
-        assert requests == ["getWebhookInfo"]
-        assert delays == []
-        return
-    assert exit_code is None, (
-        f"Temporary startup failure stopped worker: exit={exit_code}, "
-        f"requests={requests}, retry_delays={delays}"
-    )
-    assert "getUpdates" in requests
-    assert delays
+    return requests, delays, exit_code
+
+
+def test_temporary_startup_failure_recovers_without_process_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests, delays, exit_code = run_startup(monkeypatch, None)
+    assert exit_code is None
+    assert requests == ["getWebhookInfo", "getWebhookInfo", "getMe", "getUpdates"]
+    assert delays == [1]
+
+
+@pytest.mark.parametrize("fatal_code", [401, 404, 409])
+def test_rejected_startup_exits_without_retry(
+    monkeypatch: pytest.MonkeyPatch, fatal_code: int
+) -> None:
+    requests, delays, exit_code = run_startup(monkeypatch, fatal_code)
+    assert exit_code == 1
+    assert requests == ["getWebhookInfo"]
+    assert delays == []

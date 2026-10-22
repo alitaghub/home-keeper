@@ -23,6 +23,8 @@ class Sent(BaseModel):
 class TelegramHandler(BaseHTTPRequestHandler):
     updates: ClassVar[list[dict[str, JsonValue]]] = []
     sent: ClassVar[list[dict[str, JsonValue]]] = []
+    replay: ClassVar[dict[str, JsonValue] | None] = None
+    replays_delivered: ClassVar[int] = 0
 
     def log_message(self, format: str, *args: object) -> None:
         pass  # Fixture request URLs contain the synthetic token; do not teach token logging.
@@ -38,6 +40,8 @@ class TelegramHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/sent":
             self.reply(self.sent)
+        elif self.path == "/replay":
+            self.reply({"delivered": self.replays_delivered})
         elif self.path == "/health":
             self.reply({"ok": True})
         else:
@@ -48,6 +52,9 @@ class TelegramHandler(BaseHTTPRequestHandler):
         params = JSON_OBJECT.validate_json(self.rfile.read(size) or b"{}")
         if self.path == "/updates":
             self.updates.append(params)
+            self.reply({"ok": True})
+        elif self.path == "/replay":
+            type(self).replay = params
             self.reply({"ok": True})
         else:
             self.method(self.path, params)
@@ -71,6 +78,12 @@ class TelegramHandler(BaseHTTPRequestHandler):
             case "getUpdates":
                 offset = Poll.model_validate(params).offset
                 time.sleep(0.1)
+                if self.replay is not None:
+                    replay = self.replay
+                    type(self).replay = None
+                    type(self).replays_delivered += 1
+                    self.reply({"ok": True, "result": [replay]})
+                    return
                 self.reply(
                     {
                         "ok": True,
