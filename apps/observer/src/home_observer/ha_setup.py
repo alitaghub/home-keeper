@@ -97,7 +97,7 @@ class Setup:
             logging.info("Home Assistant already set up; stored token is valid")
             return
         steps = self.wait_for_onboarding_status()
-        if any(step.done for step in steps):
+        if steps is None or any(step.done for step in steps):
             raise SetupError(
                 "Home Assistant is already onboarded but no Observer token is stored. " + RESET_HINT
             )
@@ -111,12 +111,11 @@ class Setup:
             "docker compose run --rm --no-deps ha-setup login"
         )
 
-    def wait_for_onboarding_status(self) -> list[OnboardingStep]:
+    def wait_for_onboarding_status(self) -> list[OnboardingStep] | None:
         response = self.wait_for_ready_response("/api/onboarding")
         if response.status_code == HTTPStatus.NOT_FOUND:
-            raise SetupError(
-                "Home Assistant is already onboarded but no Observer token is stored. " + RESET_HINT
-            )
+            # Home Assistant removes this endpoint once onboarding is complete.
+            return None
         response.raise_for_status()
         return [OnboardingStep.model_validate(step) for step in response.json()]
 
@@ -124,15 +123,22 @@ class Setup:
         self, path: str, *, headers: dict[str, str] | None = None
     ) -> httpx.Response:
         deadline = time.monotonic() + READY_TIMEOUT_SECONDS
+        waiting = False
         while True:
             try:
                 response = self.http.get(path, headers=headers)
                 if not response.is_server_error:
                     return response
-            except httpx.HTTPError:
-                pass
+                failure = f"HTTP {response.status_code}"
+            except httpx.HTTPError as error:
+                failure = type(error).__name__
+            if not waiting:
+                logging.info("Waiting for Home Assistant to start (%s)", failure)
+                waiting = True
             if time.monotonic() > deadline:
-                raise SetupError("Home Assistant did not start within five minutes")
+                raise SetupError(
+                    f"Home Assistant did not start within five minutes; last failure: {failure}"
+                )
             time.sleep(2)
 
     def check_stored_token(self) -> None:

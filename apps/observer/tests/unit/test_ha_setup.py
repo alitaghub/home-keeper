@@ -97,31 +97,17 @@ def test_fresh_home_assistant_is_onboarded_and_its_token_stored_privately(
         assert stat.S_IMODE((tmp_path / name).stat().st_mode) == 0o600
 
 
-def test_valid_stored_token_leaves_home_assistant_untouched(tmp_path: Path) -> None:
-    (tmp_path / "token").write_text("kept")
-    home = FakeHomeAssistant(onboarded=True, valid_token="kept")
-
-    setup(tmp_path, home).run()
-
-    assert home.posts == []
-    assert (tmp_path / "token").read_text() == "kept"
-
-
-def test_stored_token_restarts_without_the_removed_onboarding_endpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_stored_token_restarts_without_requesting_onboarding(tmp_path: Path) -> None:
     (tmp_path / "token").write_text("kept")
     paths: list[str] = []
 
     def home(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
-        if request.url.path == "/api/onboarding":
-            return httpx.Response(404)
+        assert request.method == "GET"
         assert request.url.path == "/api/"
         assert request.headers["Authorization"] == "Bearer kept"
         return httpx.Response(200, json={})
 
-    monkeypatch.setattr("home_observer.ha_setup.READY_TIMEOUT_SECONDS", 0)
     Setup(
         ORIGIN, tmp_path / "token", tmp_path / "login.json", transport=httpx.MockTransport(home)
     ).run()
@@ -132,8 +118,9 @@ def test_stored_token_restarts_without_the_removed_onboarding_endpoint(
 
 
 def test_stored_token_waits_for_home_assistant_to_finish_starting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO)
     (tmp_path / "token").write_text("kept")
     calls: list[str] = []
     sleeps: list[float] = []
@@ -152,6 +139,37 @@ def test_stored_token_waits_for_home_assistant_to_finish_starting(
 
     assert calls == ["/api/"] * 3
     assert len(sleeps) == 2
+    assert caplog.text.count("Waiting for Home Assistant") == 1
+    assert "ConnectError" in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["connection", "server"])
+def test_unavailable_home_assistant_stops_setup_after_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    (tmp_path / "token").write_text("kept")
+    clock = iter([0, 0, 301])
+    sleeps: list[float] = []
+    paths: list[str] = []
+
+    def home(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.url.path == "/api/"
+        if failure == "connection":
+            raise httpx.ConnectError("Starting", request=request)
+        return httpx.Response(503)
+
+    monkeypatch.setattr("home_observer.ha_setup.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("home_observer.ha_setup.time.sleep", sleeps.append)
+    reason = "ConnectError" if failure == "connection" else "HTTP 503"
+    with pytest.raises(SetupError, match=f"did not start within five minutes.*{reason}"):
+        Setup(
+            ORIGIN, tmp_path / "token", tmp_path / "login.json", transport=httpx.MockTransport(home)
+        ).run()
+
+    assert paths == ["/api/", "/api/"]
+    assert sleeps == [2]
+    assert (tmp_path / "token").read_text() == "kept"
 
 
 def test_onboarded_home_assistant_without_a_token_fails_with_reset_guidance(
