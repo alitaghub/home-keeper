@@ -85,8 +85,9 @@ If port 8000 or 8123 is taken, set `OBSERVER_PORT` or `HA_PORT`, for example
 `OBSERVER_PORT=18000 HA_PORT=18123 docker compose up --build --wait`.
 
 `docker compose down` stops everything and keeps Home Assistant, the token and
-your history in Docker volumes. `docker compose down --volumes` deletes all of
-it. [docs/home-assistant.md](docs/home-assistant.md) covers the details, limits,
+your history in Docker volumes. Later starts validate the saved token directly
+instead of repeating onboarding. `docker compose down --volumes` deletes all of it.
+[docs/home-assistant.md](docs/home-assistant.md) covers the details, limits,
 and how to use a Home Assistant you already run.
 
 ## Try the demo
