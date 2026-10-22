@@ -19,16 +19,51 @@ collection stopped.
 ```mermaid
 flowchart LR
     subgraph home["Your home"]
-        hue["Hue lights"] --> ha["Home Assistant (bundled or your own)"]
+        lights["Lights"] --> ha["Home Assistant<br/>bundled or your own"]
     end
 
-    subgraph observer["Home Observer"]
-        collector["Collector"] --> api["API"] --> db[("SQLite")]
+    subgraph observer["Home Observer · on your machine"]
+        collector["Collector"]
+        api["Observer API"]
+        db[("SQLite<br/>recorded evidence")]
+        dashboard["Dashboard<br/>devices and history"]
+        collector -- "observations" --> api
+        dashboard <-->|"monitoring and history"| api
+        api --> db
+
+        subgraph optional["Optional agent"]
+            chat["Agent Chat UI<br/>browser chat"]
+            agent["Agent<br/>served by Aegra"]
+            pg[("Postgres<br/>conversations")]
+            bot["Telegram worker<br/>allowed users only"]
+            chat <-->|"questions and approvals"| agent
+            bot <-->|"questions and approvals"| agent
+            agent --> pg
+        end
+
+        agent <-->|"tools over the public API"| api
     end
 
-    ha -- "read only" --> collector
-    dashboard["Dashboard"] <--> api
+    ha -- "read-only collection" --> collector
+    telegram["Telegram<br/>private chats"] <-->|"outbound polling"| bot
+    agent <-->|"model calls"| model["Your model provider"]
+
+    classDef homeNode fill:#f0fdf4,stroke:#15803d,color:#14532d
+    classDef observerNode fill:#eff6ff,stroke:#2563eb,color:#1e3a8a
+    classDef agentNode fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95
+    classDef externalNode fill:#fff7ed,stroke:#c2410c,color:#7c2d12
+    class lights,ha homeNode
+    class collector,api,db,dashboard observerNode
+    class chat,agent,pg,bot agentNode
+    class telegram,model externalNode
 ```
+
+The dashboard works on its own. The optional [agent](docs/agent.md) uses the
+same API to answer questions in Agent Chat UI or [Telegram](docs/telegram.md).
+It asks for approval before changing which lights are monitored. Neither the
+agent nor the collector can control a device. The SQLite database remains local.
+Questions and tool results go to your model provider; Telegram also receives
+your questions and replies.
 
 1. The **collector** discovers devices in Home Assistant and lists them in the
    dashboard.
