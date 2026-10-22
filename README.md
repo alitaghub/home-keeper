@@ -117,6 +117,22 @@ Open the chat at <http://127.0.0.1:3000>. The demo works too: add
 `--profile agent` to its command. [docs/agent.md](docs/agent.md) covers models,
 ports and limits.
 
+## Telegram
+
+You can also talk to the agent privately from Telegram. Set `TELEGRAM_BOT_TOKEN`
+and comma-separated `TELEGRAM_ALLOWED_USER_IDS` in `.env`, alongside the agent's
+model settings, then:
+
+```sh
+docker compose --profile agent --profile telegram up --build --wait
+```
+
+For the demo, add `-f compose.demo.yaml` after `docker compose`. Each allowed
+family member gets their own saved conversation. Monitoring changes need
+Approve/Reject buttons; `/new` starts fresh. The bot uses one sequential worker
+and exposes no port. [docs/telegram.md](docs/telegram.md) covers bot creation,
+user IDs, setup, limits, and what goes through Telegram.
+
 ## Documentation
 
 | Guide                                            | Read it to                                                         |
@@ -127,6 +143,7 @@ ports and limits.
 | [Collection and gaps](docs/collection.md)        | Learn what each record proves, how gaps work, and retention        |
 | [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
 | [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
+| [Telegram](docs/telegram.md)                   | Talk to the agent through a private family bot                     |
 | [Security](docs/security.md)                     | Understand the trust boundaries around the token, API and browser  |
 
 ## Repository layout

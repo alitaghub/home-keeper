@@ -57,3 +57,22 @@ as context. See [agent.md](agent.md).
 
 See [architecture.md](architecture.md) for how these parts connect, and
 [home-assistant.md](home-assistant.md) for how the token is created and stored.
+
+## Optional Telegram bot
+
+The Telegram worker is opt-in and publishes no port. It accepts private messages
+only from configured numeric Telegram user IDs. All allowed users can use the
+same home tools; conversation history is separate, but monitoring choices affect
+the shared home. Changing that choice requires the requesting user's approval.
+Old or repeated callback buttons cannot approve another action.
+
+Questions and replies pass through Telegram, in addition to the model provider's
+existing access to questions and tool results. The bot receives only its bot
+token, allowlist, internal agent address, and private state location. It receives
+no Home Assistant token, model key, Observer database, or Aegra database mount.
+Its small persistent state stores Telegram progress, conversation references,
+and pending approvals; Aegra keeps the actual conversation history.
+
+The existing local agent API remains unauthenticated and loopback-only. Telegram
+allowlisting does not add authentication to browser chat or the agent port.
+See [Telegram setup and limits](telegram.md).
