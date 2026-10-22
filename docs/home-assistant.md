@@ -49,12 +49,16 @@ copy then goes stale, but setup does not need it again.
 
 `ha-setup` runs on every `up`:
 
-- A valid token is stored: it does nothing.
+- A valid token is stored: it validates the token and keeps the existing setup.
 - Home Assistant is not onboarded yet: it onboards it.
 - Home Assistant is onboarded but no token is stored, or Home Assistant rejects
   the token (for example, you revoked it): `up` fails. Reset with
   `docker compose down --volumes`, which also deletes Observer history, or use
   [your own Home Assistant](#use-your-own-home-assistant) with a token you create.
+
+Setup waits up to five minutes for Home Assistant to start. It logs when it
+starts waiting and includes the last connection error or HTTP status if it
+times out. Check it with `docker compose logs ha-setup`.
 
 ### Connect your devices
 

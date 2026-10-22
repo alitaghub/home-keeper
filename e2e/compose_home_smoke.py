@@ -122,7 +122,8 @@ def main() -> None:
         )
         assert unreachable.returncode != 0
 
-        # A second start keeps the stored token and the owner login.
+        # A restart removes HA's onboarding endpoint; setup must reuse its valid token.
+        compose("stop", "collector", "homeassistant")
         compose("up", "--wait")
         assert "stored token is valid" in compose("logs", "ha-setup").stdout
         assert log_in(login["Username"], login["Password"]) == "create_entry"
