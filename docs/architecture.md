@@ -6,6 +6,8 @@ containers from one image. The default stack adds a bundled Home Assistant and
 a one-shot `ha-setup` container that onboards it and stores the collector's token.
 The optional `agent` profile adds a chat agent, its chat page and a Postgres for
 its threads; [agent.md](agent.md) covers it.
+The separate `telegram` profile adds a polling worker that connects private
+Telegram chats to the same agent; [telegram.md](telegram.md) covers setup.
 
 ```mermaid
 flowchart LR
@@ -40,6 +42,8 @@ flowchart LR
     end
 
     chat -- "questions, from your browser" --> agent
+    telegram["Telegram<br/><i>private chats</i>"] <-->|"outbound polling,<br/>replies and approval buttons"| bot["Telegram worker<br/><i>profile telegram</i>"]
+    bot <-->|"questions, answers,<br/>monitoring approvals"| agent
     agent -- "public API only" --> api
     agent -- "prompts, tool results" --> model["Model provider"]
 ```
@@ -55,6 +59,7 @@ flowchart LR
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |
 | Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
 | Chat      | `apps/chat`                            | Optional. Builds the unmodified Agent Chat UI. Your browser talks to the agent directly.    |
+| Telegram  | `apps/agent/src/home_observer_agent/telegram.py` | Optional. Polls private messages from allowed users and forwards questions and approvals to the agent. Publishes no port. |
 
 Python code lives in `apps/observer/src/home_observer`.
 
