@@ -33,6 +33,10 @@ it. For Claude Code, `.claude/settings.json` adds hooks from `.claude/hooks/`:
 
 Put personal Claude settings in `.claude/settings.local.json`, which git ignores.
 
+`.worktreeinclude` makes Claude Code copy your `.env` into each new worktree it
+creates. The copy does not follow later edits: after you change the main `.env`,
+copy it again into worktrees that already exist.
+
 ## Workflow
 
 1. Branch from `main`.
