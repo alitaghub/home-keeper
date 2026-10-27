@@ -144,6 +144,34 @@ command, sender, outcome and the matching event. It takes `start`, `end`,
 Commands expire with the same retention as events; see
 [collection.md](collection.md#retention).
 
+### Command history in the dashboard
+
+The "Recorded changes" panel shows **Light commands** above the recorded
+changes. The list appears while control is `on`, or while any recorded command
+exists. With control `on` and no commands, it reads "No light commands yet."
+
+Each row shows the light, the command (`Turn on`, `Turn on at 30%` or
+`Turn off`), the outcome, the sender and the time sent. The sender reads
+`Dashboard`, `Browser chat`, or the Telegram user's name and ID, such as
+`Sam (Telegram 12345)`. When a recorded change confirmed the command, the row
+also shows `Evidence ID:` with that change's ID, the same ID the change shows
+below. A command confirmed by a baseline snapshot has no evidence ID.
+
+| Outcome        | Shown as                    |
+| -------------- | --------------------------- |
+| `observed`     | `Observed`                  |
+| `not_observed` | `Not observed`              |
+| `refused`      | `Refused by Home Assistant` |
+| `unreachable`  | `Controller unreachable`    |
+| `pending`      | `Pending`                   |
+| `interrupted`  | `Interrupted`               |
+
+The list shows the newest 20 commands and refreshes with the dashboard.
+**Load older commands** adds the next 20 and stops the refresh until you click
+**Refresh history**, like **Load older changes** for recorded changes. The two lists page
+apart and are not merged. If the commands cannot be read, the list keeps what it
+showed and the dashboard works on.
+
 ## The demo
 
 In the demo, the controller forwards each command to the demo collector. The

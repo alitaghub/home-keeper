@@ -231,3 +231,30 @@ export const commandRecord = (
     outcome,
     event_id: outcome === "observed" ? "change-4" : null,
   }) satisfies Schemas["CommandRecord"];
+
+/** A command history row; override any field. */
+export const historyCommand = (
+  id: string,
+  overrides: Partial<Schemas["CommandRecord"]> = {},
+): Schemas["CommandRecord"] => ({
+  id,
+  entity_id: desk.id,
+  command: { action: "on" },
+  sender: { kind: "dashboard" },
+  sent_at: "2026-10-12T10:01:00+00:00",
+  outcome: "not_observed",
+  event_id: null,
+  ...overrides,
+});
+
+export const commandsPage = (
+  commands: Schemas["CommandRecord"][],
+  next_cursor: string | null = null,
+) =>
+  ({
+    commands,
+    next_cursor,
+    retained_since: "2026-09-12T10:00:00+00:00",
+  }) satisfies Schemas["CommandsPage"];
+
+export const emptyCommands = commandsPage([]);
