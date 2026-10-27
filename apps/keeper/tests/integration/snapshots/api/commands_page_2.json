@@ -1,0 +1,38 @@
+{
+  "status": 200,
+  "body": {
+    "commands": [
+      {
+        "command": {
+          "action": "off"
+        },
+        "entity_id": "bulb-a",
+        "event_id": null,
+        "id": "<uuid-1>",
+        "outcome": "refused",
+        "sender": {
+          "kind": "browser_chat"
+        },
+        "sent_at": "2026-10-12T10:00:02+00:00"
+      },
+      {
+        "command": {
+          "action": "on",
+          "brightness_pct": 30
+        },
+        "entity_id": "bulb-a",
+        "event_id": "after-send",
+        "id": "<uuid-2>",
+        "outcome": "observed",
+        "sender": {
+          "id": 424242,
+          "kind": "telegram",
+          "name": "Ali <b>Telegram</b>"
+        },
+        "sent_at": "2026-10-12T10:00:01+00:00"
+      }
+    ],
+    "next_cursor": null,
+    "retained_since": "2026-09-12T10:00:05+00:00"
+  }
+}

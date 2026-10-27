@@ -85,8 +85,9 @@ persistence time. Requests trigger cleanup at most once per minute. History read
 immediately; expired rows can remain on disk until the next cleanup request.
 Active selections and their latest known state stay available in a separate
 current-state cache. That cache does not establish recent device availability.
-Expired current-state caches for removed selections are deleted too. An empty
-timeline means no retained changes were recorded, not that nothing changed.
+Expired current-state caches for removed selections are deleted too. Recorded
+light commands (see [control.md](control.md)) expire with the same retention. An
+empty timeline means no retained changes were recorded, not that nothing changed.
 
 ### Usage numbers
 

@@ -7,7 +7,12 @@
   privileged mode, host networking, USB or Bluetooth access.
 - Only the live collector reads the Home Assistant token at run time, from a
   read-only mount. The API,
-  SQLite and browser never receive it. In the bundled stack, `ha-setup` writes
+  SQLite and browser never receive it. With the `control` profile, the
+  controller reads a second token, for the non-admin "Home Keeper control"
+  user, from the `ha-control-token` volume, read-only. Only `ha-setup`, which
+  writes it with mode `600`, and the controller mount that volume. Revoke
+  control in Home Assistant without breaking collection, and its logbook names
+  that user for every command. In the bundled stack, `ha-setup` writes
   the token with mode `600` to the `ha-token` volume. It keeps the Home
   Assistant owner login, also mode `600`, in the `ha-owner` volume that no other
   service mounts. Neither the token nor the password is written to a log.
@@ -21,13 +26,34 @@
   under a restrictive Content Security Policy. Schema validation limits fields
   and restricts source identity. Error status and logs omit submitted secrets
   and raw connector responses.
-- Home Assistant operations are fixed registry reads, approved entity-state
-  reads and a state-change subscription filtered inside the connector. There is no arbitrary HTTP passthrough, shell tool, router
-  administration endpoint, service call or device-write operation.
+- The collector's Home Assistant operations are fixed registry reads, approved
+  entity-state reads and a state-change subscription filtered inside the
+  connector. It makes no service call and no device write. The collector image
+  contains no controller code.
+- The controller makes exactly two Home Assistant service calls:
+  `light.turn_on`, with an optional `brightness_pct` from 1 to 100, and
+  `light.turn_off`, on `light.*` entity IDs. It rejects any other domain,
+  service, entity ID or field before it contacts Home Assistant. There is no
+  arbitrary HTTP passthrough, service-call passthrough, shell tool or router
+  administration endpoint. A Home Assistant token cannot be limited to some
+  entities, so these fixed calls and the API's checks are the only limits on the
+  control user.
+- The API forwards a command only for a monitored light with a known, available
+  state that differs from the request, and only while the controller's
+  heartbeat is fresh. It records every forwarded command. A command's `sender`
+  (dashboard, browser chat, or a Telegram ID and display name) is a label the
+  caller reports for the record. It is not authentication: anything that can
+  call the API can send a command with any sender. Sender names render as text.
 - The demo collector uses an internal Docker network. The live collector also
   joins the `home-assistant` bridge network to reach Home Assistant. The API
   never joins that network. It has network access
   needed by a trusted credential service.
+- The controller publishes no port. It joins the internal `control` network,
+  shared only with the API (and, in the demo, the demo collector), and in the
+  bundled stack the `home-assistant` network. Its command endpoint and the
+  demo collector's need the service credential, which only the API, the
+  collectors and the controller hold. The controller sends its heartbeat to the
+  API with the same credential.
 - The optional agent (`--profile agent`) is a separate container. It joins the
   dashboard network to reach the API, an internal network to reach its own
   Postgres, and the default network for egress to the model provider. It never
@@ -47,7 +73,8 @@
   rebinding is not mitigated. Its Postgres publishes no port.
 
 Do not expose the dashboard or the agent publicly. Neither has user
-authentication. Without the agent profile, Home Keeper makes no model calls.
+authentication. With the `control` profile, anyone who can reach the API can
+switch your monitored lights. Without the agent profile, Home Keeper makes no model calls.
 With it, your questions and the agent's tool results go to the model provider
 you configure in `AGENT_MODEL`. Tool results contain light names, states,
 timestamps and usage numbers from the public API. The Home Assistant token, the

@@ -1,0 +1,20 @@
+[project]
+name = "home-keeper-controller"
+version = "0.1.0"
+description = "Switches monitored lights for the Home Keeper API with a fixed command set"
+requires-python = ">=3.13"
+dependencies = [
+    "home-keeper-light-command",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "pydantic>=2,<3",
+    "uvicorn>=0.34,<1",
+    "websockets>=15,<16",
+]
+
+[tool.uv.sources]
+home-keeper-light-command = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
