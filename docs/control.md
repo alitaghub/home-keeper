@@ -88,10 +88,17 @@ The API refuses these before it sends anything. It records nothing for them.
 | 409    | code `state_unknown`                      | No state is recorded yet, or the state is `unknown`.        |
 | 409    | code `unavailable`                        | The light's recorded state is `unavailable`.                |
 | 409    | code `already_in_state`                   | The light is already in that state, at that brightness.    |
+| 409    | code `busy`                               | Four commands are being sent and this one waited 3 seconds. |
 
 Home Assistant fires no change for a light that is already in the requested
 state, so such a command could only end as `not_observed`. The API refuses it
 instead.
+
+The API sends at most four commands at a time. A command that waits for a free
+send is checked again before it is sent: if the light stopped being monitored or
+control turned off meanwhile, it gets that refusal and nothing is sent. A command
+that waits more than 3 seconds gets `busy`, so it never switches a light after
+its sender has given up.
 
 ## Command history
 

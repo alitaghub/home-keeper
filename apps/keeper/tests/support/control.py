@@ -51,9 +51,8 @@ def beat(client: TestClient, at: datetime) -> None:
 class FakeController:
     """Records each forwarded command and answers like the controller service.
 
-    A send advances the shared test clock by one second, so a reading delivered at the
-    new time is received after the send. Deliveries run on their own thread, as the
-    collector's posts do, and `join` re-raises anything they failed with.
+    A send moves the shared clock one second on, so a reading it delivers counts as after
+    the send. Deliveries run on their own thread, like the collector; `join` re-raises.
     """
 
     def __init__(self, clock: list[datetime]) -> None:

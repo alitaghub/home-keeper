@@ -464,9 +464,6 @@ class ShiftedTime:
     def monotonic(self) -> float:
         return time.monotonic() + self.offset
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(time, name)
-
 
 @pytest.mark.parametrize("reading", ["event", "snapshot"])
 @pytest.mark.parametrize("cleanup", ["none", "store", "ingestion"])

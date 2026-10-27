@@ -323,7 +323,6 @@ def test_fresh_home_assistant_is_onboarded_and_both_tokens_stored_privately(
     # An empty analytics step finishes onboarding without opting in.
     assert home.posts[3] == ("/api/onboarding/analytics", None)
     assert login.username == "owner"
-    # The collector keeps the owner's token, as before.
     collector = (tmp_path / "token").read_text()
     assert home.user_of(collector).is_owner
     for name in ("token", "login.json"):

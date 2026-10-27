@@ -20,8 +20,8 @@ from websockets.sync.server import ServerConnection, serve
 from home_keeper.api import create_app as create_api
 from home_keeper.control import ControllerUnreachable, HttpController
 from home_keeper.models import LightCommand
-from home_keeper_controller import server
-from home_keeper_controller.home_assistant import HomeAssistantLights
+from home_keeper_controller import home_assistant, server
+from home_keeper_controller.home_assistant import AUTH_CHECK_SECONDS, HomeAssistantLights
 from home_keeper_controller.server import backend, create_app
 
 HA_TOKEN = "synthetic-control-token"
@@ -303,9 +303,25 @@ def test_replaced_control_token_switches_the_light_without_a_restart(
     assert home.calls() == [call("turn_off", "light.desk")]
 
 
-def test_unknown_controller_backend_is_a_configuration_error() -> None:
-    with pytest.raises(ValueError, match="HOME_KEEPER_CONTROL_BACKEND"):
-        backend("passthrough", SERVICE_TOKEN)
+def test_control_turns_off_after_revocation_and_back_on_after_a_new_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = [HA_TOKEN]
+    clock = [1000.0]
+    monkeypatch.setattr(home_assistant.time, "monotonic", lambda: clock[0])
+    home = FakeHomeAssistant()
+    with running(home) as origin:
+        lights = HomeAssistantLights(origin, lambda: token[0])
+        assert lights.usable()
+        token[0] = "revoked-control-token"
+        # Within the recheck interval the last answer stands.
+        clock[0] += AUTH_CHECK_SECONDS - 1
+        assert lights.usable()
+        clock[0] += 1
+        assert not lights.usable()
+        token[0] = HA_TOKEN
+        clock[0] += AUTH_CHECK_SECONDS
+        assert lights.usable()
 
 
 class ApiBridge:

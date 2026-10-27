@@ -72,6 +72,9 @@ COMMAND_POLL_SECONDS = 0.1
 # Controller sends can block for seconds, so they get their own few threads and never
 # take every worker of the shared pool that ingestion needs.
 CONCURRENT_SENDS = 4
+# A command that waits longer than this for a send slot is refused, so it never switches a
+# light after its caller gave up (the agent's request times out after 10 seconds).
+SEND_QUEUE_SECONDS = 3
 
 
 @dataclass(frozen=True)
@@ -797,7 +800,9 @@ def create_app(
         with store.transaction("DEFERRED") as db:
             return find_observation(db, entity_id, command, sent_at)
 
-    send_limiter = CapacityLimiter(CONCURRENT_SENDS)
+    send_slots = CapacityLimiter(CONCURRENT_SENDS)
+    # One thread per held slot, so a send never waits for a thread once it has a slot.
+    send_threads = CapacityLimiter(CONCURRENT_SENDS)
 
     @app.post(
         "/api/lights/{entity_id}/command",
@@ -808,44 +813,53 @@ def create_app(
     async def command_light(entity_id: str, request: CommandRequest):
         # Async, with each database read and the send in the thread pool only briefly, so
         # waiting commands cannot hold the workers that ingest the readings they wait for.
-        accepted = await run_in_threadpool(accept, entity_id, request.command)
-        sent_at = now().astimezone(UTC)
-        record = CommandRecord(
-            id=str(uuid4()),
-            entity_id=entity_id,
-            command=request.command,
-            sender=request.sender,
-            sent_at=sent_at.isoformat(),
-            outcome="pending",
-            event_id=None,
-        )
-        # Stored before the send, so a crash during it still leaves the command on record.
-        await run_in_threadpool(save_command, record)
+        await run_in_threadpool(accept, entity_id, request.command)
+        with anyio.move_on_after(SEND_QUEUE_SECONDS) as queue:
+            await send_slots.acquire()
+        if queue.cancelled_caught:
+            raise refused("busy", "Too many light commands are waiting. Try again")
+        try:
+            # Checked again with the slot held: while the command waited, the light may
+            # have stopped being monitored, or control may have turned off.
+            accepted = await run_in_threadpool(accept, entity_id, request.command)
+            sent_at = now().astimezone(UTC)
+            record = CommandRecord(
+                id=str(uuid4()),
+                entity_id=entity_id,
+                command=request.command,
+                sender=request.sender,
+                sent_at=sent_at.isoformat(),
+                outcome="pending",
+                event_id=None,
+            )
+            # Stored before the send, so a crash during it still leaves the command on record.
+            await run_in_threadpool(save_command, record)
+            try:
+                result = await anyio.to_thread.run_sync(
+                    accepted.controller.send,
+                    accepted.source_entity_id,
+                    request.command,
+                    limiter=send_threads,
+                )
+            except ControllerUnreachable:
+                result = None
+        finally:
+            send_slots.release()
         observed: Observed | None = None
         outcome: CommandOutcome
-        try:
-            result = await anyio.to_thread.run_sync(
-                accepted.controller.send,
-                accepted.source_entity_id,
-                request.command,
-                limiter=send_limiter,
-            )
-        except ControllerUnreachable:
+        if result is None:
             outcome = "unreachable"
+        elif result == "refused":
+            outcome = "refused"
         else:
-            if result == "refused":
-                outcome = "refused"
-            else:
-                deadline = time.monotonic() + command_wait_seconds
-                while True:
-                    observed = await run_in_threadpool(
-                        observation, entity_id, request.command, sent_at
-                    )
-                    remaining = deadline - time.monotonic()
-                    if observed is not None or remaining <= 0:
-                        break
-                    await asyncio.sleep(min(COMMAND_POLL_SECONDS, remaining))
-                outcome = "observed" if observed is not None else "not_observed"
+            deadline = time.monotonic() + command_wait_seconds
+            while True:
+                observed = await run_in_threadpool(observation, entity_id, request.command, sent_at)
+                remaining = deadline - time.monotonic()
+                if observed is not None or remaining <= 0:
+                    break
+                await asyncio.sleep(min(COMMAND_POLL_SECONDS, remaining))
+            outcome = "observed" if observed is not None else "not_observed"
         record = record.model_copy(
             update={
                 "outcome": outcome,

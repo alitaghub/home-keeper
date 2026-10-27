@@ -465,7 +465,7 @@ class CommandRecord(WireModel):
 
 # Why the API refused a command before sending it.
 CommandRefusalCode = Literal[
-    "control_off", "not_monitored", "state_unknown", "unavailable", "already_in_state"
+    "control_off", "not_monitored", "state_unknown", "unavailable", "already_in_state", "busy"
 ]
 
 

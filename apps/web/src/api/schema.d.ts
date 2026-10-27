@@ -380,7 +380,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state";
+            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state" | "busy";
             /** Message */
             message: string;
         };
