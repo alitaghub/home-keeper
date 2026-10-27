@@ -13,7 +13,7 @@ seeing. By default it does not control devices. With the opt-in `control`
 profile, it can switch a light on or off, but only a light it monitors, so every
 command leaves evidence.
 
-![The Home Keeper dashboard with two monitored lamps](docs/images/dashboard.png)
+![The Home Keeper Home tab with two monitored lamps, one on at 39%](docs/images/dashboard.png)
 
 ## How it works
 
@@ -78,7 +78,9 @@ your questions and replies.
    its state changes: on/off, brightness, color, availability.
 4. The **API** validates every record and stores it in SQLite. If collection
    stops, it records a gap instead of guessing what happened.
-5. The **dashboard** shows current state, a timeline of changes, and every gap.
+5. The **dashboard** has three tabs. **Home** shows each monitored light and
+   switches it. **History** lists commands, changes and gaps in plain words, with
+   the evidence behind **Details**. **Setup** chooses which lights to monitor.
 
 [docs/architecture.md](docs/architecture.md) has the full picture, the selection
 flow and the terms the code uses.
@@ -123,8 +125,8 @@ token for the collector. Then:
 2. Open Home Assistant at <http://127.0.0.1:8123>, log in, and add your devices
    under **Settings → Devices & services → Add integration**. Home Assistant owns
    every device connection. Pairing a Hue Bridge needs one press of its button.
-3. Open the dashboard at <http://127.0.0.1:8000>, click **Refresh discovery**,
-   then **Monitor** on a lamp.
+3. Open the dashboard at <http://localhost:8000>. On the **Setup** tab, click
+   **Refresh discovery**, then **Monitor** on a lamp.
 
 If port 8000 or 8123 is taken, set `HOME_KEEPER_PORT` or `HA_PORT`, for example
 `HOME_KEEPER_PORT=18000 HA_PORT=18123 docker compose up --build --wait`.
@@ -143,8 +145,9 @@ The demo runs a synthetic home: no hardware and no Home Assistant needed.
 docker compose -f compose.demo.yaml up --build --wait
 ```
 
-Open <http://127.0.0.1:8000> and click **Monitor** on a lamp. Changes appear in
-**Recorded changes** within a few seconds. Stop the home stack first; both use
+Open <http://localhost:8000#setup> and click **Monitor** on a lamp. The lamp
+appears on the **Home** tab, and its changes appear on the **History** tab
+within a few seconds. Stop the home stack first; both use
 port 8000. [docs/demo.md](docs/demo.md) explains what the demo shows.
 
 ## Switch lights
@@ -157,11 +160,12 @@ docker compose --profile control up --build --wait
 
 The demo works too: add `--profile control` to its command. The dashboard then
 shows `CONTROL ON`, and each monitored light with a known on or off state gets a
-**Turn on** or **Turn off** button. One click sends the command. The dashboard
+**Turn on** or **Turn off** button and a brightness slider. One click sends the
+command. The dashboard
 then shows what Home Keeper observed: the change, no change within 5 seconds, a
 refusal from Home Assistant, or an unreachable controller. Every command is
 recorded, and the dashboard lists recent commands with their sender and outcome
-beside the recorded changes. [docs/control.md](docs/control.md) covers the
+on the **History** tab. [docs/control.md](docs/control.md) covers the
 dashboard, the API, the refusals and the limits.
 
 ## Chat with the agent

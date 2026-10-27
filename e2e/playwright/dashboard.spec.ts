@@ -33,7 +33,8 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
     ]),
   });
 
-  await page.goto("/");
+  // Choosing lights lives on the Setup tab.
+  await page.goto("/#setup");
   await expect(page.locator("#source")).toHaveText("SYNTHETIC DEMO");
   // The e2e demo stack runs with the control profile, so the notice says light control is on.
   await expect(page.locator("#source-notice")).toContainText(
@@ -45,11 +46,15 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await lamps.getByRole("button", { name: `Monitor ${LAMP}` }).click();
   await expect(lamps.getByRole("button", { name: `Stop monitoring ${LAMP}` })).toBeVisible();
 
+  await page.getByRole("tab", { name: "Home" }).click();
   const card = page
     .locator("#monitored article")
     .filter({ has: page.getByRole("heading", { name: LAMP }) });
   await expect(card).toBeVisible();
-  await expect(card.getByText(/^(on|off|unavailable|unknown) · /)).toBeVisible(COLLECTION);
+  const state = card.locator(".tile-state");
+  await expect(state).toHaveText(/^(On|Off|Unavailable|Unknown)/, COLLECTION);
+  // The evidence sits behind the card's Details.
+  await card.getByText("Details").click();
   await expect(card.getByText(/^Source: demo · Evidence ID: /)).toBeVisible();
 
   // Control is on, so a light with a recorded on/off state offers a toggle. The demo
@@ -76,13 +81,14 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   expect(now, "every command attempt met a replay change").toBeDefined();
   await expect(page.locator("#message")).toHaveText(`${LAMP} is now ${now}.`, COLLECTION);
   // The toggle shows the recorded state, so the card flips only once the change is recorded.
-  await expect(card.getByText(new RegExp(`^${now} · `))).toBeVisible(COLLECTION);
+  await expect(state).toHaveText(new RegExp(`^${now === "on" ? "On" : "Off"}`), COLLECTION);
 
   // The name containing a script tag must never become markup.
   await expect(page.locator("body script")).toHaveCount(0);
   expect(dialogs).toEqual([]);
 
   await card.getByRole("button", { name: `Stop monitoring ${LAMP}` }).click();
-  await expect(lamps.getByRole("button", { name: `Monitor ${LAMP}` })).toBeVisible();
   await expect(card).toHaveCount(0);
+  await page.getByRole("tab", { name: "Setup" }).click();
+  await expect(lamps.getByRole("button", { name: `Monitor ${LAMP}` })).toBeVisible();
 });

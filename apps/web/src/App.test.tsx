@@ -34,6 +34,12 @@ function byId(id: string): HTMLElement {
 
 const nextPoll = () => act(() => vi.advanceTimersByTimeAsync(3000));
 
+/** Opens the dashboard on a tab, as a link to `#setup` or `#history` does. */
+const startOn = (tab: "history" | "setup") => window.history.replaceState(null, "", `#${tab}`);
+
+const openTab = (name: "Home" | "History" | "Setup") =>
+  fireEvent.click(screen.getByRole("tab", { name }));
+
 const pathsOf = (calls: ApiCall[]) => calls.map((call) => call.url.pathname);
 
 beforeEach(() => {
@@ -42,6 +48,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, "", "/");
   expect(api.unmatched).toEqual([]);
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -110,6 +117,7 @@ describe("ported from test_dashboard.py", () => {
   });
 
   it("focuses discovery on lamps and uses device names", async () => {
+    startOn("setup");
     const lamp = { name: "Unnamed entity", supported: true, reason: null };
     const lights = [
       { ...lamp, id: "ha:desk", device_id: "ha:device1", device_name: "Desk lamp" },
@@ -167,6 +175,7 @@ describe("ported from test_dashboard.py", () => {
 
 describe("dashboard behavior", () => {
   it("monitors a lamp and stops monitoring it", async () => {
+    startOn("setup");
     let selected: string[] = [];
     const recoveryBaseline = {
       kind: "recovery",
@@ -205,26 +214,28 @@ describe("dashboard behavior", () => {
     expect(select?.url.pathname).toBe("/api/selection/light.hue_desk");
     expect(select?.headers.get("X-Home-Keeper")).toBe("1");
     expect(select?.body).toEqual({ selected: true });
+    expect(
+      within(byId("catalog")).getByRole("button", { name: "Stop monitoring Desk lamp" }),
+    ).toHaveClass("secondary");
+
+    openTab("Home");
     const monitored = within(byId("monitored"));
     expect(monitored.getByRole("heading", { name: "Desk lamp" })).toBeInTheDocument();
     expect(monitored.getByText("stale")).toHaveClass("tag", "stale");
-    expect(monitored.getByText("off · available")).toBeInTheDocument();
+    expect(monitored.getByText("Off")).toBeInTheDocument();
     expect(monitored.getByText("Recovery snapshot; transition time unknown")).toBeInTheDocument();
     expect(
       monitored.getByText(
         `Related gap evidence: ${fixtures.openGap.id}. Changes during this gap have unknown timing.`,
       ),
     ).toBeInTheDocument();
-    expect(
-      within(byId("catalog")).getByRole("button", { name: "Stop monitoring Desk lamp" }),
-    ).toHaveClass("secondary");
 
     await user.click(monitored.getByRole("button", { name: "Stop monitoring Desk lamp" }));
 
     await waitFor(() =>
       expect(
         monitored.getByText(
-          "No lights selected. Choose a light below to establish its first baseline.",
+          "No lights monitored yet. Choose the lights Home Keeper should record.",
         ),
       ).toBeInTheDocument(),
     );
@@ -236,6 +247,7 @@ describe("dashboard behavior", () => {
   });
 
   it("shows a pending discovery refresh until the catalog is refreshed", async () => {
+    startOn("setup");
     const { api, user } = renderDashboard();
     await waitFor(() => expect(byId("count")).toHaveTextContent("2"));
 
@@ -298,6 +310,7 @@ describe("dashboard behavior", () => {
   });
 
   it("points to Home Assistant when no supported device is connected yet", async () => {
+    startOn("setup");
     renderDashboard({
       "GET /api/catalog": {
         ...fixtures.catalog,
@@ -313,6 +326,7 @@ describe("dashboard behavior", () => {
   });
 
   it("pages through older timeline history, dedupes by id, and refreshes back to the newest page", async () => {
+    startOn("history");
     const { api, user } = renderDashboard({
       "GET /api/events": (call) =>
         call.url.searchParams.has("cursor")
@@ -377,6 +391,7 @@ describe("dashboard behavior", () => {
   });
 
   it("shows a color-only change with its source, receipt and storage times", async () => {
+    startOn("history");
     const event = fixtures.colorChange;
     renderDashboard({ "GET /api/events": { ...fixtures.eventsPage2, events: [event] } });
 
@@ -397,6 +412,7 @@ describe("dashboard behavior", () => {
   });
 
   it("tells an open collection gap from a recovered one", async () => {
+    startOn("history");
     const { api } = renderDashboard({ "GET /api/coverage": fixtures.coverage });
 
     await waitFor(() =>
@@ -405,7 +421,7 @@ describe("dashboard behavior", () => {
       ),
     );
     const open = within(byId(`gap-${fixtures.openGap.id}`));
-    expect(open.getByRole("heading", { name: "Collection interrupted" })).toBeInTheDocument();
+    expect(open.getByText("Collection interrupted")).toBeInTheDocument();
     expect(open.getByText("Snapshot differed from recorded state")).toBeInTheDocument();
     expect(open.getByText("Recovery pending. Current evidence may be stale.")).toBeInTheDocument();
     expect(
@@ -415,7 +431,7 @@ describe("dashboard behavior", () => {
     ).toBeInTheDocument();
 
     const recovered = within(byId(`gap-${fixtures.recoveredGap.id}`));
-    expect(recovered.getByRole("heading", { name: "Collection resumed" })).toBeInTheDocument();
+    expect(recovered.getByText("Collection resumed")).toBeInTheDocument();
     expect(recovered.getByText("Connector connection lost")).toBeInTheDocument();
     expect(
       recovered.getByText(`Recovery completed: ${localTime(fixtures.recoveredGap.recovered_at)}`),
@@ -465,6 +481,7 @@ describe("dashboard behavior", () => {
   });
 
   it("reports a failed selection change", async () => {
+    startOn("setup");
     const { api, user } = renderDashboard();
     api.fail("PUT /api/selection/{entity_id}", 500);
 
@@ -474,6 +491,7 @@ describe("dashboard behavior", () => {
   });
 
   it("renders script-shaped device and entity names as literal text", async () => {
+    startOn("setup");
     const deviceName = "<script>alert('device')</script>";
     const entityName = "<img src=x onerror=alert('entity')>";
     renderDashboard({
@@ -615,7 +633,7 @@ describe("light control from the dashboard", () => {
     await monitored().findByRole("button", { name: "Turn on Desk lamp" });
 
     expect(document.querySelector("footer")).toHaveTextContent(
-      "Stored on this machine · Change records are evidence, not explanations of cause · No agent in this milestone",
+      "Stored on this machine · Change records are evidence, not explanations of cause",
     );
   });
 
@@ -709,6 +727,7 @@ describe("light control from the dashboard", () => {
 
     await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
     await monitored().findByText("Sending…");
+    openTab("Setup");
     await user.click(within(byId("catalog")).getByRole("button", { name: "Monitor Reading lamp" }));
 
     await waitFor(() => expect(api.callsTo("PUT /api/selection/{entity_id}")).toHaveLength(1));
@@ -997,6 +1016,8 @@ describe("light control from the dashboard", () => {
 });
 
 describe("command history in the timeline", () => {
+  beforeEach(() => startOn("history"));
+
   const COMMANDS = "GET /api/commands";
   const commandsSection = () => within(byId("commands"));
   const articles = () => commandsSection().getAllByRole("article");
@@ -1016,7 +1037,7 @@ describe("command history in the timeline", () => {
     renderDashboard({ "GET /api/control": fixtures.controlOn });
 
     expect(await screen.findByText("No light commands yet.")).toBeInTheDocument();
-    expect(commandsSection().getByRole("heading", { name: "Light commands" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Light commands" })).toBeInTheDocument();
   });
 
   it("shows commands when control is off but commands exist, newest page of 20", async () => {
@@ -1044,7 +1065,8 @@ describe("command history in the timeline", () => {
     await waitFor(() => expect(articles()).toHaveLength(6));
     const [c1, c2, c3, c4, c5, c6] = articles();
     const time = localTime("2026-10-12T10:01:00+00:00");
-    expect(c1).toHaveTextContent(time);
+    // The row shows a short time; the full local date and time is its tooltip.
+    expect(c1?.querySelector("time")).toHaveAttribute("title", time);
     expect(c1).toHaveTextContent("Desk lamp");
     expect(c1).toHaveTextContent("Turn on");
     expect(c1).toHaveTextContent("Dashboard");
@@ -1277,5 +1299,159 @@ describe("command history in the timeline", () => {
     expect(articles()).toHaveLength(1);
     expect(byId("timeline-status")).not.toHaveTextContent(HISTORY_FAILED);
     expect(document.body).not.toHaveTextContent(UNREACHABLE);
+  });
+});
+
+describe("tabs, brightness and plain history", () => {
+  const COMMAND = "POST /api/lights/{entity_id}/command";
+
+  /** The desk lamp, monitored and recorded `state`, with control on unless told otherwise. */
+  function renderLamp(
+    state: Schemas["BaselineRecord"]["state"] = "on",
+    control: Schemas["ControlStatus"] = fixtures.controlOn,
+  ) {
+    return renderDashboard({
+      "GET /api/control": control,
+      "GET /api/selection": { ...fixtures.emptySelection, entity_ids: [fixtures.desk.id] },
+      "GET /api/monitored": { entities: [fixtures.monitoredLight(fixtures.desk, state)] },
+      [COMMAND]: fixtures.commandRecord("observed"),
+    });
+  }
+
+  const tab = (name: string) => screen.getByRole("tab", { name });
+  const slider = () => screen.getByRole("slider", { name: "Brightness of Desk lamp" });
+
+  it("opens on Home and shows only the open tab's view", async () => {
+    renderLamp();
+    await within(byId("monitored")).findByRole("heading", { name: "Desk lamp" });
+
+    expect(tab("Home")).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Refresh discovery" })).toBeNull();
+
+    openTab("Setup");
+
+    expect(tab("Setup")).toHaveAttribute("aria-selected", "true");
+    expect(window.location.hash).toBe("#setup");
+    expect(screen.getByRole("button", { name: "Refresh discovery" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Desk lamp" })).toBeNull();
+  });
+
+  it("opens the tab a link names", async () => {
+    startOn("history");
+    renderLamp();
+
+    await waitFor(() => expect(tab("History")).toHaveAttribute("aria-selected", "true"));
+    expect(screen.getByRole("heading", { name: "Recorded changes" })).toBeInTheDocument();
+  });
+
+  it("sends one brightness command only after the slider rests for 400 ms", async () => {
+    const { api } = renderLamp("on");
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    fireEvent.change(slider(), { target: { value: "60" } });
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    expect(api.callsTo(COMMAND)).toHaveLength(0);
+    // Each move restarts the wait.
+    fireEvent.change(slider(), { target: { value: "40" } });
+    await act(() => vi.advanceTimersByTimeAsync(399));
+    expect(api.callsTo(COMMAND)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(1));
+
+    await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(1));
+    expect(api.callsTo(COMMAND)[0]?.body).toEqual({
+      command: { action: "on", brightness_pct: 40 },
+      sender: { kind: "dashboard" },
+    });
+    await waitFor(() => expect(byId("message")).toHaveTextContent("Desk lamp is now on at 40%."));
+  });
+
+  it("drops a slider move that has not settled when Turn off is clicked", async () => {
+    const { api } = renderLamp("on");
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    fireEvent.change(slider(), { target: { value: "40" } });
+    fireEvent.click(screen.getByRole("button", { name: "Turn off Desk lamp" }));
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+
+    expect(api.callsTo(COMMAND).map((call) => call.body)).toEqual([
+      { command: { action: "off" }, sender: { kind: "dashboard" } },
+    ]);
+  });
+
+  it("turns an off light on at the slider's brightness", async () => {
+    const { api } = renderLamp("off");
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    fireEvent.change(slider(), { target: { value: "30" } });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+
+    await waitFor(() =>
+      expect(api.callsTo(COMMAND)[0]?.body).toEqual({
+        command: { action: "on", brightness_pct: 30 },
+        sender: { kind: "dashboard" },
+      }),
+    );
+  });
+
+  it("shows no slider while control is off", async () => {
+    renderLamp("on", fixtures.controlOff);
+    await within(byId("monitored")).findByRole("heading", { name: "Desk lamp" });
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    expect(screen.queryByRole("slider")).toBeNull();
+  });
+
+  it("shows the recorded brightness as a percent", async () => {
+    renderDashboard({
+      "GET /api/monitored": {
+        entities: [
+          {
+            ...fixtures.monitoredLight(fixtures.desk, "on"),
+            baseline: { ...fixtures.monitoredLight(fixtures.desk, "on").baseline, brightness: 102 },
+          },
+        ],
+      },
+    });
+
+    expect(await within(byId("monitored")).findByText("On · 40%")).toBeInTheDocument();
+  });
+
+  it("leads from an empty Home to Setup", async () => {
+    const { user } = renderDashboard({ "GET /api/monitored": fixtures.emptyMonitored });
+
+    await user.click(await screen.findByRole("button", { name: "Choose lights" }));
+
+    expect(tab("Setup")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("warns on every tab while recording is interrupted and links to History", async () => {
+    const { user } = renderDashboard({ "GET /api/coverage": fixtures.coverage });
+
+    await waitFor(() =>
+      expect(byId("interrupted")).toHaveTextContent("Recording is interrupted since"),
+    );
+    await user.click(screen.getByRole("button", { name: "See history" }));
+    expect(tab("History")).toHaveAttribute("aria-selected", "true");
+
+    api.reply("GET /api/coverage", fixtures.emptyCoverage);
+    await nextPoll();
+    await waitFor(() => expect(document.getElementById("interrupted")).toBeNull());
+  });
+
+  it("names each change by its light and says it in words", async () => {
+    startOn("history");
+    renderDashboard({
+      "GET /api/events": {
+        ...fixtures.eventsPage2,
+        events: [fixtures.change3, fixtures.change2, fixtures.colorChange],
+      },
+    });
+
+    const timeline = within(byId("timeline"));
+    // 150 of 255 is 59%.
+    expect(await timeline.findByText("turned on at 59%")).toBeInTheDocument();
+    expect(timeline.getByText("turned off")).toBeInTheDocument();
+    expect(timeline.getByText("color changed")).toBeInTheDocument();
+    expect(timeline.getAllByText("Desk lamp")).toHaveLength(3);
   });
 });

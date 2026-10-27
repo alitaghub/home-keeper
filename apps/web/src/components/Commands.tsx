@@ -1,5 +1,5 @@
 import type { Schemas } from "../api/client";
-import { date } from "../format";
+import { date, time } from "../format";
 
 type CommandRecord = Schemas["CommandRecord"];
 
@@ -48,20 +48,27 @@ export function Commands({
   onMore: () => void;
 }) {
   return (
-    <div id="commands">
-      <h3>Light commands</h3>
+    <div id="commands" className="rows">
       {commands && !commands.length && <p className="empty">No light commands yet.</p>}
       {commands?.map((command) => (
-        <article key={command.id} className="command">
-          <strong>{names.get(command.entity_id) ?? command.entity_id}</strong>
-          <span className="command-action">{actionText(command.command)}</span>
-          <span className={`command-outcome ${command.outcome}`}>
-            {outcomeText[command.outcome]}
-          </span>
-          <small>{senderText(command.sender)}</small>
-          <small>{date(command.sent_at)}</small>
+        <article key={command.id} className="row command">
+          <div className="line">
+            <span className="row-main">
+              <strong>{names.get(command.entity_id) ?? command.entity_id}</strong>{" "}
+              <span className="command-action">{actionText(command.command)}</span>
+              {" · "}
+              <span className={`command-outcome ${command.outcome}`}>
+                {outcomeText[command.outcome]}
+              </span>
+              {" · "}
+              <small>{senderText(command.sender)}</small>
+            </span>
+            <time dateTime={command.sent_at} title={date(command.sent_at)}>
+              {time(command.sent_at)}
+            </time>
+          </div>
           {command.event_id !== null && (
-            <small className="command-evidence">{`Evidence ID: ${command.event_id}`}</small>
+            <small className="row-sub command-evidence">{`Evidence ID: ${command.event_id}`}</small>
           )}
         </article>
       ))}
