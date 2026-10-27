@@ -22,6 +22,8 @@ FAKE_URL = f"http://127.0.0.1:{FAKE_PORT}"
 HOME_KEEPER_URL = f"http://127.0.0.1:{HOME_KEEPER_PORT}"
 AGENT_URL = f"http://127.0.0.1:{AGENT_PORT}"
 TIMEOUT = 90
+LIGHT = "light.hue_desk"
+CONTROL_USER = 101
 TOKEN = "123456:synthetic-telegram-token"
 
 
@@ -43,6 +45,22 @@ class SentMessage(BaseModel):
 
 class Selection(BaseModel):
     entity_ids: list[str]
+
+
+class Sender(BaseModel):
+    kind: str
+    id: int | None = None
+    name: str | None = None
+
+
+class Command(BaseModel):
+    outcome: str
+    entity_id: str
+    sender: Sender
+
+
+class Commands(BaseModel):
+    commands: list[Command]
 
 
 class ComposeVolume(BaseModel):
@@ -116,6 +134,39 @@ def post_text(
     ).raise_for_status()
 
 
+def light_state(keeper: httpx.Client) -> str | None:
+    for entry in keeper.get("/api/monitored").raise_for_status().json()["entities"]:
+        if entry["id"] == LIGHT and entry["baseline"]:
+            return entry["baseline"]["state"]
+    return None
+
+
+def approve_light_command(client: httpx.Client, keeper: httpx.Client, first_update: int) -> None:
+    """Ask for the opposite of the light's state until a card appears, then tap Approve.
+
+    A demo replay phase can make the agent's pre-check refuse for a moment ("Not sent"), so a
+    refused ask is retried instead of failing the proof.
+    """
+    wait_until("control on", lambda: keeper.get("/api/control").json()["state"] == "on")
+    wait_until("a baseline for the light", lambda: light_state(keeper) in ("on", "off"))
+    for update_id in range(first_update, first_update + 40, 2):
+        verb = "turn_off" if light_state(keeper) == "on" else "turn_on"
+        known = len(sent(client))
+        post_text(client, update_id, f"{verb} {LIGHT}", user=CONTROL_USER)
+        wait_until(
+            "a light card or a refusal",
+            lambda known=known: any(m.chat_id == CONTROL_USER for m in sent(client)[known:]),
+        )
+        card = next(m for m in sent(client)[known:] if m.chat_id == CONTROL_USER)
+        if card.reply_markup.inline_keyboard:
+            assert card.text.splitlines()[0] == f"{verb.replace('_', ' ').capitalize()} {LIGHT}"
+            click(client, update_id + 1, card, "Approve")
+            wait_text(client, "(observed)", user=CONTROL_USER)
+            return
+        time.sleep(1)
+    raise AssertionError("The agent never offered a light command card")
+
+
 def click(
     client: httpx.Client,
     update_id: int,
@@ -170,6 +221,7 @@ def check_profiles() -> None:
                 assert set(bot.environment) == {
                     "TELEGRAM_BOT_TOKEN",
                     "TELEGRAM_ALLOWED_USER_IDS",
+                    "TELEGRAM_CONTROL_USER_IDS",
                 }
                 assert [volume.source for volume in bot.volumes] == ["telegram-state"]
                 assert bot.restart == "unless-stopped"
@@ -197,6 +249,7 @@ def main() -> None:
     environment:
       TELEGRAM_BOT_TOKEN: {TOKEN}
       TELEGRAM_ALLOWED_USER_IDS: '101,202'
+      TELEGRAM_CONTROL_USER_IDS: '101'
       TELEGRAM_API_URL: http://fake-telegram:8080
     depends_on:
       fake-telegram:
@@ -237,6 +290,8 @@ def main() -> None:
             "agent",
             "--profile",
             "telegram",
+            "--profile",
+            "control",
         ]
 
         def compose(*args: str, check: bool = True) -> str:
@@ -329,6 +384,17 @@ def main() -> None:
                     )
                     == 1
                 )
+                with httpx.Client(base_url=HOME_KEEPER_URL, timeout=10, trust_env=False) as keeper:
+                    # One approved light command, from the control user, on the `control` profile.
+                    approve_light_command(client, keeper, 30)
+                    [recorded] = Commands.model_validate_json(
+                        keeper.get("/api/commands").raise_for_status().content
+                    ).commands
+                    assert recorded.outcome == "observed"
+                    assert recorded.entity_id == LIGHT
+                    assert recorded.sender == Sender(
+                        kind="telegram", id=CONTROL_USER, name="Family"
+                    )
             logs = compose("logs", "--no-color", "telegram")
             assert TOKEN not in logs
             print(
@@ -338,7 +404,8 @@ def main() -> None:
                         "seconds": round(time.monotonic() - started, 2),
                         "proved": "real bot and pinned agent HTTP, private family threads, "
                         "follow-ups, approvals/rejection, pending restart, stale button, "
-                        "reset, bot restart, redelivery, no token logs",
+                        "reset, bot restart, redelivery, one approved light command by the "
+                        "control user, no token logs",
                     }
                 )
             )
