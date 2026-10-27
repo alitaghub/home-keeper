@@ -42,6 +42,7 @@ const defaults: Replies = {
   "GET /api/health": fixtures.health,
   "GET /api/coverage": fixtures.emptyCoverage,
   "GET /api/events": fixtures.emptyEvents,
+  "GET /api/commands": fixtures.emptyCommands,
   "POST /api/discovery/refresh": fixtures.discoveryRefresh,
   "PUT /api/selection/{entity_id}": fixtures.emptySelection,
 };
