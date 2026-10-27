@@ -40,19 +40,6 @@ const outcomeMessages: Record<
 // How long a command's result stays on screen, unless another command replaces it.
 const COMMAND_NOTICE_MS = 15000;
 
-// The API refuses a command it will not send with 409 and a fixed
-// `{"detail": {"code", "message"}}`; schema.d.ts does not describe it.
-function refusalMessage(body: unknown): string | null {
-  if (typeof body !== "object" || body === null || !("detail" in body)) return null;
-  const { detail } = body;
-  return typeof detail === "object" &&
-    detail !== null &&
-    "message" in detail &&
-    typeof detail.message === "string"
-    ? detail.message
-    : null;
-}
-
 type CommandResult = { notice: string; reload: boolean };
 
 // Matches `unwrap`, so a dropped connection reads like any other failed request.
@@ -71,8 +58,11 @@ async function sendLightCommand(
   if (response.ok && data) {
     return { notice: outcomeMessages[data.outcome](name, action), reload: true };
   }
-  const refusal = response.status === 409 ? refusalMessage(error) : null;
-  return refusal ? { notice: `${name}: ${refusal}`, reload: true } : commandFailed;
+  // A 409 carries CommandRefused; a 422 carries a list of validation errors.
+  const detail = response.status === 409 ? error?.detail : undefined;
+  return detail && !Array.isArray(detail)
+    ? { notice: `${name}: ${detail.message}`, reload: true }
+    : commandFailed;
 }
 
 type Snapshot = {

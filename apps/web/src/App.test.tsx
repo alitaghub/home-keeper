@@ -940,6 +940,44 @@ describe("light control from the dashboard", () => {
     expect(screen.getByText("READ ONLY")).toBeInTheDocument();
   });
 
+  it("keeps the newer light state when an older poll's monitored answer arrives late", async () => {
+    const { api } = renderControl({ state: "off" });
+    await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+
+    // Delay one already-answered monitored response so it lands after a newer poll.
+    const forward = globalThis.fetch;
+    let claimed = false;
+    let captured = false;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const delay = !claimed && new URL(request.url).pathname === "/api/monitored";
+      if (delay) claimed = true;
+      const response = await forward(request);
+      if (delay) {
+        captured = true;
+        await gate;
+      }
+      return response;
+    });
+
+    await nextPoll();
+    expect(captured).toBe(true);
+    api.reply("GET /api/monitored", {
+      entities: [fixtures.monitoredLight(fixtures.desk, "on")],
+    });
+    await nextPoll();
+    await monitored().findByRole("button", { name: "Turn off Desk lamp" });
+
+    await act(async () => release());
+
+    expect(monitored().getByRole("button", { name: "Turn off Desk lamp" })).toBeInTheDocument();
+    expect(byId("message").textContent).not.toBe(UNREACHABLE);
+  });
+
   it("shows the generic error for a dropped command request, then lets a retry work", async () => {
     const { api, user } = renderControl({ state: "off" });
     const button = await monitored().findByRole("button", { name: "Turn on Desk lamp" });
