@@ -1,6 +1,6 @@
 import json
 from collections.abc import Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -27,6 +27,7 @@ from telegram_support import (
 )
 
 from home_keeper_agent.telegram import (
+    REMINDER,
     STALE,
     UNCERTAIN,
     FatalTelegramError,
@@ -51,11 +52,13 @@ def family_settings(
     tmp_path: Path,
     *,
     allowed_user_ids: frozenset[int] = frozenset({11}),
+    control_user_ids: frozenset[int] = frozenset(),
     bot_token: SecretStr | None = None,
 ) -> Settings:
     return Settings(
         bot_token=bot_token or SecretStr("123:secret"),
         allowed_user_ids=allowed_user_ids,
+        control_user_ids=control_user_ids,
         state_path=str(tmp_path / "bot.sqlite3"),
     )
 
@@ -1130,36 +1133,291 @@ def test_failure_to_remove_resolved_keyboard_still_resumes_approved_graph(
     assert "Approved." in [body["text"] for body in telegram.bodies()]
 
 
-@pytest.mark.parametrize(
-    ("name", "args", "state"),
-    [
-        ("turn_off_light", {"entity_id": "bulb-a"}, "on"),
-        ("turn_on_light", {"entity_id": "bulb-a", "brightness_percent": 30}, "off"),
-    ],
-)
-def test_light_command_card_is_unsupported_in_telegram_and_sends_nothing(
-    make_bot: BotFactory, tmp_path: Path, name: str, args: dict[str, object], state: str
-) -> None:
-    telegram = FakeTelegram()
-    keeper = FakeKeeper(
+def light_keeper(state: str = "on") -> FakeKeeper:
+    return FakeKeeper(
         {
             "/api/monitored": lights_response(state),
             "/api/control": control_response("on"),
             "/api/lights/bulb-a/command": command_response("observed"),
         }
     )
-    request = AIMessage("", tool_calls=[{"name": name, "args": args, "id": "light"}])
-    agent = GraphAegra([request, AIMessage("Done.")], keeper)
+
+
+def light_call(name: str, args: dict[str, object]) -> AIMessage:
+    return AIMessage("", tool_calls=[{"name": name, "args": args, "id": "light"}])
+
+
+NOT_ALLOWED = "You are not allowed to control lights. Nothing was changed."
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "state", "first_line"),
+    [
+        ("turn_off_light", {"entity_id": "bulb-a"}, "on", "Turn off bulb-a"),
+        ("turn_on_light", {"entity_id": "bulb-a"}, "off", "Turn on bulb-a"),
+        (
+            "turn_on_light",
+            {"entity_id": "bulb-a", "brightness_percent": 30},
+            "off",
+            "Turn on bulb-a at 30%",
+        ),
+    ],
+)
+def test_light_command_cards_say_what_will_happen(
+    make_bot: BotFactory,
+    tmp_path: Path,
+    *,
+    name: str,
+    args: dict[str, object],
+    state: str,
+    first_line: str,
+) -> None:
+    telegram = FakeTelegram()
+    keeper = light_keeper(state)
+    agent = GraphAegra([light_call(name, args), AIMessage("Done.")], keeper)
+    bot = make_bot(
+        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(incoming(1, 11, "Change the light"))
+
+    [card] = telegram.bodies()
+    assert card["text"].splitlines()[0] == first_line
+    assert [b["text"] for b in card["reply_markup"]["inline_keyboard"][0]] == ["Approve", "Reject"]
+    assert command_requests(keeper) == []
+
+
+def test_every_run_and_resume_carries_the_sender_and_whether_they_may_control(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    keeper = light_keeper()
+    agent = GraphAegra(
+        [light_call("turn_off_light", {"entity_id": "bulb-a"}), AIMessage("Done.")], keeper
+    )
+    bot = make_bot(
+        family_settings(
+            tmp_path, allowed_user_ids=frozenset({11, 22}), control_user_ids=frozenset({11})
+        ),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(incoming(1, 11, "Turn it off", first_name="Ali", last_name="Rezaei"))
+    data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    bot.handle_update(clicked(2, 11, data, 101, first_name="Ali", last_name="Rezaei"))
+    bot.handle_update(incoming(3, 22, "How long was it on?", first_name="Sam"))
+    bot.handle_update(incoming(4, 22, "Again"))
+
+    ali = {"kind": "telegram", "id": 11, "name": "Ali Rezaei"}
+    assert [(c["sender"], c["may_control"]) for c in agent.configurables] == [
+        (ali, True),
+        (ali, True),
+        ({"kind": "telegram", "id": 22, "name": "Sam"}, False),
+        # Telegram sends no name for this user: the numeric ID stands in.
+        ({"kind": "telegram", "id": 22, "name": "22"}, False),
+    ]
+
+
+def test_control_user_approval_sends_one_command_attributed_to_them(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    keeper = light_keeper()
+    agent = GraphAegra(
+        [light_call("turn_off_light", {"entity_id": "bulb-a"}), AIMessage("The light is off.")],
+        keeper,
+    )
+    bot = make_bot(
+        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(incoming(1, 11, "Turn it off", first_name="Ali"))
+    data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    bot.handle_update(clicked(2, 11, data, 101, first_name="Ali"))
+
+    [command] = command_requests(keeper)
+    assert json.loads(command.content) == {
+        "command": {"action": "off"},
+        "sender": {"kind": "telegram", "id": 11, "name": "Ali"},
+    }
+    assert telegram.bodies()[-1]["text"] == "The light is off."
+
+
+def test_allowed_user_without_control_gets_no_card_and_no_command(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    keeper = light_keeper()
+    agent = GraphAegra(
+        [light_call("turn_off_light", {"entity_id": "bulb-a"}), AIMessage("Not allowed.")], keeper
+    )
     bot = make_bot(
         family_settings(tmp_path),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
 
-    bot.handle_update(incoming(1, 11, "Turn the light off"))
+    bot.handle_update(incoming(1, 11, "Turn it off"))
+
+    [reply] = telegram.bodies()
+    assert reply["text"] == "Not allowed."
+    assert "reply_markup" not in reply
+    assert command_requests(keeper) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "state"),
+    [
+        ("turn_off_light", {"entity_id": "bulb-a"}, "on"),
+        ("turn_on_light", {"entity_id": "bulb-a"}, "off"),
+        ("turn_on_light", {"entity_id": "bulb-a", "brightness_percent": 30}, "off"),
+    ],
+)
+def test_approve_by_a_user_who_lost_control_is_rejected_and_the_chat_continues(
+    make_bot: BotFactory, tmp_path: Path, name: str, args: dict[str, object], state: str
+) -> None:
+    telegram = FakeTelegram()
+    keeper = light_keeper(state)
+    agent = GraphAegra(
+        [
+            light_call(name, args),
+            AIMessage("Nothing changed."),
+            AIMessage("It was on for two hours."),
+        ],
+        keeper,
+    )
+    bot = make_bot(
+        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+    bot.handle_update(incoming(1, 11, "Turn it off"))
+    data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     bot.close()
+    # The operator removes the user from the control list while the card is open.
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(clicked(2, 11, data, 101))
 
     assert command_requests(keeper) == []
-    [reply] = telegram.bodies()
-    assert "Unsupported approval" in reply["text"]
-    assert "reply_markup" not in reply
+    assert [c["may_control"] for c in agent.configurables] == [True, False]
+    resume = json.loads(agent.submissions()[-1].content)
+    assert resume["command"]["resume"] == {"decisions": [{"type": "reject"}]}
+    texts = [body["text"] for body in telegram.bodies()]
+    assert NOT_ALLOWED in texts
+    assert "Nothing changed." in texts
+
+    bot.handle_update(incoming(3, 11, "How long was it on?"))
+
+    assert telegram.bodies()[-1]["text"] == "It was on for two hours."
+    assert REMINDER not in [body["text"] for body in telegram.bodies()]
+    assert command_requests(keeper) == []
+
+
+def test_failed_refusal_notice_still_resumes_the_rejected_approval(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    keeper = light_keeper()
+    agent = GraphAegra(
+        [
+            light_call("turn_off_light", {"entity_id": "bulb-a"}),
+            AIMessage("Nothing changed."),
+            AIMessage("It was on for two hours."),
+        ],
+        keeper,
+    )
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if (
+            request.url.path.endswith("/sendMessage")
+            and json.loads(request.content).get("text") == NOT_ALLOWED
+        ):
+            telegram.requests.append(request)
+            return httpx.Response(500, json={"ok": False, "error_code": 500})
+        return telegram.handle(request)
+
+    bot = make_bot(
+        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+    bot.handle_update(incoming(1, 11, "Turn it off"))
+    data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    bot.close()
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(clicked(2, 11, data, 101))
+
+    assert len(agent.submissions()) == 2, "rejected approval was never resumed"
+    bot.handle_update(incoming(3, 11, "How long was it on?"))
+    assert telegram.bodies()[-1]["text"] == "It was on for two hours."
+    assert REMINDER not in [body["text"] for body in telegram.bodies()]
+
+
+@pytest.mark.parametrize("error_code", [401, 404])
+def test_fatal_error_on_the_refusal_notice_still_resumes_the_rejected_approval(
+    make_bot: BotFactory, tmp_path: Path, error_code: int
+) -> None:
+    telegram = FakeTelegram()
+    keeper = light_keeper()
+    agent = GraphAegra(
+        [
+            light_call("turn_off_light", {"entity_id": "bulb-a"}),
+            AIMessage("Nothing changed."),
+            AIMessage("It was on for two hours."),
+        ],
+        keeper,
+    )
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if (
+            request.url.path.endswith("/sendMessage")
+            and json.loads(request.content).get("text") == NOT_ALLOWED
+        ):
+            return httpx.Response(error_code, json={"ok": False, "error_code": error_code})
+        return telegram.handle(request)
+
+    bot = make_bot(
+        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+    bot.handle_update(incoming(1, 11, "Turn it off"))
+    data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    bot.close()
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        agent_client=agent.client(),
+    )
+
+    # The worker may stop on the fatal error, but not before the reject reaches the agent.
+    with suppress(FatalTelegramError):
+        bot.handle_update(clicked(2, 11, data, 101))
+    bot.close()
+    assert len(agent.submissions()) == 2, "rejected approval was never resumed"
+
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+    bot.handle_update(incoming(3, 11, "How long was it on?"))
+
+    assert telegram.bodies()[-1]["text"] == "It was on for two hours."
+    assert REMINDER not in [body["text"] for body in telegram.bodies()]
+    assert command_requests(keeper) == []

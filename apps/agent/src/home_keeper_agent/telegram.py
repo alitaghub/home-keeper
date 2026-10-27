@@ -15,7 +15,7 @@ from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
 from types import FrameType
-from typing import Annotated, Literal, Self, TypedDict, assert_never
+from typing import Annotated, Literal, Self, TypedDict
 from uuid import uuid4
 
 import httpx
@@ -27,6 +27,7 @@ from pydantic import (
     SecretStr,
     TypeAdapter,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -35,6 +36,17 @@ CONFIGURATION_ERROR = (
     "Set TELEGRAM_BOT_TOKEN and a comma-separated TELEGRAM_ALLOWED_USER_IDS "
     "containing positive numeric user IDs."
 )
+CONTROL_CONFIGURATION_ERROR = (
+    "TELEGRAM_CONTROL_USER_IDS must be empty or comma-separated positive numeric user IDs "
+    "that are also in TELEGRAM_ALLOWED_USER_IDS."
+)
+CONTROL_FIELD = "control_user_ids"
+# The keeper stores at most this many characters of a sender's name.
+DISPLAY_NAME_LIMIT = 256
+
+
+def _ids(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",")]
 
 
 class SettingsError(ValueError):
@@ -44,6 +56,8 @@ class SettingsError(ValueError):
 class Settings(BaseModel):
     bot_token: SecretStr
     allowed_user_ids: frozenset[int] = Field(min_length=1)
+    # Who may approve light commands; empty means nobody may switch lights from Telegram.
+    control_user_ids: frozenset[int] = frozenset()
     agent_url: str = "http://agent:2026"
     state_path: str = "/state/telegram.sqlite3"
     api_url: str = "https://api.telegram.org"
@@ -62,15 +76,25 @@ class Settings(BaseModel):
             raise ValueError("TELEGRAM_ALLOWED_USER_IDS must contain positive numeric IDs.")
         return value
 
+    @field_validator("control_user_ids")
+    @classmethod
+    def control_within_allowed(cls, value: frozenset[int], info: ValidationInfo) -> frozenset[int]:
+        allowed = info.data.get("allowed_user_ids")
+        # An invalid allowlist reports its own error; there is nothing to compare against.
+        if isinstance(allowed, frozenset) and not value <= allowed:
+            raise ValueError("TELEGRAM_CONTROL_USER_IDS must be allowed user IDs.")
+        return value
+
     @classmethod
     def from_env(cls) -> Self:
         try:
             values: dict[str, object] = {
                 "bot_token": os.environ["TELEGRAM_BOT_TOKEN"],
-                "allowed_user_ids": [
-                    value.strip() for value in os.environ["TELEGRAM_ALLOWED_USER_IDS"].split(",")
-                ],
+                "allowed_user_ids": _ids(os.environ["TELEGRAM_ALLOWED_USER_IDS"]),
             }
+            control = os.environ.get("TELEGRAM_CONTROL_USER_IDS", "")
+            if control.strip():
+                values["control_user_ids"] = _ids(control)
             for field, variable in (
                 ("agent_url", "TELEGRAM_AGENT_URL"),
                 ("state_path", "TELEGRAM_STATE_PATH"),
@@ -79,6 +103,10 @@ class Settings(BaseModel):
                 if variable in os.environ:
                     values[field] = os.environ[variable]
             return cls.model_validate(values)
+        except ValidationError as error:
+            if all(issue["loc"][:1] == (CONTROL_FIELD,) for issue in error.errors()):
+                raise SettingsError(CONTROL_CONFIGURATION_ERROR) from None
+            raise SettingsError(CONFIGURATION_ERROR) from None
         except (KeyError, ValueError):
             raise SettingsError(CONFIGURATION_ERROR) from None
 
@@ -89,6 +117,13 @@ class Wire(BaseModel):
 
 class User(Wire):
     id: int = Field(gt=0)
+    first_name: str | None = None
+    last_name: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        name = " ".join(part for part in (self.first_name, self.last_name) if part).strip()
+        return (name or str(self.id))[:DISPLAY_NAME_LIMIT]
 
 
 class Chat(Wire):
@@ -146,16 +181,44 @@ class Values(Wire):
     messages: list[AgentMessage] = Field(default_factory=list)
 
 
-class ActionArguments(Wire):
+class EntityArguments(Wire):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     entity_id: str
 
 
-class Action(Wire):
-    name: Literal["monitor_light", "stop_monitoring"]
-    args: ActionArguments
+class TurnOnArguments(EntityArguments):
+    brightness_percent: int | None = None
+
+
+class EntityAction(Wire):
+    name: Literal["monitor_light", "stop_monitoring", "turn_off_light"]
+    args: EntityArguments
     description: str = ""
+
+
+class TurnOnAction(Wire):
+    name: Literal["turn_on_light"]
+    args: TurnOnArguments
+    description: str = ""
+
+
+type Action = Annotated[EntityAction | TurnOnAction, Field(discriminator="name")]
+LIGHT_ACTIONS = frozenset({"turn_on_light", "turn_off_light"})
+
+
+def proposal_text(action: Action) -> str:
+    match action.name:
+        case "monitor_light":
+            return f"Start monitoring {action.args.entity_id}?"
+        case "stop_monitoring":
+            return f"Stop monitoring {action.args.entity_id}?"
+        case "turn_off_light":
+            return f"Turn off {action.args.entity_id}"
+        case "turn_on_light":
+            brightness = action.args.brightness_percent
+            suffix = "" if brightness is None else f" at {brightness}%"
+            return f"Turn on {action.args.entity_id}{suffix}"
 
 
 class Review(Wire):
@@ -258,7 +321,8 @@ class PollError(TransportError):
 
 
 HELP = (
-    "Ask a text question about your home. Monitoring changes need Approve or Reject. "
+    "Ask a text question about your home. Monitoring and light changes need Approve or Reject. "
+    "Only people on the control list can approve light changes. "
     "Use /new to start a fresh conversation; old history is kept."
 )
 UNCERTAIN = (
@@ -269,6 +333,7 @@ FAILURE = "The agent could not answer. Please try a new question or use /new."
 REMINDER = "Choose Approve or Reject on the pending request, or use /new."
 STALE = "This approval is no longer available. Use the current buttons or /new."
 UNSUPPORTED_APPROVAL = "Unsupported approval request. Use /new or browser chat."
+CONTROL_REFUSED = "You are not allowed to control lights. Nothing was changed."
 MESSAGE_LIMIT = 4096
 POLL_TIMEOUT = 25
 # Leave headroom for network delivery after Telegram completes its long poll.
@@ -594,7 +659,7 @@ class TelegramBot:
             return
         before = self._state(conversation)
         self._submit(
-            user_id,
+            message.sender,
             message.chat.id,
             conversation,
             before,
@@ -609,7 +674,7 @@ class TelegramBot:
 
     def _submit(
         self,
-        user_id: int,
+        user: User,
         chat_id: int,
         conversation: Conversation,
         before: State,
@@ -617,13 +682,18 @@ class TelegramBot:
     ) -> None:
         conversation = SubmittingConversation(thread_id=conversation.thread_id)
         # Persist intent before either a new run or an approval can reach the agent.
-        self._save(user_id, conversation)
+        self._save(user.id, conversation)
+        # The agent's tools read who asks and whether they may switch lights from here.
+        configurable: dict[str, JsonValue] = {
+            "sender": {"kind": "telegram", "id": user.id, "name": user.display_name},
+            "may_control": user.id in self.settings.control_user_ids,
+        }
         run_output = self._agent(
             "POST",
             f"/threads/{conversation.thread_id}/runs/wait",
-            {"assistant_id": "agent", **request},
+            {"assistant_id": "agent", "config": {"configurable": configurable}, **request},
         )
-        self._finish(user_id, chat_id, conversation, before, run_output)
+        self._finish(user.id, chat_id, conversation, before, run_output)
 
     @staticmethod
     def _interrupts(state: State) -> list[Interrupt]:
@@ -658,14 +728,7 @@ class TelegramBot:
             conversation = PendingConversation(thread_id=conversation.thread_id, pending=pending)
             self._save(user_id, conversation)
             for index, action in enumerate(approval.action_requests):
-                match action.name:
-                    case "monitor_light":
-                        verb = "Start"
-                    case "stop_monitoring":
-                        verb = "Stop"
-                    case _:
-                        assert_never(action.name)
-                text = f"{verb} monitoring {action.args.entity_id}?"
+                text = proposal_text(action)
                 if action.description:
                     text += "\n" + action.description
                 buttons: InlineKeyboard = [
@@ -703,6 +766,14 @@ class TelegramBot:
             return
         index, decision = reference
         pending = conversation.pending
+        refused = (
+            decision == "approve"
+            and pending.approval.action_requests[index].name in LIGHT_ACTIONS
+            and callback.sender.id not in self.settings.control_user_ids
+        )
+        if refused:
+            # Rejecting resumes the run without sending anything, so the thread is not stuck.
+            decision = "reject"
         before = self._state(conversation)
         interrupts = self._interrupts(before)
         if (
@@ -724,19 +795,22 @@ class TelegramBot:
                 },
             )
         )
-        if any(value is None for value in pending.decisions):
-            return
-        self._submit(
-            callback.sender.id,
-            message.chat.id,
-            conversation,
-            before,
-            {
-                "command": {
-                    "resume": {"decisions": [{"type": value} for value in pending.decisions]}
-                }
-            },
-        )
+        if all(value is not None for value in pending.decisions):
+            self._submit(
+                callback.sender,
+                message.chat.id,
+                conversation,
+                before,
+                {
+                    "command": {
+                        "resume": {"decisions": [{"type": value} for value in pending.decisions]}
+                    }
+                },
+            )
+        if refused:
+            # Sent after the resume: even a fatal Telegram error here cannot leave the saved
+            # reject unsubmitted. A fatal error still stops the worker afterwards.
+            deliver_best_effort(lambda: self._send(message.chat.id, CONTROL_REFUSED))
 
     def poll_once(self) -> None:
         offset = self.db.execute("SELECT offset FROM progress WHERE id=1").fetchone()[0]
@@ -782,8 +856,8 @@ def main() -> None:
     except (TransportError, FatalTelegramError) as exc:
         logging.error("Telegram bot stopped: %s", exc)
         raise SystemExit(1) from None
-    except SettingsError:
-        logging.error("Telegram bot stopped: %s", CONFIGURATION_ERROR)
+    except SettingsError as exc:
+        logging.error("Telegram bot stopped: %s", exc)
         raise SystemExit(1) from None
     except (sqlite3.Error, OSError, ValidationError):
         logging.error(

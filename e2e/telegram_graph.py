@@ -52,6 +52,17 @@ class TelegramProofModel(FakeMessagesListChatModel):
                     {"name": name, "args": {"entity_id": entity}, "id": f"call-{len(questions)}"}
                 ],
             )
+        if verb in {"turn_on", "turn_off"} and entity:
+            return AIMessage(
+                "",
+                tool_calls=[
+                    {
+                        "name": f"{verb}_light",
+                        "args": {"entity_id": entity},
+                        "id": f"call-{len(questions)}",
+                    }
+                ],
+            )
         return AIMessage(f"Reply {len(questions)}: {text}")
 
 

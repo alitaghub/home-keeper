@@ -104,14 +104,31 @@ class FakeTelegram:
         ]
 
 
+def telegram_user(
+    user_id: int, first_name: str | None = None, last_name: str | None = None
+) -> dict[str, object]:
+    user: dict[str, object] = {"id": user_id}
+    if first_name is not None:
+        user["first_name"] = first_name
+    if last_name is not None:
+        user["last_name"] = last_name
+    return user
+
+
 def incoming(
-    update_id: int, user_id: int, text: str, *, kind: str = "private"
+    update_id: int,
+    user_id: int,
+    text: str,
+    *,
+    kind: str = "private",
+    first_name: str | None = None,
+    last_name: str | None = None,
 ) -> dict[str, object]:
     return {
         "update_id": update_id,
         "message": {
             "message_id": update_id,
-            "from": {"id": user_id},
+            "from": telegram_user(user_id, first_name, last_name),
             "chat": {"id": user_id, "type": kind},
             "text": text,
         },
@@ -119,13 +136,20 @@ def incoming(
 
 
 def clicked(
-    update_id: int, user_id: int, data: str, message_id: int, *, chat_id: int | None = None
+    update_id: int,
+    user_id: int,
+    data: str,
+    message_id: int,
+    *,
+    chat_id: int | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
 ) -> dict[str, object]:
     return {
         "update_id": update_id,
         "callback_query": {
             "id": f"callback-{update_id}",
-            "from": {"id": user_id},
+            "from": telegram_user(user_id, first_name, last_name),
             "data": data,
             "message": {
                 "message_id": message_id,
@@ -147,6 +171,8 @@ class GraphAegra:
         self.fail_next_run = False
         self.fail_after_next_run = False
         self.runs: list[dict[str, str]] = []
+        # The `config.configurable` of every run submission, in order.
+        self.configurables: list[dict[str, Any]] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
 
@@ -166,6 +192,10 @@ class GraphAegra:
                 self.fail_next_run = False
                 raise httpx.ReadTimeout("submission result unknown", request=request)
             body = json.loads(request.content)
+            configurable: dict[str, Any] = body.get("config", {}).get("configurable", {})
+            self.configurables.append(configurable)
+            # Aegra merges the request's configurable into the run's config.
+            config["configurable"] = {**configurable, "thread_id": thread_id}
             value = (
                 Command(resume=body["command"]["resume"]) if body.get("command") else body["input"]
             )

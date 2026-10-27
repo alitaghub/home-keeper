@@ -2,9 +2,9 @@
 
 The optional Telegram bot gives your family another way to talk to the existing
 Home Keeper agent. Each allowed person has a private, saved conversation.
-The bot can answer questions and propose monitoring changes. It cannot switch
-lights yet: if the agent proposes a light command, the bot answers with its
-unsupported-approval message and sends nothing.
+The bot can answer questions and propose monitoring changes. People on a
+separate control allowlist can also switch lights, after they approve each
+command; see [Switch lights](#switch-lights).
 
 ## Set up the bot
 
@@ -15,6 +15,8 @@ unsupported-approval message and sends nothing.
    ```dotenv
    TELEGRAM_BOT_TOKEN=your-bot-token
    TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
+   # Optional: who may switch lights from Telegram.
+   TELEGRAM_CONTROL_USER_IDS=123456789
    ```
 
    Use numeric Telegram user IDs, separated by commas. Names and usernames do
@@ -61,6 +63,27 @@ remove it for you.
 - While a decision is pending, choose a button or use `/new`. More questions do
   not bypass the approval. Pending approvals survive normal bot/agent restarts.
 
+## Switch lights
+
+`TELEGRAM_CONTROL_USER_IDS` lists who may switch lights from Telegram. It is
+optional. When it is unset or empty, nobody can switch a light from Telegram;
+everyone on `TELEGRAM_ALLOWED_USER_IDS` can still ask questions and change
+monitoring. Every control ID must also be an allowed ID, or the bot stops at
+startup with a message that names `TELEGRAM_CONTROL_USER_IDS`. Light commands
+also need the [`control` profile](control.md).
+
+- A person on the control list who asks "Turn on the desk light at 30 percent"
+  gets a proposal such as `Turn on light.desk at 30%` with **Approve** and
+  **Reject**. Nothing changes until they approve.
+- Home Keeper records each approved command with that person's numeric Telegram
+  ID and their Telegram name at approval time. The name is a label for the
+  record, not authentication.
+- A person who is not on the control list gets no light proposal. The agent
+  says that they are not allowed to control lights. If an old proposal still
+  reaches them, **Approve** sends nothing. The bot replies "You are not allowed
+  to control lights. Nothing was changed." and counts it as a rejection, so
+  the next question is answered normally.
+
 Telegram history is separate from browser chat and from other family members'
 conversations. Browser chat still runs at <http://127.0.0.1:3000>. Anyone who can
 reach the existing local Aegra API can still inspect threads, as described in
@@ -77,7 +100,7 @@ docker compose --profile agent --profile telegram stop telegram
 ```
 
 For the demo, add `-f compose.demo.yaml` after `docker compose`. Restart after
-changing the allowlist with `up -d --force-recreate telegram`, rather than
+changing an allowlist with `up -d --force-recreate telegram`, rather than
 `restart`: Docker must recreate the container to read changed environment
 settings. The full command is:
 
@@ -156,6 +179,10 @@ For a real-bot check after configuring credentials:
    now shows the light as monitored. Clicking again must do nothing.
 4. Ask to stop monitoring, then use `/new`. The old buttons must no longer work.
 5. Restart the bot and ask a follow-up. Confirm the current conversation remains.
+6. With the `control` profile, have a person on `TELEGRAM_CONTROL_USER_IDS`
+   ask to turn on a monitored light and approve it. Confirm the light changes
+   and [`GET /api/commands`](control.md#command-history) shows their ID and name. Have an allowed person
+   who is not on the control list ask the same; confirm no proposal appears.
 
 Record whether these steps were actually run. Automated fixture results are not
 a claim that a real Telegram bot or your configured model was tested.

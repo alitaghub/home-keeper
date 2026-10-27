@@ -104,6 +104,7 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN:
       TELEGRAM_ALLOWED_USER_IDS:
+      TELEGRAM_CONTROL_USER_IDS:
     volumes:
       - telegram-state:/state
     # Only Aegra and outbound Telegram. No Home Keeper history, HA token, or database network.
