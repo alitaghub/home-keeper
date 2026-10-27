@@ -44,9 +44,13 @@ def project_volumes(project: str) -> list[str]:
 
 
 # Exit codes of the occupancy probe. A file name never matters, even " " or a newline:
-# find prints the full path, so any entry makes its output non-empty.
+# find prints the full path, so any entry makes its output non-empty. A failing find
+# exits 2, so an unreadable volume never reads as empty.
 EMPTY, OCCUPIED = 0, 3
-PROBE = f'[ -z "$(find /volume -mindepth 1 -maxdepth 1 -print -quit)" ] || exit {OCCUPIED}'
+PROBE = (
+    "entries=$(find /volume -mindepth 1 -maxdepth 1 -print -quit) || exit 2; "
+    f'[ -z "$entries" ] || exit {OCCUPIED}'
+)
 
 
 def compose_labels(volume: str) -> tuple[str, str] | None:
@@ -54,7 +58,11 @@ def compose_labels(volume: str) -> tuple[str, str] | None:
     labels = f'{{{{index .Labels "{PROJECT_LABEL}"}}}}\t{{{{index .Labels "{VOLUME_LABEL}"}}}}'
     result = docker("volume", "inspect", "--format", labels, volume)
     if result.returncode != 0:
-        return None
+        # `volume create` succeeds on an existing name, so only a confirmed absence may
+        # skip the occupancy check.
+        if "no such volume" in result.stderr.lower():
+            return None
+        raise MigrationError(f"cannot inspect {volume}: {result.stderr.strip()}")
     project, _, name = result.stdout.rstrip("\n").partition("\t")
     return project, name
 

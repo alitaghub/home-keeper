@@ -59,7 +59,8 @@ def snapshot(volume: str) -> str:
     return in_volume(
         volume,
         "stat -c 'root %a %u:%g' /v; cd /v"
-        " && find . -type f -exec stat -c '%n %a %u:%g' {} + | sort; cat /v/*",
+        " && find . -type f -exec stat -c '%n %a %u:%g' {} + | sort"
+        " && find . -type f -exec sha256sum {} + | sort",
     )
 
 
@@ -91,6 +92,8 @@ def main() -> None:
             f"{OLD}_data",
             "echo history > /v/home.sqlite && chmod 640 /v/home.sqlite"
             " && chown 1234:1234 /v/home.sqlite"
+            # Hidden, nested state, like Home Assistant's .storage directory.
+            " && mkdir /v/.storage && echo auth > /v/.storage/auth && chmod 600 /v/.storage/auth"
             " && chown 10001:10001 /v && chmod 700 /v",
         )
         in_volume(f"{OLD}_ha-token", "echo secret-token > /v/token && chmod 600 /v/token")
@@ -106,6 +109,7 @@ def main() -> None:
             assert snapshot(f"{NEW}_{name}") == before[name], f"{name} differs after copy"
             assert snapshot(f"{OLD}_{name}") == before[name], f"source {name} changed"
         assert "640 1234:1234" in snapshot(f"{NEW}_data")
+        assert "./.storage/auth 600" in snapshot(f"{NEW}_data"), "hidden nested file lost"
         assert "root 700 10001:10001" in snapshot(f"{NEW}_data"), "root owner or mode lost"
         assert len(first.stdout.strip().splitlines()) >= 2, first.stdout
 

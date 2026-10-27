@@ -88,7 +88,6 @@ run = """
 trap 'status=$?; [ "$status" -eq 0 ] || docker compose -f compose.demo.yaml --profile agent logs --no-color > compose-logs.txt; docker compose -f compose.demo.yaml --profile agent down' EXIT
 docker compose config --quiet
 docker compose --profile agent config --quiet
-# Both proofs need the demo project down: one starts it and expects it to fail.
 uv run python e2e/renamed_settings_smoke.py
 uv run python e2e/migrate_volumes_smoke.py
 docker compose -f compose.demo.yaml up --build --wait
