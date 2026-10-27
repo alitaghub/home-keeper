@@ -1,0 +1,19 @@
+{
+  "status": 200,
+  "body": {
+    "command": {
+      "action": "on",
+      "brightness_pct": 30
+    },
+    "entity_id": "bulb-a",
+    "event_id": "after-send",
+    "id": "<uuid-1>",
+    "outcome": "observed",
+    "sender": {
+      "id": 424242,
+      "kind": "telegram",
+      "name": "Ali <b>Telegram</b>"
+    },
+    "sent_at": "2026-10-12T10:00:01+00:00"
+  }
+}

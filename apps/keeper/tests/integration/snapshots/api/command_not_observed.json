@@ -1,0 +1,16 @@
+{
+  "status": 200,
+  "body": {
+    "command": {
+      "action": "off"
+    },
+    "entity_id": "bulb-a",
+    "event_id": null,
+    "id": "<uuid-1>",
+    "outcome": "not_observed",
+    "sender": {
+      "kind": "dashboard"
+    },
+    "sent_at": "2026-10-12T10:00:03+00:00"
+  }
+}

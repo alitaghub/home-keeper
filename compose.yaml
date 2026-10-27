@@ -1,7 +1,8 @@
 # Home Keeper with a bundled Home Assistant: `docker compose up --build --wait`.
 name: home-keeper
 # The demo lives in compose.demo.yaml; your own Home Assistant uses compose.external.yaml.
-# Add `--profile agent` to also start the chat agent (compose.agent.yaml).
+# Add `--profile agent` to also start the chat agent (compose.agent.yaml), and
+# `--profile control` to let the API switch monitored lights.
 include:
   - compose.agent.yaml
 services:
@@ -15,7 +16,8 @@ services:
     networks: [home-assistant]
     security_opt: [no-new-privileges:true]
     stop_grace_period: 60s
-  # Onboards Home Assistant once and stores the collector's token. Exits when done.
+  # Onboards Home Assistant once and stores the collector's and the controller's tokens.
+  # Exits when done.
   ha-setup:
     build: .
     entrypoint: [python, -m, home_keeper.ha_setup]
@@ -23,9 +25,11 @@ services:
     environment:
       HOME_KEEPER_HA_URL: http://homeassistant:8123
       HOME_KEEPER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
+      HOME_KEEPER_HA_CONTROL_TOKEN_FILE: /ha-control-token/token
     volumes:
       - ha-token:/ha-token
       - ha-owner:/ha-owner
+      - ha-control-token:/ha-control-token
     networks: [home-assistant]
     read_only: true
     tmpfs: [/tmp]
@@ -46,10 +50,12 @@ services:
       HOME_KEEPER_RETENTION_DAYS: ${HOME_KEEPER_RETENTION_DAYS:-30}
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
+      HOME_KEEPER_CONTROLLER_URL: http://controller:8080
     volumes:
       - data:/data
       - service-secret:/secrets
-    networks: [dashboard, collection]
+    # `control` reaches the controller. Never the home-assistant network.
+    networks: [dashboard, collection, control]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -80,11 +86,40 @@ services:
         condition: service_healthy
       ha-setup:
         condition: service_completed_successfully
+  # Opt-in light control: carries out the API's fixed light commands with its own token.
+  controller:
+    profiles: [control]
+    build:
+      context: .
+      dockerfile: apps/controller/Dockerfile
+    restart: unless-stopped
+    environment:
+      HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
+      HOME_KEEPER_CONTROL_BACKEND: home_assistant
+      HOME_KEEPER_HA_URL: http://homeassistant:8123
+      HOME_KEEPER_HA_CONTROL_TOKEN_FILE: /ha-control-token/token
+    volumes:
+      - service-secret:/secrets:ro
+      - ha-control-token:/ha-control-token:ro
+    # No published port: only the API reaches it, over `control`.
+    networks: [control, home-assistant]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      api:
+        condition: service_healthy
+      ha-setup:
+        condition: service_completed_successfully
 networks:
   dashboard:
   collection:
     internal: true
-  # Home Assistant and the collector only; the API never joins it.
+  # The API and the controller only.
+  control:
+    internal: true
+  # Home Assistant, the collector and the controller; the API never joins it.
   home-assistant:
 volumes:
   data:
@@ -92,3 +127,5 @@ volumes:
   home-assistant-config:
   ha-token:
   ha-owner:
+  # The controller's token for the non-admin "Home Keeper control" user.
+  ha-control-token:

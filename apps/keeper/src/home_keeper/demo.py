@@ -1,21 +1,42 @@
-"""Synthetic connector. No device, vendor, network-administration or model access."""
+"""Synthetic connector. No device, vendor, network-administration or model access.
 
+With the `control` profile, the demo controller forwards light commands here, and they
+switch the synthetic home's lights.
+"""
+
+import json
 import logging
 import os
+import secrets
 import time
 from datetime import UTC, datetime
 from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TypedDict
+from threading import Lock, Thread
+from typing import Literal, TypedDict
 
 import httpx
+from pydantic import ValidationError
 
 from home_keeper.events import change_event
-from home_keeper.models import LightState
-from home_keeper.runtime import load_token
+from home_keeper.models import LightCommand, LightState, SelectionSnapshot
+from home_keeper.tokens import load_token
+from home_keeper_light_command import (
+    BRIGHTNESS_MAX,
+    ForwardedCommand,
+    ForwardResult,
+    LightOff,
+    brightness_value,
+)
 
 # The replay phase whose events are delivered twice.
 DUPLICATE_PHASE = 3
+# A switched light keeps its commanded state for this many replay passes.
+HELD_PASSES = 3
+# The demo command endpoint, reachable on the internal `control` network only.
+COMMAND_PORT = 8080
+MAX_COMMAND_BYTES = 64 * 1024
 
 
 class DemoEntity(TypedDict):
@@ -92,6 +113,12 @@ class DemoReplay:
 
     def __init__(self) -> None:
         self.phase = 0
+        # Commands and replay passes change the same states from two threads.
+        self.lock = Lock()
+        # Lights a command switched, with the replay passes they still skip.
+        self.held: dict[str, int] = {}
+        # Each light's brightness from when it was last on, which an off state does not carry.
+        self.last_brightness: dict[str, int] = {}
         self.states = {
             entity["id"]: LightState.model_validate(
                 {
@@ -118,20 +145,130 @@ class DemoReplay:
         value = sequence[self.phase % len(sequence)]
         self.phase += 1
         previous = self.states
+        self.last_brightness |= {
+            identity: old.brightness
+            for identity, old in previous.items()
+            if old.brightness is not None
+        }
         self.states = {
-            identity: LightState.model_validate(
-                {
-                    **value,
-                    "last_changed": (
-                        event_time if old.state != value["state"] else old.last_changed
-                    ),
-                    "last_updated": event_time,
-                    "last_reported": event_time,
-                }
-            )
+            identity: old if identity in self.held else self._next(old, value, event_time)
             for identity, old in previous.items()
         }
+        self.held = {identity: passes - 1 for identity, passes in self.held.items() if passes > 1}
         return previous
+
+    @staticmethod
+    def _next(old: LightState, value: dict[str, object], event_time: datetime) -> LightState:
+        return LightState.model_validate(
+            {
+                **value,
+                "last_changed": event_time if old.state != value["state"] else old.last_changed,
+                "last_updated": event_time,
+                "last_reported": event_time,
+            }
+        )
+
+    def switch(
+        self, identity: str, command: LightCommand, event_time: datetime
+    ) -> tuple[LightState, LightState] | None:
+        """Apply a command and hold the light; returns (old, new), or None if it cannot switch."""
+        old = self.states.get(identity)
+        if old is None or old.state not in ("on", "off"):
+            return None
+        if old.brightness is not None:
+            self.last_brightness[identity] = old.brightness
+        if isinstance(command, LightOff):
+            value: dict[str, object] = {"state": "off"}
+        else:
+            # Like Home Assistant, turning on without a brightness keeps the last one.
+            brightness = (
+                brightness_value(command.brightness_pct)
+                if command.brightness_pct is not None
+                else self.last_brightness.get(identity, BRIGHTNESS_MAX)
+            )
+            value = {"state": "on", "brightness": brightness, "color_mode": "brightness"}
+        new = self._next(old, value, event_time)
+        self.states[identity] = new
+        self.held[identity] = HELD_PASSES
+        return old, new
+
+
+def switch_light(
+    client: httpx.Client, replay: DemoReplay, forwarded: ForwardedCommand
+) -> Literal["ok", "refused"]:
+    """Switch a synthetic light and record the change at once, as Home Assistant would."""
+    identity = forwarded.source_entity_id
+    with replay.lock:
+        fired = datetime.now(UTC)
+        change = replay.switch(identity, forwarded.command, fired)
+        if change is None:
+            return "refused"
+        response = client.get("/internal/selection")
+        response.raise_for_status()
+        selection = SelectionSnapshot.model_validate(response.json())
+        if identity in selection.entity_ids:
+            old, new = change
+            event = change_event(
+                source_id="demo",
+                entity_id=identity,
+                source_entity_id=identity,
+                revision=selection.revision,
+                event_time=fired,
+                old=old,
+                new=new,
+            )
+            response = client.post(
+                "/internal/events", json=event.model_dump(mode="json", exclude_none=True)
+            )
+            if response.status_code != HTTPStatus.CONFLICT:
+                response.raise_for_status()
+    return "ok"
+
+
+def command_server(
+    client: httpx.Client, replay: DemoReplay, token: str, port: int = COMMAND_PORT
+) -> ThreadingHTTPServer:
+    """The demo controller's target. It needs the service credential, like the API."""
+    expected = f"Bearer {token}".encode()
+
+    class CommandHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if self.path != "/internal/command":
+                self._reply(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
+                return
+            supplied = self.headers.get("Authorization", "").encode("utf-8", "replace")
+            if not secrets.compare_digest(supplied, expected):
+                self._reply(HTTPStatus.UNAUTHORIZED, {"detail": "Service authentication required"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 <= length <= MAX_COMMAND_BYTES:
+                    raise ValueError
+                forwarded = ForwardedCommand.model_validate_json(self.rfile.read(length))
+            except (ValueError, ValidationError):
+                self._reply(HTTPStatus.UNPROCESSABLE_ENTITY, {"detail": "Invalid request"})
+                return
+            try:
+                result = switch_light(client, replay, forwarded)
+            except (httpx.HTTPError, ValueError):
+                logging.warning("Demo command could not be recorded")
+                self._reply(HTTPStatus.BAD_GATEWAY, {"detail": "Command not recorded"})
+                return
+            self._reply(HTTPStatus.OK, ForwardResult(result=result).model_dump())
+
+        def _reply(self, status: HTTPStatus, body: dict[str, str]) -> None:
+            content = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+        def log_message(self, format: str, *args: object) -> None:
+            # Request lines are not logged; the reconciliation loop logs failures.
+            pass
+
+    return ThreadingHTTPServer(("0.0.0.0", port), CommandHandler)  # noqa: S104 -- reachable only on the internal control network
 
 
 def reconcile(client: httpx.Client, replay: DemoReplay) -> None:
@@ -154,6 +291,9 @@ def reconcile(client: httpx.Client, replay: DemoReplay) -> None:
     fired = datetime.now(UTC)
     previous = replay.advance(fired)
     for identity in approved:
+        if previous[identity] == replay.states[identity]:
+            # A held light did not change on this pass.
+            continue
         event = change_event(
             source_id="demo",
             entity_id=identity,
@@ -197,9 +337,12 @@ def main() -> None:
         base_url=api_url, headers={"Authorization": f"Bearer {token}"}, timeout=5, trust_env=False
     ) as client:
         replay = DemoReplay()
+        server = command_server(client, replay, token)
+        Thread(target=server.serve_forever, name="demo-commands", daemon=True).start()
         while True:
             try:
-                reconcile(client, replay)
+                with replay.lock:
+                    reconcile(client, replay)
             except (httpx.HTTPError, ValueError):
                 # Never log request headers, responses or exception strings.
                 logging.warning("Demo collection failed; retrying on next reconciliation")

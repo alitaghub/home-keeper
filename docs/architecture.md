@@ -3,7 +3,10 @@
 Home Keeper has three running parts: a collector that reads the home, an API
 that decides what to keep, and a dashboard that shows it. They run as two
 containers from one image. The default stack adds a bundled Home Assistant and
-a one-shot `ha-setup` container that onboards it and stores the collector's token.
+a one-shot `ha-setup` container that onboards it and stores the collector's and
+the controller's tokens.
+The optional `control` profile adds a controller, from its own image, that
+switches monitored lights for the API; [control.md](control.md) covers it.
 The optional `agent` profile adds a chat agent, its chat page and a Postgres for
 its threads; [agent.md](agent.md) covers it.
 The separate `telegram` profile adds a polling worker that connects private
@@ -17,8 +20,9 @@ flowchart LR
         hue --> ha
     end
 
-    setup["ha-setup<br/><i>runs once</i>"] -- "onboarding,<br/>long-lived token" --> ha
+    setup["ha-setup<br/><i>runs once</i>"] -- "onboarding,<br/>two long-lived tokens" --> ha
     setup -- "token volume<br/>(collector reads it)" --> collector
+    setup -- "control token volume<br/>(controller reads it)" --> controller
 
     subgraph keeper["Home Keeper (Docker Compose)"]
         direction LR
@@ -28,9 +32,13 @@ flowchart LR
         collector -- "catalog, snapshots,<br/>events, heartbeats" --> api
         api -- "selection revision" --> collector
         api --> db
+        controller["Controller<br/><i>profile control</i>"]
+        api -- "fixed light commands" --> controller
+        controller -- "heartbeats" --> api
     end
 
     ha -- "registry reads, state reads,<br/>state_changed events" --> collector
+    controller -- "light.turn_on,<br/>light.turn_off" --> ha
     browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> api
 
     subgraph agentprofile["Optional agent (profile agent)"]
@@ -51,9 +59,10 @@ flowchart LR
 | Part      | Code                                   | Job                                                                                         |
 | --------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Collector | `live.py`, `home_assistant.py`         | Reads Home Assistant. Keeps only selected lights and approved fields. Sends typed records.   |
-| Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the collector's token. Never runs again after that. |
-| Demo      | `demo.py`                              | Replaces the live collector with a synthetic home. Same API calls, no hardware.             |
-| API       | `api.py`, `models.py`                  | Validates every record, owns the selection, and records collection gaps.                    |
+| Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the collector's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
+| Demo      | `demo.py`                              | Replaces the live collector with a synthetic home. Same API calls, no hardware. Applies demo light commands. |
+| API       | `api.py`, `models.py`, `control.py`    | Validates every record, owns the selection, and records collection gaps. Checks, forwards and records light commands. |
+| Controller | `apps/controller`                     | Optional (profile `control`). Sends the two fixed light calls to Home Assistant with its own token, or to the demo collector. Publishes no port. |
 | Recorder  | `recorder.py`                          | Admits baselines and events, stores them, and decides which one is a light's current state. |
 | Store     | `store.py`                             | SQLite schema, transactions, retention.                                                     |
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |
@@ -72,9 +81,18 @@ Python code lives in `apps/keeper/src/home_keeper`.
   not approve them. Each selection change bumps a server-owned revision. The API
   rejects data from a collector that works from an older revision, so a slow
   read cannot bring back a light you just removed.
-- **Read-only toward the home.** The connector makes fixed registry reads,
-  selected-state reads and one filtered event subscription. It has no service
-  calls and no device writes.
+- **The collector is read-only toward the home.** The connector makes fixed
+  registry reads, selected-state reads and one filtered event subscription. It
+  has no service calls and no device writes. The collector image contains no
+  controller code.
+- **Control is opt-in and narrow.** Only the controller calls Home Assistant
+  services, and only `light.turn_on` (with an optional brightness percent) and
+  `light.turn_off`, on `light.*` entities. It has no passthrough. It runs only
+  with the `control` profile, and the API reports control `on` only while the
+  controller's heartbeat is fresh.
+- **Every command leaves evidence.** The API refuses a command for a light that
+  is not monitored, has no known state, is unavailable or is already in that
+  state. It records every command it forwards, with the outcome it observed.
 - **Evidence, not guesses.** When collection stops, the API records a gap. After
   recovery it stores a fresh snapshot and marks the transition time as unknown.
   It never invents the change that happened while it was blind.
@@ -117,6 +135,7 @@ streams events as Home Assistant sends them.
 | Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the light's current state. |
 | Gap         | A period when collection was interrupted. Open until a recovery snapshot closes it.          |
 | Freshness   | How recently Home Assistant answered. It says nothing about whether the bulb itself answered. |
+| Command     | A request to switch a monitored light, with its sender and the outcome the API observed.     |
 
 ## The API contract
 

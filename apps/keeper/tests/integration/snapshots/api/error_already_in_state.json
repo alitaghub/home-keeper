@@ -1,0 +1,9 @@
+{
+  "status": 409,
+  "body": {
+    "detail": {
+      "code": "already_in_state",
+      "message": "The light is already in that state"
+    }
+  }
+}

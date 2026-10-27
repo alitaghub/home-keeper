@@ -1,0 +1,9 @@
+{
+  "status": 409,
+  "body": {
+    "detail": {
+      "code": "control_off",
+      "message": "Light control is off"
+    }
+  }
+}

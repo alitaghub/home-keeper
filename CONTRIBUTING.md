@@ -70,7 +70,7 @@ Each job runs one mise task, so a green local run means a green CI run.
 | Job          | Runs             | What it checks                                                        |
 | ------------ | ---------------- | --------------------------------------------------------------------- |
 | `Check`      | `mise run check` | Lint, format, types, tests with coverage, build, API types, workflows |
-| `End-to-end` | `mise run e2e`   | Demo, own-HA, bundled-HA and agent Compose smoke scripts, Playwright  |
+| `End-to-end` | `mise run e2e`   | Demo, own-HA, bundled-HA, agent and control Compose smoke scripts, Playwright |
 
 On failure, `End-to-end` uploads the Compose logs and the Playwright report.
 

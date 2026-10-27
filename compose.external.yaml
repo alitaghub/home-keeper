@@ -24,3 +24,21 @@ services:
     depends_on: !override
       api:
         condition: service_healthy
+  # With `--profile control`: the token of a non-admin Home Assistant user you create.
+  # See docs/home-assistant.md. Compose checks `:?` even with the profile off, so a
+  # missing setting shows up as this placeholder path when the controller starts.
+  controller:
+    environment:
+      HOME_KEEPER_HA_URL: ${HOME_KEEPER_HA_URL:?Set the Home Assistant origin}
+      HOME_KEEPER_HA_CONTROL_TOKEN_FILE: /run/secrets/ha-control-token
+    volumes: !override
+      - service-secret:/secrets:ro
+      - type: bind
+        source: ${HOME_KEEPER_HA_CONTROL_TOKEN_FILE:-/nonexistent/set-HOME_KEEPER_HA_CONTROL_TOKEN_FILE}
+        target: /run/secrets/ha-control-token
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: !override
+      api:
+        condition: service_healthy

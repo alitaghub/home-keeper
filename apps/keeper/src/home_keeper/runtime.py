@@ -7,10 +7,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import uvicorn
 
 from home_keeper.api import create_app
-
-
-def load_token(path: Path) -> str:
-    return path.read_text().strip()
+from home_keeper.control import HttpController
+from home_keeper.tokens import load_token
 
 
 def create_token(path: Path) -> str:
@@ -69,6 +67,11 @@ def main() -> None:
     token = create_token(Path(os.environ.get("HOME_KEEPER_TOKEN_FILE", "/secrets/service-token")))
     port = int(os.environ.get("HOME_KEEPER_PORT", "8000"))
     hosts = local_authorities(port, ("127.0.0.1", "localhost", "api"))
+    # Control stays off until a controller at this origin sends heartbeats. Empty disables it.
+    controller_url = parse_origin(
+        "HOME_KEEPER_CONTROLLER_URL",
+        os.environ.get("HOME_KEEPER_CONTROLLER_URL", "http://controller:8080"),
+    )
     app = create_app(
         db_path=Path(os.environ.get("HOME_KEEPER_DB", "/data/home.sqlite")),
         service_token=token,
@@ -86,6 +89,7 @@ def main() -> None:
             f"http://{authority}"
             for authority in local_authorities(port, ("127.0.0.1", "localhost"))
         ),
+        controller=HttpController(controller_url, token) if controller_url else None,
     )
     uvicorn.run(
         app, host=os.environ.get("HOME_KEEPER_BIND", "127.0.0.1"), port=port, access_log=False

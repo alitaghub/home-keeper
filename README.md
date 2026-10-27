@@ -9,7 +9,9 @@ foundation: it reads your smart-home devices through
 actually do on your machine, and shows honest gaps where collection stopped.
 
 An agent can only act well on a home it can see, so Home Keeper starts with
-seeing. Today it does not control devices: it never sends a command to one.
+seeing. By default it does not control devices. With the opt-in `control`
+profile, it can switch a light on or off, but only a light it monitors, so every
+command leaves evidence.
 
 ![The Home Keeper dashboard with two monitored lamps](docs/images/dashboard.png)
 
@@ -29,6 +31,8 @@ flowchart LR
         collector -- "observations" --> api
         dashboard <-->|"monitoring and history"| api
         api --> db
+        controller["Controller<br/>optional, profile control"]
+        api -- "light on/off" --> controller
 
         subgraph optional["Optional agent"]
             chat["Agent Chat UI<br/>browser chat"]
@@ -44,6 +48,7 @@ flowchart LR
     end
 
     ha -- "read-only collection" --> collector
+    controller -- "light.turn_on, light.turn_off" --> ha
     telegram["Telegram<br/>private chats"] <-->|"outbound polling"| bot
     agent <-->|"model calls"| model["Your model provider"]
 
@@ -52,7 +57,7 @@ flowchart LR
     classDef agentNode fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95
     classDef externalNode fill:#fff7ed,stroke:#c2410c,color:#7c2d12
     class lights,ha homeNode
-    class collector,api,db,dashboard keeperNode
+    class collector,api,db,dashboard,controller keeperNode
     class chat,agent,pg,bot agentNode
     class telegram,model externalNode
 ```
@@ -60,7 +65,8 @@ flowchart LR
 The dashboard works on its own. The optional [agent](docs/agent.md) uses the
 same API to answer questions in Agent Chat UI or [Telegram](docs/telegram.md).
 It asks for approval before changing which lights are monitored. Neither the
-agent nor the collector can control a device. The SQLite database remains local.
+agent nor the collector can control a device; only the optional controller can,
+when the API asks it to. The SQLite database remains local.
 Questions and tool results go to your model provider; Telegram also receives
 your questions and replies.
 
@@ -78,16 +84,19 @@ flow and the terms the code uses.
 
 ## Design principles
 
-- **Read-only today.** The connector makes fixed reads and one event
-  subscription. It has no code path that changes a device: today Home Keeper
-  does not control devices.
+- **Read-only by default; control is opt-in.** The collector makes fixed reads
+  and one event subscription. It has no code path that changes a device.
+  Switching lights needs the `control` profile, which adds a separate controller
+  with its own non-admin Home Assistant user. It knows two commands, light on
+  (with an optional brightness) and light off, and the API sends them only for
+  monitored lights. Without the profile, nothing can switch a light.
 - **Opt-in.** Discovery is not permission. Each light is recorded only after you
   select it, and a removal takes effect even if a slow read is still in flight.
 - **Evidence, not guesses.** Every event keeps three timestamps: when Home
   Assistant fired it, when the collector received it, and when the API stored it.
   Interruptions show up as gaps. The app never invents a change it did not see.
 - **Local.** Everything binds to `127.0.0.1`. The Home Assistant token stays in
-  the collector container. Nothing goes to a cloud service, unless you turn on
+  the collector container, and the control token in the controller container. Nothing goes to a cloud service, unless you turn on
   the optional agent: then your questions and its tool results (light names,
   states, usage numbers) go to the model provider you configure. The Home
   Assistant token, the database and the service credential never do.
@@ -137,6 +146,20 @@ Open <http://127.0.0.1:8000> and click **Monitor** on a lamp. Changes appear in
 **Recorded changes** within a few seconds. Stop the home stack first; both use
 port 8000. [docs/demo.md](docs/demo.md) explains what the demo shows.
 
+## Switch lights
+
+Add the `control` profile to let the API switch monitored lights:
+
+```sh
+docker compose --profile control up --build --wait
+```
+
+The demo works too: add `--profile control` to its command. A command returns
+what Home Keeper then observed: the change, no change within 5 seconds, a
+refusal from Home Assistant, or an unreachable controller. Every command is
+recorded. [docs/control.md](docs/control.md) covers the API, the refusals and the
+limits.
+
 ## Chat with the agent
 
 An optional agent answers questions about your lights in plain words: how long
@@ -177,6 +200,7 @@ user IDs, setup, limits, and what goes through Telegram.
 | [Demo](docs/demo.md)                             | See what the synthetic home does and how to reset it               |
 | [Home Assistant and Hue](docs/home-assistant.md) | Run the bundled Home Assistant or your own, and check a real light |
 | [Collection and gaps](docs/collection.md)        | Learn what each record proves, how gaps work, and retention        |
+| [Light control](docs/control.md)                 | Turn on the `control` profile and switch monitored lights          |
 | [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
 | [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
 | [Telegram](docs/telegram.md)                   | Talk to the agent through a private family bot                     |
@@ -189,7 +213,9 @@ user IDs, setup, limits, and what goes through Telegram.
 | `apps/keeper`   | Python service: FastAPI API, collectors, Home Assistant setup, SQLite store, tests |
 | `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
 | `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
+| `apps/controller` | Optional light controller: the only code that calls Home Assistant services |
 | `apps/chat`     | Image recipe for the unmodified Agent Chat UI                      |
+| `packages/light-command` | Shared Python code: the fixed light command shapes |
 | `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |
 | `docs`          | User and design docs                                               |
 
@@ -202,7 +228,7 @@ the tasks.
 mise run setup      # tools, dependencies, and the pre-commit hook
 mise run check      # lint, types, tests, build: what CI runs
 mise run dev        # demo stack plus the Vite dev server
-mise run e2e        # demo, own-HA, bundled-HA and agent stacks, smoke tests, Playwright
+mise run e2e        # demo, own-HA, bundled-HA, agent and control stacks, smoke tests, Playwright
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. Coding

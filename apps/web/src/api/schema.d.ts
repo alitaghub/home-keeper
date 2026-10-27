@@ -38,6 +38,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Commands */
+        get: operations["commands_api_commands_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Control */
+        get: operations["control_api_control_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/coverage": {
         parameters: {
             query?: never;
@@ -100,6 +134,23 @@ export interface paths {
         get: operations["health_api_health_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lights/{entity_id}/command": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Command Light */
+        post: operations["command_light_api_lights__entity_id__command_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -273,6 +324,14 @@ export interface components {
             /** Next Cursor */
             next_cursor: number | null;
         };
+        /** BrowserChatSender */
+        BrowserChatSender: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "browser_chat";
+        };
         /** CatalogResponse */
         CatalogResponse: {
             /** Entities */
@@ -291,6 +350,75 @@ export interface components {
              * @enum {string}
              */
             source_id: "demo" | "home_assistant";
+        };
+        /** CommandRecord */
+        CommandRecord: {
+            /** Command */
+            command: components["schemas"]["LightOn"] | components["schemas"]["LightOff"];
+            /** Entity Id */
+            entity_id: string;
+            /** Event Id */
+            event_id: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "pending" | "observed" | "not_observed" | "refused" | "unreachable" | "interrupted";
+            /** Sender */
+            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
+            /**
+             * Sent At
+             * Format: date-time
+             */
+            sent_at: string;
+        };
+        /** CommandRefusal */
+        CommandRefusal: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state" | "busy";
+            /** Message */
+            message: string;
+        };
+        /**
+         * CommandRefused
+         * @description The 409 body of a refused command.
+         */
+        CommandRefused: {
+            detail: components["schemas"]["CommandRefusal"];
+        };
+        /** CommandRequest */
+        CommandRequest: {
+            /** Command */
+            command: components["schemas"]["LightOn"] | components["schemas"]["LightOff"];
+            /** Sender */
+            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
+        };
+        /** CommandsPage */
+        CommandsPage: {
+            /** Commands */
+            commands: components["schemas"]["CommandRecord"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /**
+             * Retained Since
+             * Format: date-time
+             */
+            retained_since: string;
+        };
+        /** ControlStatus */
+        ControlStatus: {
+            /** Heartbeat At */
+            heartbeat_at: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off";
         };
         /** CoverageGap */
         CoverageGap: {
@@ -346,6 +474,14 @@ export interface components {
              * @enum {string}
              */
             state: "interrupted" | "collecting" | "unknown";
+        };
+        /** DashboardSender */
+        DashboardSender: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "dashboard";
         };
         /** DayUsage */
         DayUsage: {
@@ -559,6 +695,24 @@ export interface components {
              */
             status: "failed" | "healthy" | "stale";
         };
+        /** LightOff */
+        LightOff: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "off";
+        };
+        /** LightOn */
+        LightOn: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "on";
+            /** Brightness Pct */
+            brightness_pct?: number | null;
+        };
         /**
          * LightReading
          * @description Light attributes as stored. Event states omit unset attributes, so routes returning
@@ -684,6 +838,18 @@ export interface components {
             /** Revision */
             revision: number;
         };
+        /** TelegramSender */
+        TelegramSender: {
+            /** Id */
+            id: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "telegram";
+            /** Name */
+            name: string;
+        };
         /** UnknownInterval */
         UnknownInterval: {
             /**
@@ -799,6 +965,60 @@ export interface operations {
             };
         };
     };
+    commands_api_commands_get: {
+        parameters: {
+            query?: {
+                start?: string | null;
+                end?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    control_api_control_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlStatus"];
+                };
+            };
+        };
+    };
     coverage_api_coverage_get: {
         parameters: {
             query?: {
@@ -902,6 +1122,50 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthPending"] | components["schemas"]["HealthReport"];
+                };
+            };
+        };
+    };
+    command_light_api_lights__entity_id__command_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandRecord"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandRefused"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Local smart-home observation with explicit device selection"
 requires-python = ">=3.13"
 dependencies = [
+    "home-keeper-light-command",
+    "anyio>=4,<5",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
     "httpx>=0.28,<1",
@@ -11,6 +13,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+home-keeper-light-command = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

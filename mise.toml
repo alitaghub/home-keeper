@@ -84,10 +84,12 @@ HOME_KEEPER_API_ORIGIN="http://127.0.0.1:${HOME_KEEPER_PORT:-8000}" pnpm --filte
 description = "Run the Compose smoke scripts, the Playwright suite and the agent smoke against fresh stacks"
 run = """
 # On failure, keep the demo stack's logs for debugging (CI uploads them).
-# `--profile agent` makes logs and down cover the agent services too.
-trap 'status=$?; [ "$status" -eq 0 ] || docker compose -f compose.demo.yaml --profile agent logs --no-color > compose-logs.txt; docker compose -f compose.demo.yaml --profile agent down' EXIT
+# The profiles make logs and down cover the agent and controller services too.
+trap 'status=$?; [ "$status" -eq 0 ] || docker compose -f compose.demo.yaml --profile agent --profile control logs --no-color > compose-logs.txt; docker compose -f compose.demo.yaml --profile agent --profile control down' EXIT
 docker compose config --quiet
 docker compose --profile agent config --quiet
+docker compose --profile control config --quiet
+docker compose -f compose.demo.yaml --profile control config --quiet
 docker compose -f compose.demo.yaml up --build --wait
 uv run python e2e/compose_smoke.py
 uv run python e2e/compose_live_smoke.py
@@ -98,7 +100,8 @@ E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${HOME_KEEPER_PORT:-8000}}" pnpm 
 AZURE_OPENAI_ENDPOINT=https://placeholder.invalid AZURE_OPENAI_API_KEY=placeholder \
   docker compose -f compose.demo.yaml --profile agent up --build --wait
 uv run python e2e/compose_agent_smoke.py
-# Release the completed demo before the isolated Telegram proof starts its stack.
+# Release the completed demo before the isolated control and Telegram proofs start their stacks.
 docker compose -f compose.demo.yaml --profile agent down
+uv run python e2e/compose_control_smoke.py
 uv run python e2e/compose_telegram_smoke.py
 """

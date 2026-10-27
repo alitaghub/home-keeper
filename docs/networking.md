@@ -2,12 +2,14 @@
 
 ## Bundled Home Assistant
 
-The default stack uses three Compose networks:
+The default stack uses four Compose networks:
 
 - `dashboard`: the API and the dashboard port.
 - `collection`: internal; the API and the collector.
-- `home-assistant`: Home Assistant, `ha-setup` and the collector. The API never
-  joins it and cannot even resolve the `homeassistant` name.
+- `control`: internal; the API and, with `--profile control`, the controller.
+- `home-assistant`: Home Assistant, `ha-setup`, the collector and the
+  controller. The API never joins it and cannot even resolve the
+  `homeassistant` name.
 
 All published ports bind to `127.0.0.1` only: the dashboard on `HOME_KEEPER_PORT`
 (default 8000) and Home Assistant on `HA_PORT` (default 8123).

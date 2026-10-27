@@ -72,7 +72,18 @@ def main() -> None:
     if not args.skip_bindings:
         config = json.loads(
             subprocess.check_output(
-                ["docker", "compose", "-f", "compose.demo.yaml", "config", "--format", "json"],
+                # The control profile adds the controller, which must publish nothing.
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    "compose.demo.yaml",
+                    "--profile",
+                    "control",
+                    "config",
+                    "--format",
+                    "json",
+                ],
                 timeout=10,
             )
         )
@@ -83,6 +94,7 @@ def main() -> None:
                 published.append(name)
         assert published == ["api"], f"Unexpected published services: {published}"
         assert not config["services"]["collector"].get("ports"), "Collector port published"
+        assert "controller" in config["services"], "Control profile adds no controller"
 
     def ready() -> bool:
         catalog = get("/api/catalog")["entities"]

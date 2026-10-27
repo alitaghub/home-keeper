@@ -1,6 +1,7 @@
 # Synthetic demo, no hardware or Home Assistant: `docker compose -f compose.demo.yaml up --build --wait`.
 name: home-keeper-demo
-# Add `--profile agent` to also start the chat agent (compose.agent.yaml).
+# Add `--profile agent` to also start the chat agent (compose.agent.yaml), and
+# `--profile control` to switch the synthetic lights.
 include:
   - compose.agent.yaml
 services:
@@ -14,10 +15,11 @@ services:
       HOME_KEEPER_RETENTION_DAYS: ${HOME_KEEPER_RETENTION_DAYS:-30}
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
+      HOME_KEEPER_CONTROLLER_URL: http://controller:8080
     volumes:
       - data:/data
       - service-secret:/secrets
-    networks: [dashboard, collection]
+    networks: [dashboard, collection, control]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -35,7 +37,8 @@ services:
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
     volumes:
       - service-secret:/secrets:ro
-    networks: [collection]
+    # `control` carries the demo controller's commands to the synthetic home.
+    networks: [collection, control]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -43,9 +46,35 @@ services:
     depends_on:
       api:
         condition: service_healthy
+  # Opt-in light control: forwards the API's commands to the demo collector.
+  controller:
+    profiles: [control]
+    build:
+      context: .
+      dockerfile: apps/controller/Dockerfile
+    restart: unless-stopped
+    environment:
+      HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
+      HOME_KEEPER_CONTROL_BACKEND: demo
+    volumes:
+      - service-secret:/secrets:ro
+    # No published port: only the API reaches it, over `control`.
+    networks: [control]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      api:
+        condition: service_healthy
+      collector:
+        condition: service_started
 networks:
   dashboard:
   collection:
+    internal: true
+  # The API, the controller and the demo collector.
+  control:
     internal: true
 volumes:
   data:
