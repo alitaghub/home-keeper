@@ -98,3 +98,48 @@ class ScriptedChatModel(FakeMessagesListChatModel):
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
         return self
+
+
+def lights_response(
+    state: str | None = "on",
+    brightness: int | None = None,
+    *,
+    entity_id: str = "bulb-a",
+    extra_ids: Sequence[str] = (),
+) -> tuple[int, object]:
+    """A /api/monitored response with one light in `state` (None: no baseline yet).
+
+    The baseline comes from the recorded snapshot so its shape stays the keeper's.
+    """
+    _, body = snapshot("monitored")
+    entities: dict[str, Any] = json.loads(json.dumps(body))
+    light, pending = entities["entities"]
+    if state is None:
+        light["baseline"] = None
+    else:
+        light["baseline"] |= {"state": state, "brightness": brightness}
+    light |= {"id": entity_id, "name": entity_id}
+    others = [pending | {"id": other, "name": other} for other in extra_ids]
+    return 200, {"entities": [light, *others]}
+
+
+def control_response(state: str) -> tuple[int, object]:
+    return snapshot(f"control_{state}")
+
+
+def command_response(
+    outcome: str, action: str = "off", brightness_pct: int | None = None
+) -> tuple[int, object]:
+    """A recorded command record, with the outcome and command the test needs."""
+    _, body = snapshot("command_observed")
+    record: dict[str, Any] = json.loads(json.dumps(body))
+    command: dict[str, Any] = {"action": action}
+    if brightness_pct is not None:
+        command["brightness_pct"] = brightness_pct
+    record |= {"outcome": outcome, "command": command}
+    return 200, record
+
+
+def command_requests(keeper: FakeKeeper) -> list[httpx.Request]:
+    """The requests that ask the keeper to switch a light."""
+    return [request for request in keeper.requests if request.url.path.endswith("/command")]

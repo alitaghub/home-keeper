@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 # Home Assistant light entity IDs: the `light` domain and a lowercase object ID.
 LightEntityId = Annotated[str, StringConstraints(pattern=r"^light\.[a-z0-9_]{1,120}$")]
 BRIGHTNESS_MAX = 255
+# A recorded brightness this close to the commanded value counts as the same brightness.
+BRIGHTNESS_TOLERANCE = 2
 
 
 class _Wire(BaseModel):
@@ -31,6 +33,13 @@ LightCommand = Annotated[LightOn | LightOff, Field(discriminator="action")]
 def brightness_value(percent: int) -> int:
     """Home Assistant's 0-255 brightness for a brightness percent, rounded half up."""
     return (percent * BRIGHTNESS_MAX + 50) // 100
+
+
+def matches_brightness(recorded: int | None, percent: int) -> bool:
+    """Whether a recorded 0-255 brightness counts as `percent`, within the tolerance."""
+    return (
+        recorded is not None and abs(recorded - brightness_value(percent)) <= BRIGHTNESS_TOLERANCE
+    )
 
 
 class ControllerUnreachable(Exception):  # noqa: N818 -- reads as the outcome it maps to

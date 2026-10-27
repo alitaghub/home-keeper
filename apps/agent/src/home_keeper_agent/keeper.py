@@ -4,7 +4,7 @@ They copy only the fields the tools use, since the keeper is a separate app.
 """
 
 import os
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -128,6 +128,52 @@ class DiscoveryRefresh(Wire):
     refresh_revision: int
 
 
+class Control(Wire):
+    state: Literal["on", "off"]
+
+
+class LightOn(Wire):
+    action: Literal["on"] = "on"
+    brightness_pct: int | None = None
+
+
+class LightOff(Wire):
+    action: Literal["off"] = "off"
+
+
+class BrowserChatSender(Wire):
+    kind: Literal["browser_chat"] = "browser_chat"
+
+
+class TelegramSender(Wire):
+    kind: Literal["telegram"]
+    id: int
+    name: str
+
+
+# Who asked for a command: a label for the keeper's audit, not authentication.
+Sender = Annotated[BrowserChatSender | TelegramSender, Field(discriminator="kind")]
+
+
+class CommandRequest(Wire):
+    command: LightOn | LightOff
+    sender: Sender
+
+
+class CommandRecord(Wire):
+    # The keeper answers a command only after it knows one of these outcomes.
+    outcome: Literal["observed", "not_observed", "refused", "unreachable"]
+
+
+class Conflict(Wire):
+    code: str
+    message: str
+
+
+class ErrorBody(Wire):
+    detail: str | Conflict
+
+
 type Params = dict[str, str | int | list[str]]
 
 
@@ -153,10 +199,14 @@ class KeeperClient:
         model: type[T],
         *,
         params: Params | None = None,
-        body: dict[str, bool] | None = None,
+        body: dict[str, bool] | BaseModel | None = None,
     ) -> T:
+        # Unset optional fields, such as a brightness, stay out of the body.
+        payload = (
+            body.model_dump(mode="json", exclude_none=True) if isinstance(body, BaseModel) else body
+        )
         try:
-            response = self._http.request(method, path, params=params, json=body)
+            response = self._http.request(method, path, params=params, json=payload)
         except httpx.HTTPError:
             raise KeeperError(f"cannot reach Home Keeper at {self.base_url}") from None
         # Any non-2xx, including a redirect, is not the answer the tool asked for.
@@ -171,8 +221,8 @@ class KeeperClient:
 def _failure(response: httpx.Response) -> str:
     message = f"HTTP {response.status_code}"
     try:
-        detail: object = response.json().get("detail")
-    except (ValueError, AttributeError):
-        detail = None
+        detail = ErrorBody.model_validate_json(response.content).detail
+    except ValidationError:
+        return message
     # The keeper's error details are fixed strings it writes itself.
-    return f"{message}: {detail}" if isinstance(detail, str) else message
+    return f"{message}: {detail if isinstance(detail, str) else detail.message}"

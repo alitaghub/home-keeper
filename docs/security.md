@@ -61,14 +61,18 @@
   reach Home Assistant, the token, the database or the service credential. It
   calls only the public `/api/*` routes, through the `api` host name, and sends
   the same mutation header as the dashboard. Its only writes are discovery
-  refresh and selection changes, and a selection change waits for your approval
-  in the chat. It runs read-only, without Linux capabilities.
+  refresh, selection changes and light commands. A selection change or a light
+  command waits for your approval in the chat. A light command goes through the
+  API's own checks and the controller, like one from the dashboard. It runs
+  read-only, without Linux capabilities.
 - Aegra, which serves the agent, and the chat page publish only on `127.0.0.1`.
   The chat page calls Aegra directly, and Aegra's CORS allows only the chat
   origin built from `CHAT_PORT`. Agent Chat UI's own `/api` proxy has no target,
   because it allows every origin. Aegra runs without authentication
   (`AUTH_TYPE=noop`): anyone who can reach its port can read and write every
-  chat thread and start the agent. CORS does not stop simple cross-site
+  chat thread and start the agent. With the `control` profile, they can also
+  propose and approve their own light commands, because the approval prompt
+  is answered on the same unauthenticated port. CORS does not stop simple cross-site
   requests from a page you visit, and Aegra has no `Host` check, so DNS
   rebinding is not mitigated. Its Postgres publishes no port.
 
@@ -77,7 +81,8 @@ authentication. With the `control` profile, anyone who can reach the API can
 switch your monitored lights. Without the agent profile, Home Keeper makes no model calls.
 With it, your questions and the agent's tool results go to the model provider
 you configure in `AGENT_MODEL`. Tool results contain light names, states,
-timestamps and usage numbers from the public API. The Home Assistant token, the
+timestamps, usage numbers, the light control state and light command outcomes
+from the public API. The Home Assistant token, the
 database and the service credential never leave. Chat threads stay in the local
 Postgres volume, and the provider also receives each thread's earlier messages
 as context. See [agent.md](agent.md).
