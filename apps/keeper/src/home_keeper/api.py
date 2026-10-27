@@ -63,11 +63,9 @@ from home_keeper.models import (
 from home_keeper.recorder import Recorder, Rejected, update_current
 from home_keeper.store import Store, current_reading
 from home_keeper.usage import light_usage
-from home_keeper_light_command import LightOff, brightness_value
+from home_keeper_light_command import LightOff, matches_brightness
 
 UTC_ZONE = ZoneInfo("UTC")
-# A recorded brightness this close to the commanded value counts as the same brightness.
-BRIGHTNESS_TOLERANCE = 2
 COMMAND_POLL_SECONDS = 0.1
 # Controller sends can block for seconds, so they get their own few threads and never
 # take every worker of the shared pool that ingestion needs.
@@ -102,11 +100,7 @@ def shows(reading: LightReading | None, command: LightCommand) -> bool:
         return False
     if command.brightness_pct is None:
         return True
-    return (
-        reading.brightness is not None
-        and abs(reading.brightness - brightness_value(command.brightness_pct))
-        <= BRIGHTNESS_TOLERANCE
-    )
+    return matches_brightness(reading.brightness, command.brightness_pct)
 
 
 def received_after(reading: BaselineRecord | EventRecord, sent_at: datetime) -> bool:

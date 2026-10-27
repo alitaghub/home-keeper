@@ -38,11 +38,10 @@ from home_keeper_agent.keeper import (
     Usage,
     Wire,
 )
+from home_keeper_light_command import matches_brightness
 
 EVENT_LIMIT = 100
 LIGHT_TOOLS = ("turn_on_light", "turn_off_light")
-# The keeper counts a recorded brightness this close to the requested one as the same.
-BRIGHTNESS_TOLERANCE = 2
 NOT_ALLOWED = "Not sent: you are not allowed to control lights."
 
 
@@ -248,9 +247,8 @@ def light_refusals(
 ) -> list[str | None]:
     """Why each light command must not reach the approval card, or None when it may.
 
-    The keeper refuses the same cases when the command arrives; checking first keeps the
-    user from approving a command that cannot work. One model response's calls share one
-    read of the control state and of the monitored lights.
+    The keeper refuses the same cases; checking first spares approving a command that
+    cannot work. One model response's calls share one read of control and monitored lights.
     """
     control = _once(lambda: client.request("GET", "/api/control", Control))
     monitored = _once(lambda: client.request("GET", "/api/monitored", Monitored))
@@ -296,11 +294,7 @@ def _state_refusal(
         return f"Not sent: {entity_id} has no known on/off state."
     # Home Assistant reports no change for these, so the outcome could never be seen.
     if reading.state == action and (
-        brightness is None
-        or (
-            reading.brightness is not None
-            and abs(reading.brightness - (brightness * 255 + 50) // 100) <= BRIGHTNESS_TOLERANCE
-        )
+        brightness is None or matches_brightness(reading.brightness, brightness)
     ):
         return f"Not sent: {entity_id} is already {action}."
     return None

@@ -397,6 +397,30 @@ def test_a_pre_checked_call_does_not_stop_read_tools_from_running() -> None:
     assert agent.get_state(THREAD).interrupts == ()
 
 
+def test_two_light_commands_in_one_response_ask_only_for_the_one_that_can_work() -> None:
+    keeper = light_keeper("on")
+    calls: list[ToolCall] = [
+        off_call(),
+        {"name": "turn_off_light", "args": {"entity_id": "bulb-z"}, "id": "call-z"},
+    ]
+    model = ScriptedChatModel(responses=[AIMessage("", tool_calls=calls), AIMessage("Done.")])
+    agent = build_agent(model, keeper.client(), checkpointer=InMemorySaver())
+
+    agent.invoke({"messages": [HumanMessage("Turn both off.")]}, THREAD)  # pyright: ignore[reportUnknownMemberType] -- langgraph leaves Command's type parameter unparameterized
+
+    [pause] = agent.get_state(THREAD).interrupts
+    approval: HITLRequest = pause.value
+    assert [request["args"] for request in approval["action_requests"]] == [{"entity_id": "bulb-a"}]
+    resume(agent, THREAD, "reject")
+    assert command_requests(keeper) == []
+    results = {
+        message.tool_call_id: message.text
+        for message in agent.get_state(THREAD).values["messages"]
+        if isinstance(message, ToolMessage)
+    }
+    assert results["call-z"].startswith("Not sent: bulb-z is not monitored.")
+
+
 class Resumable(Protocol):
     def invoke(self, input: Command[object], config: RunnableConfig) -> object: ...
 

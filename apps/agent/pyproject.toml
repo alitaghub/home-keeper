@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 # Exact pins: the agent stack moves fast and the image must match what the tests ran.
 dependencies = [
     "deepagents==0.7.25",
+    "home-keeper-light-command",
     "httpx>=0.28,<1",
     "langchain==1.4.5",
     "langchain-openai==1.7.1",
@@ -18,6 +19,7 @@ dependencies = [
 serve = ["aegra-cli==0.10.8"]
 
 [tool.uv.sources]
+home-keeper-light-command = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
