@@ -12,17 +12,17 @@ from pathlib import Path
 import httpx
 
 REPO = Path(__file__).resolve().parents[1]
-PROJECT = "observer-home-proof"
-OBSERVER_PORT = "18002"
+PROJECT = "keeper-home-proof"
+HOME_KEEPER_PORT = "18002"
 HA_PORT = "18124"
-OBSERVER = f"http://127.0.0.1:{OBSERVER_PORT}"
+KEEPER = f"http://127.0.0.1:{HOME_KEEPER_PORT}"
 HOME_ASSISTANT = f"http://127.0.0.1:{HA_PORT}"
 
 
 def compose(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["docker", "compose", "-p", PROJECT, "-f", str(REPO / "compose.yaml"), *args],
-        env=os.environ | {"OBSERVER_PORT": OBSERVER_PORT, "HA_PORT": HA_PORT},
+        env=os.environ | {"HOME_KEEPER_PORT": HOME_KEEPER_PORT, "HA_PORT": HA_PORT},
         cwd=REPO,
         check=check,
         capture_output=True,
@@ -86,7 +86,7 @@ def main() -> None:
             for row in map(json.loads, compose("ps", "-a", "--format", "json").stdout.splitlines())
         }
         assert states["ha-setup"]["ExitCode"] == 0
-        with httpx.Client(base_url=OBSERVER, timeout=5, trust_env=False) as client:
+        with httpx.Client(base_url=KEEPER, timeout=5, trust_env=False) as client:
             wait_for_healthy_collector(client)
             catalog = client.get("/api/catalog").json()
             assert catalog["source_id"] == "home_assistant"

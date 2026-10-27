@@ -1,13 +1,14 @@
 # AGENTS.md
 
-Home Observer records what smart-home devices do. It reads devices through Home
-Assistant and never controls them.
+Home Keeper is an agent that looks after your home; recording is its foundation.
+It reads devices through Home Assistant and records what they do. Today it does
+not control devices.
 
 ## Done
 
 - `mise run check` exits 0.
 - Changes to Docker, Compose or the UI also pass `mise run e2e`.
-  Set `OBSERVER_PORT` when port 8000 is taken. The e2e proofs use fixed Compose
+  Set `HOME_KEEPER_PORT` when port 8000 is taken. The e2e proofs use fixed Compose
   project names and ports, so run one `mise run e2e` per machine at a time.
 - User-visible changes update `README.md` or `docs/`.
 

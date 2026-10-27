@@ -2,12 +2,12 @@
 
 The agent answers questions about your lights in plain words: how long a lamp
 was on, at which hours, how often it was switched on, and whether collection
-was healthy. It works only from the evidence Home Observer recorded. It is
+was healthy. It works only from the evidence Home Keeper recorded. It is
 opt-in: without the `agent` profile, nothing below runs.
 
 ## What it can and cannot do
 
-The agent reaches Home Observer only through the public API, the same one the
+The agent reaches Home Keeper only through the public API, the same one the
 dashboard uses. It can:
 
 - list the lights you monitor and their current state
@@ -20,7 +20,7 @@ dashboard uses. It can:
 
 It cannot:
 
-- see power or energy. Home Observer does not record it. The agent says so.
+- see power or energy. Home Keeper does not record it. The agent says so.
 - control a device. It has no path to Home Assistant at all.
 - read the database. It sees only what the API returns.
 
@@ -78,7 +78,7 @@ With an `azure:` model, the part after the colon is your deployment name. Any
 other value is passed to LangChain's
 [`init_chat_model`](https://python.langchain.com/docs/how_to/chat_models_universal_init/),
 for example `anthropic:claude-sonnet-4-5`. Model choice lives in one file,
-`apps/agent/src/home_observer_agent/model.py`. `openai:` models work with
+`apps/agent/src/home_keeper_agent/model.py`. `openai:` models work with
 `OPENAI_API_KEY` in `.env`. Any other provider needs two changes: its LangChain
 package in `apps/agent/pyproject.toml`, and its key variable listed under the
 `agent` service's `environment` in `compose.agent.yaml`. Compose passes only the

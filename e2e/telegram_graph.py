@@ -11,8 +11,8 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
-from home_observer_agent.graph import build_agent
-from home_observer_agent.observer import ObserverClient
+from home_keeper_agent.graph import build_agent
+from home_keeper_agent.keeper import KeeperClient
 
 
 class TelegramProofModel(FakeMessagesListChatModel):
@@ -56,4 +56,4 @@ class TelegramProofModel(FakeMessagesListChatModel):
 
 
 # Never registered by the production server. The smoke mounts its own Aegra config.
-agent = build_agent(TelegramProofModel(responses=[]), ObserverClient.from_env())
+agent = build_agent(TelegramProofModel(responses=[]), KeeperClient.from_env())

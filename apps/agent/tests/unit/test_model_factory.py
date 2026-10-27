@@ -2,7 +2,7 @@ import pytest
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from home_observer_agent.model import chat_model
+from home_keeper_agent.model import chat_model
 
 MODEL_VARIABLES = ("AGENT_MODEL", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "OPENAI_API_KEY")
 

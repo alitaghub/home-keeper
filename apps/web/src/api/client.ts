@@ -15,8 +15,8 @@ export const api = createClient<paths>({
   fetch: (request) => globalThis.fetch(request),
 });
 
-// The observer rejects browser mutations without this header.
-export const mutationHeaders = { "X-Home-Observer": "1" } as const;
+// The keeper rejects browser mutations without this header.
+export const mutationHeaders = { "X-Home-Keeper": "1" } as const;
 
 export async function unwrap<T>(pending: Promise<{ data?: T; response: Response }>): Promise<T> {
   const { data, response } = await pending;

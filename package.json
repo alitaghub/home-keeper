@@ -1,5 +1,5 @@
 {
-  "name": "home-observer",
+  "name": "home-keeper",
   "private": true,
   "packageManager": "pnpm@12.10.1",
   "devDependencies": {

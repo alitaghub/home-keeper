@@ -1,9 +1,9 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
-// The observer rejects unknown Host headers and cross-origin mutations, so the
+// The keeper rejects unknown Host headers and cross-origin mutations, so the
 // dev proxy presents itself as the API origin.
-const apiOrigin = process.env.OBSERVER_API_ORIGIN ?? "http://127.0.0.1:8000";
+const apiOrigin = process.env.HOME_KEEPER_API_ORIGIN ?? "http://127.0.0.1:8000";
 
 export default defineConfig({
   plugins: [react()],

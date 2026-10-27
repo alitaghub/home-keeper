@@ -1,7 +1,7 @@
 import pytest
 from pydantic import SecretStr
 
-from home_observer_agent.telegram import Settings
+from home_keeper_agent.telegram import Settings
 
 
 @pytest.mark.parametrize("allowed", ["", "alice", "1,", "0", "-1", "1,2.5"])

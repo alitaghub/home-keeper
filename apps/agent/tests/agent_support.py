@@ -1,4 +1,4 @@
-"""Fakes for the agent suites: the observer API behind httpx.MockTransport, and a scripted model."""
+"""Fakes for the agent suites: the keeper API behind httpx.MockTransport, and a scripted model."""
 
 import json
 import re
@@ -15,13 +15,13 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
-from home_observer_agent.observer import ObserverClient
-from home_observer_agent.tools import observer_tools
+from home_keeper_agent.keeper import KeeperClient
+from home_keeper_agent.tools import keeper_tools
 
-# The observer's API contract snapshots: real response bodies, so a drift in the observer's
+# The keeper's API contract snapshots: real response bodies, so a drift in the keeper's
 # responses breaks the agent's parsing here instead of in a chat.
-SNAPSHOTS = Path(__file__).resolve().parents[2] / "observer/tests/integration/snapshots/api"
-OBSERVER_URL = "http://observer.test:8000"
+SNAPSHOTS = Path(__file__).resolve().parents[2] / "keeper/tests/integration/snapshots/api"
+HOME_KEEPER_URL = "http://keeper.test:8000"
 READ_TOOLS = {
     "list_lights",
     "get_usage",
@@ -30,14 +30,14 @@ READ_TOOLS = {
     "get_health",
     "list_devices",
 }
-# Writes change only the observer's selection and discovery, never a device.
+# Writes change only the keeper's selection and discovery, never a device.
 WRITE_TOOLS = {"refresh_discovery", "monitor_light", "stop_monitoring"}
 
 
 def snapshot(name: str) -> tuple[int, object]:
-    """Return a recorded observer response as (status, body).
+    """Return a recorded keeper response as (status, body).
 
-    The snapshots replace random IDs with `<uuid-N>`; put real UUIDs back so the fake observer
+    The snapshots replace random IDs with `<uuid-N>`; put real UUIDs back so the fake keeper
     serves what the real one does.
     """
     text = re.sub(
@@ -50,7 +50,7 @@ def snapshot(name: str) -> tuple[int, object]:
 
 
 @dataclass
-class FakeObserver:
+class FakeKeeper:
     """Serves canned responses by path and records every request the agent makes."""
 
     responses: dict[str, tuple[int, object]] = field(default_factory=dict[str, tuple[int, object]])
@@ -69,11 +69,11 @@ class FakeObserver:
             )
         return httpx.Response(status, json=body)
 
-    def client(self) -> ObserverClient:
-        return ObserverClient(OBSERVER_URL, transport=httpx.MockTransport(self.handle))
+    def client(self) -> KeeperClient:
+        return KeeperClient(HOME_KEEPER_URL, transport=httpx.MockTransport(self.handle))
 
     def tools(self) -> dict[str, BaseTool]:
-        return {tool.name: tool for tool in observer_tools(self.client())}
+        return {tool.name: tool for tool in keeper_tools(self.client())}
 
     def paths(self) -> list[str]:
         return [request.url.path for request in self.requests]

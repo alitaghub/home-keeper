@@ -9,7 +9,7 @@ The default stack uses three Compose networks:
 - `home-assistant`: Home Assistant, `ha-setup` and the collector. The API never
   joins it and cannot even resolve the `homeassistant` name.
 
-All published ports bind to `127.0.0.1` only: the dashboard on `OBSERVER_PORT`
+All published ports bind to `127.0.0.1` only: the dashboard on `HOME_KEEPER_PORT`
 (default 8000) and Home Assistant on `HA_PORT` (default 8123).
 
 Home Assistant runs on a bridge network, not host networking, so multicast and

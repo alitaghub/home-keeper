@@ -137,7 +137,7 @@ def test_session_start_installs_dependencies_only_when_missing(tmp_path: Path) -
 
 def test_stop_hook_reports_type_errors_in_changed_files_once(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    source = tmp_path / "apps" / "observer" / "src" / "broken.py"
+    source = tmp_path / "apps" / "keeper" / "src" / "broken.py"
     source.parent.mkdir(parents=True)
     source.write_text("x: int = 'one'\n")
     stub(
@@ -148,7 +148,7 @@ def test_stop_hook_reports_type_errors_in_changed_files_once(tmp_path: Path) -> 
 
     first = run_hook("stop-typecheck.sh", {"stop_hook_active": False}, project=tmp_path)
     context = json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert 'apps/observer/src/broken.py:1:10 - error: Type "str"' in context
+    assert 'apps/keeper/src/broken.py:1:10 - error: Type "str"' in context
 
     continued = run_hook("stop-typecheck.sh", {"stop_hook_active": True}, project=tmp_path)
     assert continued.stdout == ""

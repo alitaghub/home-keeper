@@ -10,7 +10,7 @@ import { localTime } from "./test/fixtures";
 type Schemas = components["schemas"];
 
 const UNREACHABLE =
-  "Cannot reach the observer. Collection freshness is unknown until connection returns.";
+  "Cannot reach Home Keeper. Collection freshness is unknown until connection returns.";
 const HISTORY_FAILED =
   "Cannot load recorded history. Previously displayed entries may be out of date.";
 const REFRESH_PENDING =
@@ -203,7 +203,7 @@ describe("dashboard behavior", () => {
     await waitFor(() => expect(byId("selected-count")).toHaveTextContent("1"));
     const [select] = api.callsTo("PUT /api/selection/{entity_id}");
     expect(select?.url.pathname).toBe("/api/selection/light.hue_desk");
-    expect(select?.headers.get("X-Home-Observer")).toBe("1");
+    expect(select?.headers.get("X-Home-Keeper")).toBe("1");
     expect(select?.body).toEqual({ selected: true });
     const monitored = within(byId("monitored"));
     expect(monitored.getByRole("heading", { name: "Desk lamp" })).toBeInTheDocument();
@@ -230,7 +230,7 @@ describe("dashboard behavior", () => {
     );
     const stop = api.callsTo("PUT /api/selection/{entity_id}")[1];
     expect(stop?.url.pathname).toBe("/api/selection/light.hue_desk");
-    expect(stop?.headers.get("X-Home-Observer")).toBe("1");
+    expect(stop?.headers.get("X-Home-Keeper")).toBe("1");
     expect(stop?.body).toEqual({ selected: false });
     expect(byId("selected-count")).toHaveTextContent("0");
   });
@@ -243,7 +243,7 @@ describe("dashboard behavior", () => {
 
     await waitFor(() => expect(byId("message")).toHaveTextContent(REFRESH_PENDING));
     const [refresh] = api.callsTo("POST /api/discovery/refresh");
-    expect(refresh?.headers.get("X-Home-Observer")).toBe("1");
+    expect(refresh?.headers.get("X-Home-Keeper")).toBe("1");
 
     await nextPoll();
     expect(byId("message")).toHaveTextContent(REFRESH_PENDING);
@@ -436,7 +436,7 @@ describe("dashboard behavior", () => {
     expect(document.getElementById(`gap-${fixtures.openGap.id}`)).toBeNull();
   });
 
-  it("says the observer is unreachable when the main load fails, and recovers", async () => {
+  it("says Home Keeper is unreachable when the main load fails, and recovers", async () => {
     const { api } = renderDashboard();
     api.fail("GET /api/catalog", 503);
 

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// The demo catalog's untrusted entity (apps/observer/src/home_observer/demo.py).
+// The demo catalog's untrusted entity (apps/keeper/src/home_keeper/demo.py).
 const SCRIPT_ENTITY_ID = "light.hue_reading";
 const SCRIPT_NAME = "Reading light <script>alert('untrusted')</script>";
 const LAMP = "Reading lamp";
@@ -11,7 +11,7 @@ const COLLECTION = { timeout: 45_000 };
 // A reused Compose volume can still hold the selection from an earlier run.
 test.beforeEach(async ({ request }) => {
   const reset = await request.put(`/api/selection/${SCRIPT_ENTITY_ID}`, {
-    headers: { "X-Home-Observer": "1" },
+    headers: { "X-Home-Keeper": "1" },
     data: { selected: false },
   });
   expect(reset.ok()).toBe(true);

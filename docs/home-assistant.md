@@ -1,6 +1,6 @@
 # Home Assistant
 
-Home Observer reads devices through Home Assistant. It never talks to device
+Home Keeper reads devices through Home Assistant. It never talks to device
 vendors or bridges directly. Home Assistant owns every device connection.
 
 By default, `docker compose up` starts a bundled Home Assistant and sets it up
@@ -20,8 +20,8 @@ This starts four services:
 - `homeassistant`: Home Assistant `2026.10.1`, published on
   <http://127.0.0.1:8123> (set `HA_PORT` to change the port).
 - `ha-setup`: a one-shot container that sets up Home Assistant, then exits.
-- `api`: the Observer API and dashboard, published on <http://127.0.0.1:8000>
-  (set `OBSERVER_PORT` to change the port).
+- `api`: the Home Keeper API and dashboard, published on <http://127.0.0.1:8000>
+  (set `HOME_KEEPER_PORT` to change the port).
 - `collector`: the live collector that reads Home Assistant.
 
 ### What setup does
@@ -53,7 +53,7 @@ copy then goes stale, but setup does not need it again.
 - Home Assistant is not onboarded yet: it onboards it.
 - Home Assistant is onboarded but no token is stored, or Home Assistant rejects
   the token (for example, you revoked it): `up` fails. Reset with
-  `docker compose down --volumes`, which also deletes Observer history, or use
+  `docker compose down --volumes`, which also deletes Home Keeper history, or use
   [your own Home Assistant](#use-your-own-home-assistant) with a token you create.
 
 Setup waits up to five minutes for Home Assistant to start. It logs when it
@@ -70,7 +70,7 @@ times out. Check it with `docker compose logs ha-setup`.
 4. Open <http://127.0.0.1:8000> and click **Refresh discovery**.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
-supports. Home Observer records only individual Hue lights today; other
+supports. Home Keeper records only individual Hue lights today; other
 entities appear under **Show other entities**. When no supported device exists
 yet, the dashboard links to the Home Assistant integrations page.
 
@@ -90,7 +90,7 @@ yet, the dashboard links to the Home Assistant integrations page.
 ### Stop and reset
 
 ```sh
-# Stop, keeping Home Assistant, its token and Observer history:
+# Stop, keeping Home Assistant, its token and Home Keeper history:
 docker compose down
 # Delete everything, including your Home Assistant setup:
 docker compose down --volumes
@@ -130,10 +130,10 @@ Set the connection origin and absolute token file path, then start with both
 Compose files:
 
 ```sh
-export OBSERVER_HA_URL=https://home-assistant.example.test:8123
-export OBSERVER_HA_TOKEN_FILE=/absolute/path/to/ha-token
+export HOME_KEEPER_HA_URL=https://home-assistant.example.test:8123
+export HOME_KEEPER_HA_TOKEN_FILE=/absolute/path/to/ha-token
 # Optional: the address your browser uses, for the dashboard's link to Home Assistant.
-export OBSERVER_HA_PUBLIC_URL=https://home-assistant.example.test:8123
+export HOME_KEEPER_HA_PUBLIC_URL=https://home-assistant.example.test:8123
 docker compose -f compose.yaml -f compose.external.yaml up --build --wait
 ```
 
@@ -167,8 +167,9 @@ inherit approval.
 
 ## Home and demo data
 
-The home stack and the demo use separate Compose projects and volumes. The demo
-runs as project `home-observer-demo`. The API rejects a database containing
+The home stack and the demo use separate Compose projects and volumes. The home
+stack runs as project `home-keeper` and the demo as `home-keeper-demo`, whatever
+the checkout folder is called. The API rejects a database containing
 another source. Stop one stack before starting the other, because both publish
 the same localhost port.
 
@@ -177,7 +178,7 @@ the same localhost port.
 Test one individual Hue light end to end:
 
 1. Confirm the bulb appears and responds in Home Assistant.
-2. Open Home Observer, check the **HOME ASSISTANT** label, and select the bulb.
+2. Open Home Keeper, check the **HOME ASSISTANT** label, and select the bulb.
    Wait for fresh evidence and a first baseline.
 3. Change on/off and brightness in the Hue app. Leave each setting for about 20
    seconds. Confirm the changes appear in **Recorded changes**.

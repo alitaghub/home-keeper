@@ -6,14 +6,14 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict, overload
 
 import httpx
-from agent_support import FakeObserver, ScriptedChatModel
+from agent_support import FakeKeeper, ScriptedChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from pydantic import JsonValue, TypeAdapter
 
-from home_observer_agent.graph import build_agent
+from home_keeper_agent.graph import build_agent
 
 
 class Button(TypedDict):
@@ -138,10 +138,10 @@ def clicked(
 class GraphAegra:
     """Expose the pinned thread/run HTTP shape around the actual checked-in agent graph."""
 
-    def __init__(self, responses: list[BaseMessage], observer: "FakeObserver") -> None:
+    def __init__(self, responses: list[BaseMessage], keeper: "FakeKeeper") -> None:
 
         self.graph = build_agent(
-            ScriptedChatModel(responses=responses), observer.client(), InMemorySaver()
+            ScriptedChatModel(responses=responses), keeper.client(), InMemorySaver()
         )
         self.requests: list[httpx.Request] = []
         self.fail_next_run = False

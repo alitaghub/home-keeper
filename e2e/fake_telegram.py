@@ -69,7 +69,7 @@ class TelegramHandler(BaseHTTPRequestHandler):
                             "id": 123,
                             "is_bot": True,
                             "first_name": "Fixture",
-                            "username": "observer_fixture_bot",
+                            "username": "keeper_fixture_bot",
                         },
                     }
                 )

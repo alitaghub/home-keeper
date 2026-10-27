@@ -1,5 +1,5 @@
 // API responses for dashboard tests. Shapes and values follow the recorded API
-// snapshots in apps/observer/tests/integration/snapshots/api/*.json.
+// snapshots in apps/keeper/tests/integration/snapshots/api/*.json.
 import type { components } from "../api/schema";
 
 type Schemas = components["schemas"];

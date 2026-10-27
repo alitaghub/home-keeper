@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from home_observer_agent.serve import aegra_config, parse_origin
+from home_keeper_agent.serve import aegra_config, parse_origin
 
 
 @pytest.mark.parametrize(

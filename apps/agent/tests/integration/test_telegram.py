@@ -6,7 +6,7 @@ from typing import Literal, Protocol
 
 import httpx
 import pytest
-from agent_support import FakeObserver, snapshot
+from agent_support import FakeKeeper, snapshot
 from langchain_core.messages import AIMessage
 from pydantic import SecretStr
 from telegram_support import (
@@ -19,7 +19,7 @@ from telegram_support import (
     telegram_body,
 )
 
-from home_observer_agent.telegram import (
+from home_keeper_agent.telegram import (
     STALE,
     UNCERTAIN,
     FatalTelegramError,
@@ -113,7 +113,7 @@ def test_family_members_keep_separate_saved_threads_and_new_preserves_old_histor
             AIMessage("Follow-up answer"),
             AIMessage("Fresh answer"),
         ],
-        FakeObserver(),
+        FakeKeeper(),
     )
     settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
@@ -164,18 +164,18 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
 ) -> None:
 
     telegram = FakeTelegram()
-    observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
     agent = GraphAegra(
         [
             monitoring_request(name=name, call_id="call-select"),
             AIMessage("Done."),
         ],
-        observer,
+        keeper,
     )
     settings = family_settings(tmp_path)
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Watch this light"))
-    assert observer.requests == []
+    assert keeper.requests == []
     [prompt] = telegram.bodies()
     assert prompt["text"].splitlines()[0] == f"{verb} monitoring bulb-a?"
     buttons = prompt["reply_markup"]["inline_keyboard"][0]
@@ -194,9 +194,9 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
     assert "Done." in [body["text"] for body in telegram.bodies()]
     assert len(telegram.bodies("answerCallbackQuery")) == 2
     if decision == "reject":
-        assert observer.requests == []
+        assert keeper.requests == []
     else:
-        [write] = observer.requests
+        [write] = keeper.requests
         assert (write.method, write.url.path, json.loads(write.content)) == (
             "PUT",
             "/api/selection/bulb-a",
@@ -210,7 +210,7 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
 ) -> None:
 
     telegram = FakeTelegram()
-    observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
     agent = GraphAegra(
         [
             AIMessage(
@@ -222,7 +222,7 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
             ),
             AIMessage("Mixed decisions complete."),
         ],
-        observer,
+        keeper,
     )
     bot = make_bot(
         family_settings(tmp_path, allowed_user_ids=frozenset({11, 22})),
@@ -237,14 +237,14 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
     bot.handle_update(clicked(3, 11, approve, 999))
     bot.handle_update(clicked(4, 11, "malformed", 101))
     assert len(agent.submissions()) == 1
-    assert observer.requests == []
+    assert keeper.requests == []
     bot.handle_update(clicked(5, 11, approve, 101))
     assert len(agent.submissions()) == 1
-    assert observer.requests == []
+    assert keeper.requests == []
     bot.handle_update(clicked(6, 11, reject, 102))
     bot.close()
     assert len(agent.submissions()) == 2
-    [write] = observer.requests
+    [write] = keeper.requests
     assert (write.url.path, json.loads(write.content)) == (
         "/api/selection/bulb-a",
         {"selected": True},
@@ -269,7 +269,7 @@ def test_plain_text_reply_contains_only_current_final_answer_and_splits_without_
                 ]
             ),
         ],
-        FakeObserver(),
+        FakeKeeper(),
     )
     bot = make_bot(
         family_settings(tmp_path),
@@ -289,13 +289,13 @@ def test_uncertain_submitted_approval_is_not_replayed_after_restart(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
     agent = GraphAegra(
         [
             monitoring_request(),
             AIMessage("Done."),
         ],
-        observer,
+        keeper,
     )
     settings = family_settings(tmp_path)
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
@@ -303,13 +303,13 @@ def test_uncertain_submitted_approval_is_not_replayed_after_restart(
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     agent.fail_after_next_run = True
     bot.handle_update(clicked(2, 11, data, 101))
-    assert len(observer.requests) == 1
+    assert len(keeper.requests) == 1
     bot.close()
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(clicked(2, 11, data, 101))
     bot.handle_update(clicked(3, 11, data, 101))
     bot.close()
-    assert len(observer.requests) == 1
+    assert len(keeper.requests) == 1
     assert len(agent.submissions()) == 2
     assert "uncertain" in telegram.bodies()[1]["text"].lower()
 
@@ -318,10 +318,10 @@ def test_new_and_removed_access_make_old_pending_buttons_unusable(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver()
+    keeper = FakeKeeper()
     agent = GraphAegra(
         [monitoring_request()],
-        observer,
+        keeper,
     )
     settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
@@ -337,7 +337,7 @@ def test_new_and_removed_access_make_old_pending_buttons_unusable(
     bot.handle_update(clicked(4, 11, data, 101))
     bot.close()
     assert len(agent.submissions()) == 1
-    assert observer.requests == []
+    assert keeper.requests == []
 
 
 @pytest.mark.parametrize(
@@ -347,7 +347,7 @@ def test_empty_or_internal_only_agent_answer_gets_a_fixed_failure(
     make_bot: BotFactory, tmp_path: Path, answer: AIMessage
 ) -> None:
     telegram = FakeTelegram()
-    agent = GraphAegra([AIMessage("Old answer"), answer], FakeObserver())
+    agent = GraphAegra([AIMessage("Old answer"), answer], FakeKeeper())
     bot = make_bot(
         family_settings(tmp_path),
         telegram_client=telegram.client(),
@@ -367,7 +367,7 @@ def test_lost_submission_is_not_replayed_but_later_batch_updates_are_not_skipped
     tmp_path: Path,
 ) -> None:
     telegram = FakeTelegram()
-    agent = GraphAegra([AIMessage("Family answer")], FakeObserver())
+    agent = GraphAegra([AIMessage("Family answer")], FakeKeeper())
     settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
     updates = [incoming(1, 11, "First"), incoming(2, 22, "Family")]
 
@@ -403,7 +403,7 @@ def test_process_exit_during_first_submission_keeps_second_fetched_update_availa
         pass
 
     telegram = FakeTelegram()
-    agent = GraphAegra([AIMessage("Family answer")], FakeObserver())
+    agent = GraphAegra([AIMessage("Family answer")], FakeKeeper())
     updates = [incoming(1, 11, "First"), incoming(2, 22, "Family")]
     settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
 
@@ -440,10 +440,10 @@ def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver()
+    keeper = FakeKeeper()
     agent = GraphAegra(
         [monitoring_request()],
-        observer,
+        keeper,
     )
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -473,7 +473,7 @@ def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(
     bot.handle_update(incoming(2, 11, "Continue"))
     bot.close()
     assert len(agent.submissions()) == 1
-    assert observer.requests == []
+    assert keeper.requests == []
     assert "Unsupported approval" in telegram.bodies()[0]["text"]
     assert all("reply_markup" not in body for body in telegram.bodies())
 
@@ -483,13 +483,13 @@ def test_callback_must_match_the_actual_chat_interrupt_and_action(
     make_bot: BotFactory, tmp_path: Path, mismatch: str
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver()
+    keeper = FakeKeeper()
     agent = GraphAegra(
         [
             monitoring_request(),
             AIMessage("Rejected."),
         ],
-        observer,
+        keeper,
     )
     changed = False
 
@@ -518,14 +518,14 @@ def test_callback_must_match_the_actual_chat_interrupt_and_action(
         callback = clicked(2, 11, data, 101, chat_id=22)
     bot.handle_update(callback)
     assert len(agent.submissions()) == 1
-    assert observer.requests == []
+    assert keeper.requests == []
     assert telegram.bodies()[-1]["text"] == STALE
     changed = False
     reject = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][1]["callback_data"]
     bot.handle_update(clicked(3, 11, reject, 101))
     bot.close()
     assert len(agent.submissions()) == 2
-    assert observer.requests == []
+    assert keeper.requests == []
     assert telegram.bodies()[-1]["text"] == "Rejected."
 
 
@@ -544,7 +544,7 @@ def test_known_rate_limit_waits_before_retry_without_submitting_an_agent_run(
             )
         return httpx.Response(200, json={"ok": True, "result": []})
 
-    agent = GraphAegra([AIMessage("Unused")], FakeObserver())
+    agent = GraphAegra([AIMessage("Unused")], FakeKeeper())
     bot = make_bot(
         family_settings(tmp_path),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
@@ -603,7 +603,7 @@ def test_help_attachments_and_edited_messages_do_not_call_the_agent(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    agent = GraphAegra([AIMessage("Unused")], FakeObserver())
+    agent = GraphAegra([AIMessage("Unused")], FakeKeeper())
     bot = make_bot(
         family_settings(tmp_path),
         telegram_client=telegram.client(),
@@ -646,10 +646,10 @@ def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver()
+    keeper = FakeKeeper()
     agent = GraphAegra(
         [monitoring_request()],
-        observer,
+        keeper,
     )
     settings = family_settings(tmp_path)
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
@@ -663,7 +663,7 @@ def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(
     bot.handle_update(incoming(4, 11, "Please continue"))
     bot.close()
     assert len(agent.submissions()) == 2
-    assert observer.requests == []
+    assert keeper.requests == []
     assert "uncertain" in telegram.bodies()[-1]["text"].lower()
 
 
@@ -671,13 +671,13 @@ def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
     agent = GraphAegra(
         [
             monitoring_request(),
             AIMessage("Monitoring approved."),
         ],
-        observer,
+        keeper,
     )
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -694,14 +694,14 @@ def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(
         agent_client=agent.client(),
     )
     bot.handle_update(incoming(1, 11, "Monitor this light"))
-    assert observer.requests == []
+    assert keeper.requests == []
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     bot.handle_update(clicked(2, 11, data, 101))
     bot.handle_update(clicked(3, 11, data, 101))
     bot.close()
 
     assert len(agent.submissions()) == 2
-    [write] = observer.requests
+    [write] = keeper.requests
     assert (write.method, write.url.path, json.loads(write.content)) == (
         "PUT",
         "/api/selection/bulb-a",
@@ -717,13 +717,13 @@ def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_butt
     tmp_path: Path,
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
     agent = GraphAegra(
         [
             monitoring_request(),
             AIMessage("Monitoring approved."),
         ],
-        observer,
+        keeper,
     )
     bot = make_bot(
         family_settings(tmp_path),
@@ -735,11 +735,11 @@ def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_butt
     token, _, decision = data.split(":")
     bot.handle_update(clicked(2, 11, f"{token}:²:{decision}", 101))
     assert len(agent.submissions()) == 1
-    assert observer.requests == []
+    assert keeper.requests == []
     bot.handle_update(clicked(3, 11, data, 101))
     bot.close()
     assert len(agent.submissions()) == 2
-    assert len(observer.requests) == 1
+    assert len(keeper.requests) == 1
     assert telegram.bodies()[-1]["text"] == "Monitoring approved."
 
 
@@ -748,9 +748,7 @@ def test_uncertain_active_run_blocks_same_user_until_finished(
     make_bot: BotFactory, tmp_path: Path, status: str
 ) -> None:
     telegram = FakeTelegram()
-    agent = GraphAegra(
-        [AIMessage("Finished answer"), AIMessage("Follow-up answer")], FakeObserver()
-    )
+    agent = GraphAegra([AIMessage("Finished answer"), AIMessage("Follow-up answer")], FakeKeeper())
     bot = make_bot(
         family_settings(tmp_path),
         telegram_client=telegram.client(),
@@ -773,7 +771,7 @@ def test_token_rotation_keeps_same_bot_state_but_other_bot_cannot_own_it(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    agent = GraphAegra([AIMessage("First answer"), AIMessage("Follow-up answer")], FakeObserver())
+    agent = GraphAegra([AIMessage("First answer"), AIMessage("Follow-up answer")], FakeKeeper())
     settings = family_settings(tmp_path, bot_token=SecretStr("123:old-secret"))
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.validate_startup()
@@ -865,10 +863,10 @@ def test_malformed_initial_approval_has_no_buttons_or_selection_write(
     make_bot: BotFactory, tmp_path: Path, shape: str
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver()
+    keeper = FakeKeeper()
     agent = GraphAegra(
         [monitoring_request()],
-        observer,
+        keeper,
     )
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -898,7 +896,7 @@ def test_malformed_initial_approval_has_no_buttons_or_selection_write(
     bot.handle_update(incoming(1, 11, "Monitor"))
     bot.close()
     assert len(agent.submissions()) == 1
-    assert observer.requests == []
+    assert keeper.requests == []
     [reply] = telegram.bodies()
     assert "Unsupported approval" in reply["text"]
     assert "reply_markup" not in reply
@@ -914,7 +912,7 @@ def test_split_approval_puts_buttons_on_final_chunk_and_removes_them_after_decis
             monitoring_request(),
             AIMessage("Rejected."),
         ],
-        FakeObserver(),
+        FakeKeeper(),
     )
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -1007,7 +1005,7 @@ def test_failed_final_delivery_allows_new_question_without_replaying_previous_ru
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    agent = GraphAegra([AIMessage("First answer"), AIMessage("Second answer")], FakeObserver())
+    agent = GraphAegra([AIMessage("First answer"), AIMessage("Second answer")], FakeKeeper())
     sends = 0
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -1035,10 +1033,10 @@ def test_fatal_telegram_delivery_during_recovery_or_cleanup_stops_worker(
     make_bot: BotFactory, tmp_path: Path, operation: str
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver()
+    keeper = FakeKeeper()
     agent = GraphAegra(
         [monitoring_request()],
-        observer,
+        keeper,
     )
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -1061,7 +1059,7 @@ def test_fatal_telegram_delivery_during_recovery_or_cleanup_stops_worker(
         update = clicked(2, 11, data, 101)
     with pytest.raises(FatalTelegramError):
         bot.handle_update(update)
-    assert observer.requests == []
+    assert keeper.requests == []
 
 
 def test_boolean_sent_message_id_is_not_a_valid_approval_reference(
@@ -1070,7 +1068,7 @@ def test_boolean_sent_message_id_is_not_a_valid_approval_reference(
     telegram = FakeTelegram()
     agent = GraphAegra(
         [monitoring_request()],
-        FakeObserver(),
+        FakeKeeper(),
     )
     # Captured Telegram HTTP payloads are parsed at this test boundary.
     sent: list[TelegramBody] = []
@@ -1102,8 +1100,8 @@ def test_failure_to_remove_resolved_keyboard_still_resumes_approved_graph(
     make_bot: BotFactory, tmp_path: Path
 ) -> None:
     telegram = FakeTelegram()
-    observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
-    agent = GraphAegra([monitoring_request(), AIMessage("Approved.")], observer)
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
+    agent = GraphAegra([monitoring_request(), AIMessage("Approved.")], keeper)
 
     def transport(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/editMessageReplyMarkup"):
@@ -1120,6 +1118,6 @@ def test_failure_to_remove_resolved_keyboard_still_resumes_approved_graph(
     bot.handle_update(clicked(2, 11, data, 101))
     bot.handle_update(clicked(3, 11, data, 101))
     assert len(agent.submissions()) == 2
-    assert len(observer.requests) == 1
+    assert len(keeper.requests) == 1
     assert telegram.bodies()[-1]["text"] == STALE
     assert "Approved." in [body["text"] for body in telegram.bodies()]
