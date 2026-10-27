@@ -34,9 +34,11 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
 
   await page.goto("/");
   await expect(page.locator("#source")).toHaveText("SYNTHETIC DEMO");
-  await expect(page.locator("#source-notice")).toHaveText(
-    "Demo data only. No hardware, Home Assistant, model, or device controls are connected.",
+  // The e2e demo stack runs with the control profile, so the notice says light control is on.
+  await expect(page.locator("#source-notice")).toContainText(
+    "Light control is on for monitored lights.",
   );
+  await expect(page.locator("#source-notice")).not.toContainText("device controls are connected");
 
   const lamps = page.locator("#catalog");
   await lamps.getByRole("button", { name: `Monitor ${LAMP}` }).click();
@@ -48,6 +50,17 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await expect(card).toBeVisible();
   await expect(card.getByText(/^(on|off|unavailable|unknown) · /)).toBeVisible(COLLECTION);
   await expect(card.getByText(/^Source: demo · Evidence ID: /)).toBeVisible();
+
+  // Control is on, so a light with a recorded on/off state offers a toggle.
+  const recorded = card.getByText(/^(on|off) · /);
+  await expect(recorded).toBeVisible(COLLECTION);
+  const wasOn = (await recorded.textContent())?.startsWith("on") ?? false;
+  const toggle = card.getByRole("button", { name: `Turn ${wasOn ? "off" : "on"} ${LAMP}` });
+  await toggle.click();
+  const now = wasOn ? "off" : "on";
+  await expect(page.locator("#message")).toHaveText(`${LAMP} is now ${now}.`, COLLECTION);
+  // The toggle shows the recorded state, so the card flips only once the change is recorded.
+  await expect(card.getByText(new RegExp(`^${now} · `))).toBeVisible(COLLECTION);
 
   // The name containing a script tag must never become markup.
   await expect(page.locator("body script")).toHaveCount(0);
