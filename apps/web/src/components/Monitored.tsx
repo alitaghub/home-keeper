@@ -80,41 +80,120 @@ function SwitchButton({
 
 function Dimmer({
   name,
-  percent,
+  value,
   disabled,
-  onCommit,
+  onChange,
 }: {
   name: string;
-  /** The recorded brightness; the slider returns to it after each command. */
-  percent: number;
+  value: number;
   disabled: boolean;
-  onCommit: (percent: number) => void;
+  onChange: (percent: number) => void;
 }) {
-  const [draft, setDraft] = useState<number | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
-  const shown = draft ?? percent;
   return (
     <label className="dimmer">
       <input
         type="range"
         min={1}
         max={100}
-        value={shown}
+        value={value}
         disabled={disabled}
         aria-label={`Brightness of ${name}`}
-        onChange={(event) => {
-          const value = Number(event.target.value);
-          setDraft(value);
-          clearTimeout(timer.current);
-          timer.current = setTimeout(() => {
-            setDraft(null);
-            onCommit(value);
-          }, DIMMER_SETTLE_MS);
-        }}
+        onChange={(event) => onChange(Number(event.target.value))}
       />
-      <output>{`${shown}%`}</output>
+      <output>{`${value}%`}</output>
     </label>
+  );
+}
+
+type Switch = (entity: Schemas["MonitoredEntity"], command: LightCommand) => void;
+
+function Tile({
+  entity,
+  onStop,
+  onSwitch,
+  busy,
+}: {
+  entity: Schemas["MonitoredEntity"];
+  onStop: (id: string) => void;
+  onSwitch: Switch | null;
+  busy: boolean;
+}) {
+  const name = lightName(entity);
+  const { baseline } = entity;
+  // Only an available light with a known on/off state can be switched.
+  const recorded = baseline?.availability === "available" ? baseline.state : null;
+  const switchable = onSwitch !== null && (recorded === "on" || recorded === "off");
+  const percent =
+    recorded === "on" && baseline?.brightness != null
+      ? brightnessPercent(baseline.brightness)
+      : 100;
+  // The slider's value while it moves; null shows the recorded brightness.
+  const [draft, setDraft] = useState<number | null>(null);
+  const settle = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const cancelDraft = () => {
+    clearTimeout(settle.current);
+    setDraft(null);
+  };
+  useEffect(() => () => clearTimeout(settle.current), []);
+  // A pending brightness must not fire once the light can no longer be switched.
+  useEffect(() => {
+    if (!switchable) clearTimeout(settle.current);
+  }, [switchable]);
+
+  return (
+    <article className={recorded === "on" ? "tile lit" : "tile"}>
+      <div className="tile-head">
+        <h3>{name}</h3>
+        {entity.freshness !== "fresh" && (
+          <span className={`tag ${entity.freshness}`}>{freshnessLabels[entity.freshness]}</span>
+        )}
+      </div>
+      <p className="tile-state">{stateText(baseline)}</p>
+      {!entity.supported && entity.reason && <p className="tile-note">{entity.reason}</p>}
+      {switchable && (
+        <div className="tile-controls">
+          <SwitchButton
+            name={name}
+            action={recorded === "on" ? "off" : "on"}
+            sending={busy}
+            onClick={(action) => {
+              // The click wins over a slider move that has not settled yet.
+              cancelDraft();
+              onSwitch(entity, { action });
+            }}
+          />
+          <Dimmer
+            name={name}
+            value={draft ?? percent}
+            disabled={busy}
+            onChange={(brightness_pct) => {
+              setDraft(brightness_pct);
+              clearTimeout(settle.current);
+              settle.current = setTimeout(() => {
+                setDraft(null);
+                onSwitch(entity, { action: "on", brightness_pct });
+              }, DIMMER_SETTLE_MS);
+            }}
+          />
+        </div>
+      )}
+      <details className="details">
+        <summary>Details</summary>
+        {baseline ? (
+          <Evidence baseline={baseline} confirmedAt={entity.confirmed_at} />
+        ) : (
+          <small>The collector has not confirmed a selected observation yet.</small>
+        )}
+        <button
+          type="button"
+          className="quiet"
+          aria-label={`Stop monitoring ${name}`}
+          onClick={() => onStop(entity.id)}
+        >
+          Stop monitoring
+        </button>
+      </details>
+    </article>
   );
 }
 
@@ -128,7 +207,7 @@ export function Monitored({
   entities: Schemas["MonitoredEntity"][] | null;
   onStop: (id: string) => void;
   /** Null while control is off: no light gets a switch. */
-  onSwitch: ((entity: Schemas["MonitoredEntity"], command: LightCommand) => void) | null;
+  onSwitch: Switch | null;
   onChooseLights: () => void;
   /** IDs of lights whose command is still running. */
   sending: ReadonlySet<string>;
@@ -143,64 +222,15 @@ export function Monitored({
           </button>
         </div>
       )}
-      {entities?.map((entity) => {
-        const name = lightName(entity);
-        const { baseline } = entity;
-        // Only an available light with a known on/off state can be switched.
-        const recorded = baseline?.availability === "available" ? baseline.state : null;
-        const switchable = onSwitch && (recorded === "on" || recorded === "off");
-        const busy = sending.has(entity.id);
-        const percent =
-          recorded === "on" && baseline?.brightness != null
-            ? brightnessPercent(baseline.brightness)
-            : 100;
-        return (
-          <article key={entity.id} className={recorded === "on" ? "tile lit" : "tile"}>
-            <div className="tile-head">
-              <h3>{name}</h3>
-              {entity.freshness !== "fresh" && (
-                <span className={`tag ${entity.freshness}`}>
-                  {freshnessLabels[entity.freshness]}
-                </span>
-              )}
-            </div>
-            <p className="tile-state">{stateText(baseline)}</p>
-            {!entity.supported && entity.reason && <p className="tile-note">{entity.reason}</p>}
-            {switchable && (
-              <div className="tile-controls">
-                <SwitchButton
-                  name={name}
-                  action={recorded === "on" ? "off" : "on"}
-                  sending={busy}
-                  onClick={(action) => onSwitch(entity, { action })}
-                />
-                <Dimmer
-                  name={name}
-                  percent={percent}
-                  disabled={busy}
-                  onCommit={(brightness_pct) => onSwitch(entity, { action: "on", brightness_pct })}
-                />
-              </div>
-            )}
-            <details className="details">
-              <summary>Details</summary>
-              {baseline ? (
-                <Evidence baseline={baseline} confirmedAt={entity.confirmed_at} />
-              ) : (
-                <small>The collector has not confirmed a selected observation yet.</small>
-              )}
-              <button
-                type="button"
-                className="quiet"
-                aria-label={`Stop monitoring ${name}`}
-                onClick={() => onStop(entity.id)}
-              >
-                Stop monitoring
-              </button>
-            </details>
-          </article>
-        );
-      })}
+      {entities?.map((entity) => (
+        <Tile
+          key={entity.id}
+          entity={entity}
+          onStop={onStop}
+          onSwitch={onSwitch}
+          busy={sending.has(entity.id)}
+        />
+      ))}
     </div>
   );
 }

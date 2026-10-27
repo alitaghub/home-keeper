@@ -43,7 +43,8 @@ buttons or sliders and looks as it does without the profile.
 The slider sends `on` at the chosen percent once it stops moving for 0.4
 seconds, so a drag sends one command. Moving the slider of a light that is off
 turns it on at that brightness. Like the button, it returns to the recorded
-brightness after the command.
+brightness after the command. Clicking the button before the slider settles
+drops the slider move.
 
 One click sends the command, with no confirmation and sender `dashboard`. The
 button reads **Sending…** and stays disabled until the API answers. The API

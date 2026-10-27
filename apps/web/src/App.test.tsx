@@ -1344,13 +1344,18 @@ describe("tabs, brightness and plain history", () => {
     expect(screen.getByRole("heading", { name: "Recorded changes" })).toBeInTheDocument();
   });
 
-  it("sends one brightness command once the slider stops moving", async () => {
+  it("sends one brightness command only after the slider rests for 400 ms", async () => {
     const { api } = renderLamp("on");
     await act(() => vi.advanceTimersByTimeAsync(100));
 
     fireEvent.change(slider(), { target: { value: "60" } });
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    expect(api.callsTo(COMMAND)).toHaveLength(0);
+    // Each move restarts the wait.
     fireEvent.change(slider(), { target: { value: "40" } });
-    await act(() => vi.advanceTimersByTimeAsync(500));
+    await act(() => vi.advanceTimersByTimeAsync(399));
+    expect(api.callsTo(COMMAND)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(1));
 
     await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(1));
     expect(api.callsTo(COMMAND)[0]?.body).toEqual({
@@ -1358,6 +1363,19 @@ describe("tabs, brightness and plain history", () => {
       sender: { kind: "dashboard" },
     });
     await waitFor(() => expect(byId("message")).toHaveTextContent("Desk lamp is now on at 40%."));
+  });
+
+  it("drops a slider move that has not settled when Turn off is clicked", async () => {
+    const { api } = renderLamp("on");
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    fireEvent.change(slider(), { target: { value: "40" } });
+    fireEvent.click(screen.getByRole("button", { name: "Turn off Desk lamp" }));
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+
+    expect(api.callsTo(COMMAND).map((call) => call.body)).toEqual([
+      { command: { action: "off" }, sender: { kind: "dashboard" } },
+    ]);
   });
 
   it("turns an off light on at the slider's brightness", async () => {
