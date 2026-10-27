@@ -106,7 +106,8 @@ export function App() {
   const { load: loadCommands, showingOlder: showingOlderCommands } = commands;
   // One mutation at a time, shared by selection toggles and discovery refresh.
   const busy = useRef(false);
-  // Light commands take up to 5 seconds, so they lock per light, apart from `busy`.
+  // A light command takes several seconds (the send, then up to 5 s of waiting for the
+  // change), so commands lock per light, apart from `busy`.
   const sending = useRef(new Set<string>());
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const discovery = useRef<DiscoveryState>({

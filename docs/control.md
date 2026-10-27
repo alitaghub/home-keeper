@@ -153,8 +153,9 @@ exists. With control `on` and no commands, it reads "No light commands yet."
 Each row shows the light, the command (`Turn on`, `Turn on at 30%` or
 `Turn off`), the outcome, the sender and the time sent. The sender reads
 `Dashboard`, `Browser chat`, or the Telegram user's name and ID, such as
-`Sam (Telegram 12345)`. An observed command also shows `Evidence ID:` with the
-ID of the recorded change it matched, the same ID the change shows below.
+`Sam (Telegram 12345)`. When a recorded change confirmed the command, the row
+also shows `Evidence ID:` with that change's ID, the same ID the change shows
+below. A command confirmed by a baseline snapshot has no evidence ID.
 
 | Outcome        | Shown as                    |
 | -------------- | --------------------------- |
