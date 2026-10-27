@@ -31,6 +31,42 @@ stops the heartbeat at once. So a revoked or wrong control token shows control
 `off`, within about 15 seconds of the rejection. Control comes back on within 30
 seconds of Home Assistant accepting the token again.
 
+## Switch a light from the dashboard
+
+While control is `on`, the dashboard's "Monitored lights" panel shows
+`CONTROL ON` instead of `READ ONLY`. Each monitored light that is available and
+recorded `on` or `off` gets a button: **Turn off** for a light that is on,
+**Turn on** for a light that is off. A pending, unknown or unavailable light gets
+no button. With control `off`, the dashboard shows no buttons and looks as it
+does without the profile.
+
+One click sends the command, with no confirmation and sender `dashboard`. The
+button reads **Sending…** and stays disabled until the API answers. The API
+waits up to 5 seconds for the light's reading, so with a slow controller the
+answer can take a few seconds more. Monitor, Stop monitoring and Refresh
+discovery keep working meanwhile. When the API answers, the button is free
+again, the dashboard reloads in the background, and it shows one message:
+
+| Outcome        | Message                                                         |
+| -------------- | --------------------------------------------------------------- |
+| `observed`     | `<light> is now on.` or `<light> is now off.`                   |
+| `not_observed` | `Sent to <light>, but no change was seen yet.`                  |
+| `refused`      | `Home Assistant refused the command for <light>.`               |
+| `unreachable`  | `Cannot reach the light controller. <light> may not have changed.` |
+
+A command the API refuses before sending (see [Refusals](#refusals)) shows the
+light's name and the API's message, such as `Desk lamp: The light is already in
+that state`, and the dashboard reloads. Any other error shows "Request failed.
+Please retry."
+
+The message stays for 15 seconds, or until you send the next command. Collection
+status messages appear beside it and do not replace it.
+
+The button always follows the recorded state, not the requested one. Until the
+reload finishes, and after a `not_observed` until the collector records the new
+state, it still offers the old action. The dashboard has no brightness control;
+use the API for that.
+
 ## Send a command
 
 Only a light you monitor can be switched, so every command leaves evidence.
@@ -123,4 +159,4 @@ on a monitored demo light returns `observed`.
   user does.
 - The controller gives Home Assistant 4 seconds per command, from connecting to
   the answer. A slower answer reads as `unreachable`, even if the light switched.
-- The dashboard has no switch yet; use the API.
+- The dashboard switches lights on and off only. Brightness needs the API.

@@ -520,3 +520,478 @@ describe("dashboard behavior", () => {
     });
   });
 });
+
+describe("light control from the dashboard", () => {
+  const COMMAND = "POST /api/lights/{entity_id}/command";
+  const CONTROL_NOTICE = "Light control is on for monitored lights.";
+
+  /** Monitors the desk lamp (recorded state `state`); control is on unless told otherwise. */
+  function renderControl(
+    options: {
+      control?: Schemas["ControlStatus"];
+      state?: Schemas["BaselineRecord"]["state"];
+      availability?: "available" | "unavailable" | "unknown";
+      light?: Schemas["Entity"];
+      outcome?: Schemas["CommandRecord"]["outcome"];
+    } = {},
+  ) {
+    const light = options.light ?? fixtures.desk;
+    return renderDashboard({
+      "GET /api/control": options.control ?? fixtures.controlOn,
+      "GET /api/catalog": { ...fixtures.catalog, entities: [light, fixtures.reading] },
+      "GET /api/selection": { ...fixtures.emptySelection, entity_ids: [light.id] },
+      "GET /api/monitored": {
+        entities: [fixtures.monitoredLight(light, options.state ?? "off", options.availability)],
+      },
+      [COMMAND]: fixtures.commandRecord(options.outcome ?? "observed"),
+    });
+  }
+
+  const monitored = () => within(byId("monitored"));
+  const toggles = () => monitored().queryAllByRole("button", { name: /^Turn (on|off) / });
+
+  /** Waits until the dashboard has rendered the light and had time to read the control status. */
+  async function loaded() {
+    await monitored().findByRole("heading", { name: "Desk lamp" });
+    await act(() => vi.advanceTimersByTimeAsync(100));
+  }
+
+  it("shows no toggle and the read-only texts when control is off", async () => {
+    renderControl({ control: fixtures.controlOff });
+    await loaded();
+
+    expect(toggles()).toEqual([]);
+    expect(screen.getByText("READ ONLY")).toBeInTheDocument();
+    expect(screen.queryByText("CONTROL ON")).toBeNull();
+    expect(byId("source-notice")).toHaveTextContent(
+      "Demo data only. No hardware, Home Assistant, model, or device controls are connected.",
+    );
+    expect(byId("source-notice")).not.toHaveTextContent(CONTROL_NOTICE);
+  });
+
+  it("treats a failed control read as control off", async () => {
+    const { api } = renderControl();
+    api.fail("GET /api/control", 500);
+    await loaded();
+
+    expect(api.callsTo("GET /api/control").length).toBeGreaterThan(0);
+    expect(toggles()).toEqual([]);
+    expect(screen.getByText("READ ONLY")).toBeInTheDocument();
+    expect(byId("source-notice")).not.toHaveTextContent(CONTROL_NOTICE);
+  });
+
+  it("says control is on in the tag and the source notice", async () => {
+    renderControl();
+    await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+
+    expect(screen.getByText("CONTROL ON")).toBeInTheDocument();
+    expect(screen.queryByText("READ ONLY")).toBeNull();
+    const notice = byId("source-notice").textContent ?? "";
+    expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
+    expect(notice).not.toContain("device controls are connected");
+    expect(notice).toMatch(/^Demo data only\./);
+  });
+
+  it("keeps the Home Assistant notice wording and adds the control sentence when control is on", async () => {
+    renderControl();
+    api.reply("GET /api/catalog", {
+      ...fixtures.catalog,
+      source_id: "home_assistant",
+      entities: [fixtures.desk, fixtures.reading],
+    });
+    await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
+    await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+
+    const notice = byId("source-notice").textContent ?? "";
+    expect(notice).toMatch(
+      /^Home Assistant discovery\. Only selected individual Hue lights are recorded\. /,
+    );
+    expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
+    expect(notice).not.toContain("device controls are connected");
+  });
+
+  it("keeps the footer when control is on", async () => {
+    renderControl();
+    await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+
+    expect(document.querySelector("footer")).toHaveTextContent(
+      "Stored on this machine · Change records are evidence, not explanations of cause · No agent in this milestone",
+    );
+  });
+
+  it.each([
+    ["on", "Turn off Desk lamp"],
+    ["off", "Turn on Desk lamp"],
+  ] as const)("names the toggle for a light recorded %s", async (state, name) => {
+    renderControl({ state });
+
+    const toggle = await monitored().findByRole("button", { name });
+    expect(toggle).toHaveAttribute("type", "button");
+    expect(toggle).toBeEnabled();
+    expect(toggles()).toHaveLength(1);
+  });
+
+  it.each([
+    ["unknown state", "unknown", "available"],
+    ["unavailable light", "unavailable", "unavailable"],
+  ] as const)("shows no toggle for a %s", async (_label, state, availability) => {
+    renderControl({ state, availability });
+    await loaded();
+
+    expect(toggles()).toEqual([]);
+  });
+
+  it("shows no toggle for a light without a baseline yet", async () => {
+    renderControl();
+    api.reply("GET /api/monitored", {
+      entities: [
+        {
+          ...fixtures.desk,
+          baseline: null,
+          freshness: "pending",
+          confirmed_at: null,
+        },
+      ],
+    });
+    await loaded();
+    await nextPoll();
+
+    expect(toggles()).toEqual([]);
+  });
+
+  it("sends one command per click with the exact body and mutation header", async () => {
+    const { api, user } = renderControl({ state: "off" });
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+
+    await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
+    const [command] = api.callsTo(COMMAND);
+    expect(command?.url.pathname).toBe("/api/lights/light.hue_desk/command");
+    expect(command?.headers.get("X-Home-Keeper")).toBe("1");
+    expect(command?.body).toEqual({ command: { action: "on" }, sender: { kind: "dashboard" } });
+  });
+
+  it("sends off for a light recorded on", async () => {
+    const { api, user } = renderControl({ state: "on" });
+
+    await user.click(await monitored().findByRole("button", { name: "Turn off Desk lamp" }));
+
+    await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now off."));
+    expect(api.callsTo(COMMAND).map((call) => call.body)).toEqual([
+      { command: { action: "off" }, sender: { kind: "dashboard" } },
+    ]);
+  });
+
+  it("disables the toggle and says Sending… while the command runs, and ignores a second click", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    const release = api.hold(COMMAND);
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+
+    const sending = await monitored().findByText("Sending…");
+    const button = sending.closest("button");
+    expect(button).toBeDisabled();
+    await user.click(sending);
+    fireEvent.click(sending);
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
+
+    release();
+    await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
+    expect(monitored().queryByText("Sending…")).toBeNull();
+    expect(monitored().getByRole("button", { name: "Turn on Desk lamp" })).toBeEnabled();
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
+  });
+
+  it("still sends a Monitor request while a command runs", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    const release = api.hold(COMMAND);
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+    await monitored().findByText("Sending…");
+    await user.click(within(byId("catalog")).getByRole("button", { name: "Monitor Reading lamp" }));
+
+    await waitFor(() => expect(api.callsTo("PUT /api/selection/{entity_id}")).toHaveLength(1));
+    expect(api.callsTo("PUT /api/selection/{entity_id}")[0]?.body).toEqual({ selected: true });
+    release();
+    await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
+  });
+
+  it("still sends a Stop request while a command runs", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    const release = api.hold(COMMAND);
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+    await monitored().findByText("Sending…");
+    await user.click(monitored().getByRole("button", { name: "Stop monitoring Desk lamp" }));
+
+    await waitFor(() => expect(api.callsTo("PUT /api/selection/{entity_id}")).toHaveLength(1));
+    expect(api.callsTo("PUT /api/selection/{entity_id}")[0]?.body).toEqual({ selected: false });
+    release();
+  });
+
+  it.each([
+    ["not_observed", "Sent to Desk lamp, but no change was seen yet."],
+    ["refused", "Home Assistant refused the command for Desk lamp."],
+    ["unreachable", "Cannot reach the light controller. Desk lamp may not have changed."],
+  ] as const)("shows the %s outcome and keeps the recorded state", async (outcome, message) => {
+    const { user } = renderControl({ state: "off", outcome });
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+
+    await waitFor(() => expect(byId("message").textContent).toBe(message));
+    expect(monitored().getByRole("button", { name: "Turn on Desk lamp" })).toBeEnabled();
+    expect(monitored().queryByRole("button", { name: "Turn off Desk lamp" })).toBeNull();
+  });
+
+  it("reloads after a command and shows the recorded state, not the requested one", async () => {
+    const { api, user } = renderControl({ state: "off", outcome: "observed" });
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+    await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
+    // The recording still says off, so the toggle still offers on.
+    expect(monitored().getByRole("button", { name: "Turn on Desk lamp" })).toBeInTheDocument();
+
+    const reloads = api.callsTo("GET /api/monitored").length;
+    api.reply("GET /api/monitored", {
+      entities: [fixtures.monitoredLight(fixtures.desk, "on")],
+    });
+    await nextPoll();
+    await waitFor(() => expect(api.callsTo("GET /api/monitored").length).toBeGreaterThan(reloads));
+    expect(await monitored().findByRole("button", { name: "Turn off Desk lamp" })).toBeEnabled();
+  });
+
+  it("requests the monitored list again right after a command", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    const button = await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+    const before = api.callsTo("GET /api/monitored").length;
+
+    // No timer advance: only a post-command reload can add a request.
+    await user.click(button);
+    await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
+
+    expect(api.callsTo("GET /api/monitored").length).toBeGreaterThan(before);
+  });
+
+  it("shows the request error message when the command call fails", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    api.fail(COMMAND, 500);
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+
+    await waitFor(() => expect(byId("message")).toHaveTextContent("Request failed. Please retry."));
+    expect(monitored().getByRole("button", { name: "Turn on Desk lamp" })).toBeEnabled();
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
+  });
+
+  it("renders a light name with markup as text in the toggle and the message", async () => {
+    const name = "<img src=x onerror=alert('light')>";
+    const light = { ...fixtures.desk, device_name: name };
+    const { user } = renderControl({ state: "off", light });
+
+    await user.click(await monitored().findByRole("button", { name: `Turn on ${name}` }));
+
+    await waitFor(() => expect(byId("message").textContent).toBe(`${name} is now on.`));
+    expect(document.querySelector("img, script")).toBeNull();
+  });
+
+  it("keeps a command outcome message through the next background poll", async () => {
+    const { api, user } = renderControl({ state: "off", outcome: "refused" });
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+    await waitFor(() =>
+      expect(byId("message").textContent).toBe("Home Assistant refused the command for Desk lamp."),
+    );
+
+    const polls = api.callsTo("GET /api/health").length;
+    await nextPoll();
+    await waitFor(() => expect(api.callsTo("GET /api/health").length).toBeGreaterThan(polls));
+
+    expect(byId("message").textContent).toBe("Home Assistant refused the command for Desk lamp.");
+  });
+
+  it("releases the toggle and shows the outcome while the reload after the command is pending", async () => {
+    const { api, user } = renderControl({ state: "off", outcome: "unreachable" });
+    const toggle = await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+    const releaseReload = api.hold("GET /api/monitored");
+
+    await user.click(toggle);
+
+    await waitFor(() =>
+      expect(byId("message").textContent).toBe(
+        "Cannot reach the light controller. Desk lamp may not have changed.",
+      ),
+    );
+    expect(monitored().queryByText("Sending…")).toBeNull();
+    expect(monitored().getByRole("button", { name: "Turn on Desk lamp" })).toBeEnabled();
+    releaseReload();
+  });
+
+  it("shows the API's refusal text with the light name and reloads", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    api.fail(COMMAND, {
+      status: 409,
+      body: { detail: { code: "already_in_state", message: "The light is already on <b>." } },
+    });
+    const toggle = await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+    const before = api.callsTo("GET /api/monitored").length;
+
+    await user.click(toggle);
+
+    await waitFor(() =>
+      expect(byId("message").textContent).toBe("Desk lamp: The light is already on <b>."),
+    );
+    expect(byId("message").querySelector("b")).toBeNull();
+    expect(api.callsTo("GET /api/monitored").length).toBeGreaterThan(before);
+    expect(monitored().getByRole("button", { name: "Turn on Desk lamp" })).toBeEnabled();
+  });
+
+  it("keeps the generic error for HTTP errors without an API refusal", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    api.fail(COMMAND, { status: 422, body: { detail: [{ msg: "bad" }] } });
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+
+    await waitFor(() => expect(byId("message").textContent).toBe("Request failed. Please retry."));
+  });
+
+  it("sends a command for a second light while the first light's command runs", async () => {
+    const { api, user } = renderDashboard({
+      "GET /api/control": fixtures.controlOn,
+      "GET /api/selection": {
+        ...fixtures.emptySelection,
+        entity_ids: [fixtures.desk.id, fixtures.reading.id],
+      },
+      "GET /api/monitored": {
+        entities: [
+          fixtures.monitoredLight(fixtures.desk, "off"),
+          fixtures.monitoredLight(fixtures.reading, "on"),
+        ],
+      },
+      [COMMAND]: fixtures.commandRecord("observed"),
+    });
+    const release = api.hold(COMMAND);
+
+    await user.click(await monitored().findByRole("button", { name: "Turn on Desk lamp" }));
+    await user.click(monitored().getByRole("button", { name: "Turn off Reading lamp" }));
+
+    await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(2));
+    expect(api.callsTo(COMMAND).map((call) => call.url.pathname)).toEqual([
+      "/api/lights/light.hue_desk/command",
+      "/api/lights/light.hue_reading/command",
+    ]);
+    release();
+  });
+
+  it.each(["off", "network", 500] as const)(
+    "turns controls off when the control read says %s and the monitored read fails",
+    async (result) => {
+      const { api } = renderControl({ state: "off" });
+      await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+      api.fail("GET /api/monitored", 500);
+      if (result === "off") api.reply("GET /api/control", fixtures.controlOff);
+      else api.fail("GET /api/control", result);
+
+      await nextPoll();
+      await waitFor(() => expect(api.callsTo("GET /api/control")).toHaveLength(2));
+      await waitFor(() => expect(byId("message")).toHaveTextContent(UNREACHABLE));
+
+      expect(toggles()).toEqual([]);
+      expect(screen.getByText("READ ONLY")).toBeInTheDocument();
+      expect(screen.queryByText("CONTROL ON")).toBeNull();
+      expect(byId("source-notice").textContent).toBe(
+        "Demo data only. No hardware, Home Assistant, model, or device controls are connected.",
+      );
+    },
+  );
+
+  it("does not bring the toggle back when an older poll's control answer arrives late", async () => {
+    const { api } = renderControl({ state: "off" });
+    await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+
+    // Delay one already-answered control response so it lands after a newer poll.
+    const forward = globalThis.fetch;
+    let claimed = false;
+    let captured = false;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const delay = !claimed && new URL(request.url).pathname === "/api/control";
+      if (delay) claimed = true;
+      const response = await forward(request);
+      if (delay) {
+        captured = true;
+        await gate;
+      }
+      return response;
+    });
+
+    await nextPoll();
+    expect(captured).toBe(true);
+    api.reply("GET /api/control", fixtures.controlOff);
+    await nextPoll();
+    await waitFor(() => expect(toggles()).toEqual([]));
+
+    await act(async () => release());
+
+    expect(toggles()).toEqual([]);
+    expect(screen.getByText("READ ONLY")).toBeInTheDocument();
+  });
+
+  it("keeps the newer light state when an older poll's monitored answer arrives late", async () => {
+    const { api } = renderControl({ state: "off" });
+    await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+
+    // Delay one already-answered monitored response so it lands after a newer poll.
+    const forward = globalThis.fetch;
+    let claimed = false;
+    let captured = false;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const delay = !claimed && new URL(request.url).pathname === "/api/monitored";
+      if (delay) claimed = true;
+      const response = await forward(request);
+      if (delay) {
+        captured = true;
+        await gate;
+      }
+      return response;
+    });
+
+    await nextPoll();
+    expect(captured).toBe(true);
+    api.reply("GET /api/monitored", {
+      entities: [fixtures.monitoredLight(fixtures.desk, "on")],
+    });
+    await nextPoll();
+    await monitored().findByRole("button", { name: "Turn off Desk lamp" });
+
+    await act(async () => release());
+
+    expect(monitored().getByRole("button", { name: "Turn off Desk lamp" })).toBeInTheDocument();
+    expect(byId("message").textContent).not.toBe(UNREACHABLE);
+  });
+
+  it("shows the generic error for a dropped command request, then lets a retry work", async () => {
+    const { api, user } = renderControl({ state: "off" });
+    const button = await monitored().findByRole("button", { name: "Turn on Desk lamp" });
+    api.fail(COMMAND, "network");
+
+    await user.click(button);
+
+    await waitFor(() => expect(byId("message").textContent).toBe("Request failed. Please retry."));
+    expect(button).toBeEnabled();
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
+
+    api.reply(COMMAND, fixtures.commandRecord("observed"));
+    await user.click(button);
+    await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
+    expect(api.callsTo(COMMAND)).toHaveLength(2);
+  });
+});

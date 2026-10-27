@@ -184,3 +184,50 @@ export const discoveryRefresh = {
 
 /** The dashboard's `toLocaleString` rendering of an API timestamp. */
 export const localTime = (value: string): string => new Date(value).toLocaleString();
+
+export const controlOff = { state: "off", heartbeat_at: null } satisfies Schemas["ControlStatus"];
+
+export const controlOn = {
+  state: "on",
+  heartbeat_at: "2026-10-12T10:00:08+00:00",
+} satisfies Schemas["ControlStatus"];
+
+/** A monitored light whose recorded reading has the given state and availability. */
+export const monitoredLight = (
+  entity: Schemas["Entity"],
+  state: Schemas["BaselineRecord"]["state"],
+  availability: "available" | "unavailable" | "unknown" = "available",
+) =>
+  ({
+    ...entity,
+    baseline: {
+      kind: "baseline",
+      id: `baseline-${entity.id}`,
+      entity_id: entity.id,
+      source_entity_id: null,
+      source_id: "demo",
+      state,
+      availability,
+      collection_started_at: null,
+      coverage_gap_ids: [],
+      received_at: "2026-10-12T10:00:06Z",
+      persisted_at: "2026-10-12T10:00:06+00:00",
+    },
+    freshness: "fresh",
+    confirmed_at: "2026-10-12T10:00:06+00:00",
+  }) satisfies Schemas["MonitoredEntity"];
+
+/** The command record the controller returns for a light command. */
+export const commandRecord = (
+  outcome: Schemas["CommandRecord"]["outcome"],
+  action: "on" | "off" = "on",
+) =>
+  ({
+    id: "command-1",
+    entity_id: desk.id,
+    command: { action },
+    sender: { kind: "dashboard" },
+    sent_at: "2026-10-12T10:01:00+00:00",
+    outcome,
+    event_id: outcome === "observed" ? "change-4" : null,
+  }) satisfies Schemas["CommandRecord"];

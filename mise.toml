@@ -90,7 +90,8 @@ docker compose config --quiet
 docker compose --profile agent config --quiet
 docker compose --profile control config --quiet
 docker compose -f compose.demo.yaml --profile control config --quiet
-docker compose -f compose.demo.yaml up --build --wait
+# The controller lets the Playwright suite switch a demo light from the dashboard.
+docker compose -f compose.demo.yaml --profile control up --build --wait
 uv run python e2e/compose_smoke.py
 uv run python e2e/compose_live_smoke.py
 uv run python e2e/compose_home_smoke.py
@@ -98,10 +99,10 @@ E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${HOME_KEEPER_PORT:-8000}}" pnpm 
 # Add the agent profile to the running demo stack. The model settings are
 # placeholders with a valid shape; the smoke never calls the model.
 AZURE_OPENAI_ENDPOINT=https://placeholder.invalid AZURE_OPENAI_API_KEY=placeholder \
-  docker compose -f compose.demo.yaml --profile agent up --build --wait
+  docker compose -f compose.demo.yaml --profile agent --profile control up --build --wait
 uv run python e2e/compose_agent_smoke.py
 # Release the completed demo before the isolated control and Telegram proofs start their stacks.
-docker compose -f compose.demo.yaml --profile agent down
+docker compose -f compose.demo.yaml --profile agent --profile control down
 uv run python e2e/compose_control_smoke.py
 uv run python e2e/compose_telegram_smoke.py
 """
