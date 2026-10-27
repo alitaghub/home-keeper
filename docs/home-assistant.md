@@ -210,7 +210,8 @@ Docker reports the placeholder path `/nonexistent/set-HOME_KEEPER_HA_CONTROL_TOK
 
 Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
 shows supported lamps by default, using their device names. Room groups, scenes,
-sensors and other entities stay in the collapsed **Show other entities** section.
+sensors and other entities stay in the collapsed **Show other entities** section
+on the **Setup** tab.
 Discovery retains minimal device/entity metadata exposed by Home Assistant. Only enabled
 individual Hue V2 lights with recognized registry metadata can be monitored.
 Hue groups, other integrations, disabled entities and unknown metadata remain
@@ -241,7 +242,7 @@ Test one individual Hue light end to end:
 2. Open Home Keeper, check the **HOME ASSISTANT** label, and select the bulb.
    Wait for fresh evidence and a first baseline.
 3. Change on/off and brightness in the Hue app. Leave each setting for about 20
-   seconds. Confirm the changes appear in **Recorded changes**.
+   seconds. Confirm the changes appear on the **History** tab.
 4. Stop the live collector and wait more than twice the collection interval.
    Confirm the evidence turns stale and a collection gap opens. Change the bulb
    while collection is stopped.

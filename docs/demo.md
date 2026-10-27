@@ -32,7 +32,8 @@ entity name that contains a `<script>` tag. The dashboard labels lamps by device
 name, so you see "Reading lamp". Any name that comes from Home Assistant renders
 as text, never as HTML, and the Playwright suite checks that this one stays inert.
 
-The dashboard refreshes every three seconds. **Refresh discovery** requests a
+The dashboard refreshes every three seconds. **Refresh discovery**, on the
+**Setup** tab, requests a
 new catalog on the next collection pass. A newly discovered light stays
 unselected until you choose it.
 

@@ -1,9 +1,14 @@
+import { useEffect, useRef, useState } from "react";
 import type { Schemas } from "../api/client";
-import { date } from "../format";
+import { brightnessPercent, date } from "../format";
 import { lightName } from "./Catalog";
 
 type Baseline = NonNullable<Schemas["MonitoredEntity"]["baseline"]>;
-export type LightAction = Schemas["CommandRequest"]["command"]["action"];
+export type LightCommand = Schemas["CommandRequest"]["command"];
+export type LightAction = LightCommand["action"];
+
+// A slider sends one command once it stops moving, not one per step.
+const DIMMER_SETTLE_MS = 400;
 
 const kindLabels: Record<Baseline["kind"], string> = {
   baseline: "Initial baseline",
@@ -12,12 +17,29 @@ const kindLabels: Record<Baseline["kind"], string> = {
   recovery: "Recovery snapshot; transition time unknown",
 };
 
+const freshnessLabels: Record<Schemas["MonitoredEntity"]["freshness"], string> = {
+  fresh: "fresh",
+  stale: "stale",
+  pending: "waiting",
+};
+
+function stateText(baseline: Baseline | null) {
+  if (!baseline) return "Waiting for a first reading";
+  if (baseline.availability !== "available") {
+    return baseline.availability === "unavailable" ? "Unavailable" : "Unknown";
+  }
+  if (baseline.state === "on") {
+    return baseline.brightness == null ? "On" : `On · ${brightnessPercent(baseline.brightness)}%`;
+  }
+  return baseline.state === "off" ? "Off" : "Unknown";
+}
+
 function Evidence({ baseline, confirmedAt }: { baseline: Baseline; confirmedAt: string | null }) {
   const gapIds = baseline.kind === "event" ? null : baseline.coverage_gap_ids;
   return (
     <>
       <small>{kindLabels[baseline.kind]}</small>
-      {baseline.brightness != null && <p>{`Brightness ${baseline.brightness} / 255`}</p>}
+      {baseline.brightness != null && <small>{`Brightness ${baseline.brightness} / 255`}</small>}
       {gapIds?.length ? (
         <small>{`Related gap evidence: ${gapIds.join(", ")}. Changes during this gap have unknown timing.`}</small>
       ) : null}
@@ -46,7 +68,7 @@ function SwitchButton({
   return (
     <button
       type="button"
-      className="primary"
+      className={action === "off" ? "switch on" : "switch"}
       aria-label={`${label} ${name}`}
       disabled={sending}
       onClick={() => onClick(action)}
@@ -56,69 +78,159 @@ function SwitchButton({
   );
 }
 
+function Dimmer({
+  name,
+  value,
+  disabled,
+  onChange,
+}: {
+  name: string;
+  value: number;
+  disabled: boolean;
+  onChange: (percent: number) => void;
+}) {
+  return (
+    <label className="dimmer">
+      <input
+        type="range"
+        min={1}
+        max={100}
+        value={value}
+        disabled={disabled}
+        aria-label={`Brightness of ${name}`}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      <output>{`${value}%`}</output>
+    </label>
+  );
+}
+
+type Switch = (entity: Schemas["MonitoredEntity"], command: LightCommand) => void;
+
+function Tile({
+  entity,
+  onStop,
+  onSwitch,
+  busy,
+}: {
+  entity: Schemas["MonitoredEntity"];
+  onStop: (id: string) => void;
+  onSwitch: Switch | null;
+  busy: boolean;
+}) {
+  const name = lightName(entity);
+  const { baseline } = entity;
+  // Only an available light with a known on/off state can be switched.
+  const recorded = baseline?.availability === "available" ? baseline.state : null;
+  const switchable = onSwitch !== null && (recorded === "on" || recorded === "off");
+  const percent =
+    recorded === "on" && baseline?.brightness != null
+      ? brightnessPercent(baseline.brightness)
+      : 100;
+  // The slider's value while it moves; null shows the recorded brightness.
+  const [draft, setDraft] = useState<number | null>(null);
+  const settle = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const cancelDraft = () => {
+    clearTimeout(settle.current);
+    setDraft(null);
+  };
+  useEffect(() => () => clearTimeout(settle.current), []);
+  // A pending brightness must not fire once the light can no longer be switched.
+  useEffect(() => {
+    if (!switchable) clearTimeout(settle.current);
+  }, [switchable]);
+
+  return (
+    <article className={recorded === "on" ? "tile lit" : "tile"}>
+      <div className="tile-head">
+        <h3>{name}</h3>
+        {entity.freshness !== "fresh" && (
+          <span className={`tag ${entity.freshness}`}>{freshnessLabels[entity.freshness]}</span>
+        )}
+      </div>
+      <p className="tile-state">{stateText(baseline)}</p>
+      {!entity.supported && entity.reason && <p className="tile-note">{entity.reason}</p>}
+      {switchable && (
+        <div className="tile-controls">
+          <SwitchButton
+            name={name}
+            action={recorded === "on" ? "off" : "on"}
+            sending={busy}
+            onClick={(action) => {
+              // The click wins over a slider move that has not settled yet.
+              cancelDraft();
+              onSwitch(entity, { action });
+            }}
+          />
+          <Dimmer
+            name={name}
+            value={draft ?? percent}
+            disabled={busy}
+            onChange={(brightness_pct) => {
+              setDraft(brightness_pct);
+              clearTimeout(settle.current);
+              settle.current = setTimeout(() => {
+                setDraft(null);
+                onSwitch(entity, { action: "on", brightness_pct });
+              }, DIMMER_SETTLE_MS);
+            }}
+          />
+        </div>
+      )}
+      <details className="details">
+        <summary>Details</summary>
+        {baseline ? (
+          <Evidence baseline={baseline} confirmedAt={entity.confirmed_at} />
+        ) : (
+          <small>The collector has not confirmed a selected observation yet.</small>
+        )}
+        <button
+          type="button"
+          className="quiet"
+          aria-label={`Stop monitoring ${name}`}
+          onClick={() => onStop(entity.id)}
+        >
+          Stop monitoring
+        </button>
+      </details>
+    </article>
+  );
+}
+
 export function Monitored({
   entities,
   onStop,
   onSwitch,
+  onChooseLights,
   sending,
 }: {
   entities: Schemas["MonitoredEntity"][] | null;
   onStop: (id: string) => void;
   /** Null while control is off: no light gets a switch. */
-  onSwitch: ((entity: Schemas["MonitoredEntity"], action: LightAction) => void) | null;
+  onSwitch: Switch | null;
+  onChooseLights: () => void;
   /** IDs of lights whose command is still running. */
   sending: ReadonlySet<string>;
 }) {
   return (
-    <div id="monitored">
+    <div id="monitored" className="tiles">
       {entities && !entities.length && (
-        <p className="empty">
-          No lights selected. Choose a light below to establish its first baseline.
-        </p>
+        <div className="empty">
+          <p>No lights monitored yet. Choose the lights Home Keeper should record.</p>
+          <button type="button" className="primary" onClick={onChooseLights}>
+            Choose lights
+          </button>
+        </div>
       )}
-      {entities?.map((entity) => {
-        const name = lightName(entity);
-        const { baseline } = entity;
-        // Only an available light with a known on/off state can be switched.
-        const recorded = baseline?.availability === "available" ? baseline.state : null;
-        const switchable = onSwitch && (recorded === "on" || recorded === "off");
-        return (
-          <article key={entity.id} className="observation">
-            <div className="section-heading">
-              <h3>{name}</h3>
-              <span className={`tag ${entity.freshness}`}>{entity.freshness}</span>
-              <button
-                type="button"
-                className="secondary"
-                aria-label={`Stop monitoring ${name}`}
-                onClick={() => onStop(entity.id)}
-              >
-                Stop monitoring
-              </button>
-            </div>
-            <div className="state-row">
-              <p className="state">
-                {baseline
-                  ? `${baseline.state} · ${baseline.availability}`
-                  : "Pending · state unknown"}
-              </p>
-              {switchable && (
-                <SwitchButton
-                  name={name}
-                  action={recorded === "on" ? "off" : "on"}
-                  sending={sending.has(entity.id)}
-                  onClick={(action) => onSwitch(entity, action)}
-                />
-              )}
-            </div>
-            {baseline ? (
-              <Evidence baseline={baseline} confirmedAt={entity.confirmed_at} />
-            ) : (
-              <p>The collector has not confirmed a selected observation yet.</p>
-            )}
-          </article>
-        );
-      })}
+      {entities?.map((entity) => (
+        <Tile
+          key={entity.id}
+          entity={entity}
+          onStop={onStop}
+          onSwitch={onSwitch}
+          busy={sending.has(entity.id)}
+        />
+      ))}
     </div>
   );
 }

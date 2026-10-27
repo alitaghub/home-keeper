@@ -47,8 +47,9 @@ Baseline history uses `limit` (1–100, default 50) and an integer `cursor` from
 
 ### Recorded changes
 
-The **Recorded changes** timeline stores observed state, availability, brightness
-and color transitions. Each entry includes its evidence ID, source entity and
+The **Recorded changes** list on the **History** tab stores observed state,
+availability, brightness and color transitions. Each row says the change in
+words, such as "Desk lamp turned on at 40%". Its **Details** include its evidence ID, source entity and
 stable registry identity, old and new values, Home Assistant's `time_fired`,
 connector receipt time and API persistence time. Recorded changes use the
 [Home Assistant WebSocket `state_changed` subscription](https://developers.home-assistant.io/docs/api/websocket/#subscribe-to-events).
@@ -144,9 +145,10 @@ Collection gaps and recovery are recorded locally.
 
 ## Collection gaps and recovery
 
-The **Collection gaps** panel records interruptions separately from a bulb
+The **Collection gaps** list on the **History** tab records interruptions separately from a bulb
 reporting `unavailable`. Losing the connector does not create unavailable events
-for every light. Each gap has an evidence ID, selected entity scope, last
+for every light. While a gap is open, every tab shows a warning that links to
+History. Each gap has an evidence ID, selected entity scope, last
 confirmed collection, detection time and eventual recovery time. The exact start
 is uncertain. A restart records a gap from the last persisted collection point.
 A missed heartbeat is detected when the API is read after twice the configured
