@@ -19,16 +19,21 @@ from deepagents._models import (
 )
 from langchain.agents.middleware import (
     AgentMiddleware,
+    AgentState,
+    HumanInTheLoopMiddleware,
     InterruptOnConfig,
     ModelRequest,
     ModelResponse,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.config import get_config
+from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.runtime import Runtime
 
 from home_keeper_agent.keeper import KeeperClient
-from home_keeper_agent.tools import keeper_tools
+from home_keeper_agent.tools import LIGHT_TOOLS, keeper_tools, light_refusals, run_context
 
 SYSTEM_PROMPT = """\
 You answer questions about the lights in one home. Home Keeper records what the lights do \
@@ -43,8 +48,13 @@ it is 0s. Unknown time is when collection was interrupted; it is neither on nor 
 - If a tool result starts with "Keeper error:" because Home Keeper cannot be reached, say \
 you cannot reach Home Keeper right now. Never guess an answer.
 - You cannot see power or energy use. If asked, say you cannot see power and give no estimate.
-- You cannot control devices. If asked to switch, dim or change a light, say you cannot \
-control devices.
+- You can switch monitored lights with turn_on_light (optionally at a brightness percent) and \
+turn_off_light, but only while list_lights starts with "Control: on". You may suggest a light \
+change inside an answer. Propose turn_on_light or turn_off_light only after the user asks for \
+that change or agrees to your suggestion, never on your own assumption. The user approves or \
+rejects each command; after a rejection, say nothing changed. After an approval, report the \
+outcome the tool result states. If a result starts with "Not sent:", say why and offer what it \
+suggests.
 - Monitoring a light means recording it, and the user's choice to monitor is their consent. \
 Propose monitor_light or stop_monitoring only when the user asks for it, never on your own \
 assumption. The user approves or rejects each change; after a rejection, say nothing changed.
@@ -67,6 +77,59 @@ FILE_TOOLS: list[FsToolName] = [
 
 
 APPROVE_OR_REJECT: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+
+
+def _since_last_ai_message(messages: list[AnyMessage]) -> list[AnyMessage]:
+    last = max((i for i, m in enumerate(messages) if isinstance(m, AIMessage)), default=-1)
+    return messages[last + 1 :]
+
+
+def _unanswered(request: ToolCallRequest) -> bool:
+    # Only answers to the latest model response count, as for LangChain's tool scheduling;
+    # an earlier result that reused this call ID must not skip the card.
+    call_id = request.tool_call["id"]
+    return not any(
+        isinstance(message, ToolMessage) and message.tool_call_id == call_id
+        for message in _since_last_ai_message(request.state["messages"])
+    )
+
+
+# A light command the pre-check already answered gets no card.
+LIGHT_APPROVAL: InterruptOnConfig = {**APPROVE_OR_REJECT, "when": _unanswered}
+
+
+class LightPreCheck(AgentMiddleware[AgentState[None], None]):
+    """Answers a light command that cannot or must not run, so it gets no approval card.
+
+    Its own graph node, so resuming an interrupt does not check again.
+    """
+
+    def __init__(self, client: KeeperClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def after_model(
+        self,
+        state: AgentState[None],
+        runtime: Runtime[None],
+    ) -> dict[str, list[ToolMessage]] | None:
+        last = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage)), None)
+        if last is None:
+            return None
+        calls = [call for call in last.tool_calls if call["name"] in LIGHT_TOOLS]
+        if not calls:
+            return None
+        refusals = light_refusals(
+            self.client,
+            [(call["name"], call["args"]) for call in calls],
+            run_context(get_config()),
+        )
+        answers = [
+            ToolMessage(refusal, name=call["name"], tool_call_id=call["id"], status="error")
+            for call, refusal in zip(calls, refusals, strict=True)
+            if refusal is not None
+        ]
+        return {"messages": answers} if answers else None
 
 
 class CurrentTime(AgentMiddleware):
@@ -115,12 +178,27 @@ def build_agent(
         model,
         keeper_tools(client),
         system_prompt=SYSTEM_PROMPT,
-        # Replaces the default filesystem middleware by name, removing `execute`.
-        # Middleware state types are invariant, so the checker rejects FilesystemState here
-        # although create_deep_agent merges every middleware's state into one graph.
-        middleware=[FilesystemMiddleware(tools=FILE_TOOLS), CurrentTime()],  # pyright: ignore[reportArgumentType]
-        # Selection decides what is recorded, so the user approves each change. The tools
-        # write only the keeper's selection, never a device.
-        interrupt_on=dict.fromkeys(("monitor_light", "stop_monitoring"), APPROVE_OR_REJECT),
+        # The approval middleware is passed here, not as `interrupt_on`, so the light pre-check
+        # can follow it in the list and so run before it.
+        middleware=[
+            # Replaces the default filesystem middleware by name, removing `execute`.
+            # Middleware state types are invariant, so the checker rejects FilesystemState here
+            # although create_deep_agent merges every middleware's state into one graph.
+            FilesystemMiddleware(tools=FILE_TOOLS),  # pyright: ignore[reportArgumentType]
+            CurrentTime(),
+            HumanInTheLoopMiddleware(
+                interrupt_on={
+                    # Selection decides what is recorded, so the user approves each change.
+                    # These tools write only the keeper's selection, never a device.
+                    "monitor_light": APPROVE_OR_REJECT,
+                    "stop_monitoring": APPROVE_OR_REJECT,
+                    # These switch a real light.
+                    **dict.fromkeys(LIGHT_TOOLS, LIGHT_APPROVAL),
+                }
+            ),
+            # after_model hooks run in reverse list order, so listing the pre-check after
+            # the approval middleware makes it run first.
+            LightPreCheck(client),
+        ],
         checkpointer=checkpointer,
     )
