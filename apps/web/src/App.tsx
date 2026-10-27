@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage, mutationHeaders, type Schemas, unwrap } from "./api/client";
 import { Catalog, lightName } from "./components/Catalog";
+import { Commands } from "./components/Commands";
 import { Coverage } from "./components/Coverage";
 import { type LightAction, Monitored } from "./components/Monitored";
 import { Timeline } from "./components/Timeline";
 import { date } from "./format";
-import { useTimeline } from "./useTimeline";
+import { useCommands, useTimeline } from "./useTimeline";
 
 const POLL_MS = 3000;
 
@@ -101,9 +102,12 @@ export function App() {
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const timeline = useTimeline();
   const { load: loadTimeline, showingOlder } = timeline;
+  const commands = useCommands();
+  const { load: loadCommands, showingOlder: showingOlderCommands } = commands;
   // One mutation at a time, shared by selection toggles and discovery refresh.
   const busy = useRef(false);
-  // Light commands take up to 5 seconds, so they lock per light, apart from `busy`.
+  // A light command takes several seconds (the send, then up to 5 s of waiting for the
+  // change), so commands lock per light, apart from `busy`.
   const sending = useRef(new Set<string>());
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const discovery = useRef<DiscoveryState>({
@@ -150,14 +154,17 @@ export function App() {
             ? "Discovery refresh requested. The collector checks on its next collection pass."
             : ""),
       );
-      if (!showingOlder.current) await loadTimeline();
+      await Promise.all([
+        showingOlder.current ? null : loadTimeline(),
+        showingOlderCommands.current ? null : loadCommands(),
+      ]);
     } catch {
       if (!isLatest("snapshot")) return;
       setMessage(
         "Cannot reach Home Keeper. Collection freshness is unknown until connection returns.",
       );
     }
-  }, [loadTimeline, showingOlder]);
+  }, [loadTimeline, showingOlder, loadCommands, showingOlderCommands]);
 
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
 
@@ -226,6 +233,11 @@ export function App() {
   const live = snapshot?.catalog.source_id === "home_assistant";
   const controlOn = snapshot !== null && control === "on";
   const health = snapshot?.health;
+  const names = new Map(
+    [...(snapshot?.catalog.entities ?? []), ...(snapshot?.monitored.entities ?? [])].map(
+      (entity) => [entity.id, lightName(entity)],
+    ),
+  );
 
   return (
     <>
@@ -343,11 +355,20 @@ export function App() {
               id="timeline-refresh"
               type="button"
               disabled={timeline.loading}
-              onClick={() => void loadTimeline()}
+              onClick={() => void Promise.all([loadTimeline(), loadCommands()])}
             >
               Refresh history
             </button>
           </div>
+          {(controlOn || Boolean(commands.commands?.length)) && (
+            <Commands
+              commands={commands.commands}
+              names={names}
+              hasMore={commands.hasMore}
+              loading={commands.loading}
+              onMore={() => void loadCommands(true)}
+            />
+          )}
           <p id="timeline-status" className="history-status" role="status" aria-live="polite">
             {timeline.status}
           </p>

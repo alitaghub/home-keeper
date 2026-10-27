@@ -995,3 +995,287 @@ describe("light control from the dashboard", () => {
     expect(api.callsTo(COMMAND)).toHaveLength(2);
   });
 });
+
+describe("command history in the timeline", () => {
+  const COMMANDS = "GET /api/commands";
+  const commandsSection = () => within(byId("commands"));
+  const articles = () => commandsSection().getAllByRole("article");
+  const { historyCommand: command, commandsPage } = fixtures;
+
+  it("is hidden when control is off and there are no commands", async () => {
+    const { api } = renderDashboard({ [COMMANDS]: fixtures.emptyCommands });
+    await waitFor(() => expect(api.callsTo("GET /api/events").length).toBeGreaterThan(0));
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    expect(document.getElementById("commands")).toBeNull();
+    expect(screen.queryByText("Light commands")).toBeNull();
+    expect(screen.queryByText("No light commands yet.")).toBeNull();
+  });
+
+  it("says there are no commands yet when control is on", async () => {
+    renderDashboard({ "GET /api/control": fixtures.controlOn });
+
+    expect(await screen.findByText("No light commands yet.")).toBeInTheDocument();
+    expect(commandsSection().getByRole("heading", { name: "Light commands" })).toBeInTheDocument();
+  });
+
+  it("shows commands when control is off but commands exist, newest page of 20", async () => {
+    const { api } = renderDashboard({ [COMMANDS]: commandsPage([command("c1")]) });
+
+    await waitFor(() => expect(articles()).toHaveLength(1));
+    expect(api.callsTo(COMMANDS)[0]?.url.searchParams.get("limit")).toBe("20");
+    expect(screen.queryByText("No light commands yet.")).toBeNull();
+  });
+
+  it("renders time, light name, action, sender and outcome for each sender and outcome", async () => {
+    const rows = [
+      command("c1", { sender: { kind: "dashboard" }, outcome: "observed", event_id: "change-3" }),
+      command("c2", { sender: { kind: "browser_chat" }, outcome: "not_observed" }),
+      command("c3", {
+        sender: { kind: "telegram", id: 4242, name: "Maria" },
+        outcome: "refused",
+      }),
+      command("c4", { outcome: "unreachable" }),
+      command("c5", { outcome: "pending" }),
+      command("c6", { outcome: "interrupted" }),
+    ];
+    renderDashboard({ [COMMANDS]: commandsPage(rows) });
+
+    await waitFor(() => expect(articles()).toHaveLength(6));
+    const [c1, c2, c3, c4, c5, c6] = articles();
+    const time = localTime("2026-10-12T10:01:00+00:00");
+    expect(c1).toHaveTextContent(time);
+    expect(c1).toHaveTextContent("Desk lamp");
+    expect(c1).toHaveTextContent("Turn on");
+    expect(c1).toHaveTextContent("Dashboard");
+    expect(c1).toHaveTextContent("Observed");
+    expect(c2).toHaveTextContent("Browser chat");
+    expect(c2).toHaveTextContent("Not observed");
+    expect(c3).toHaveTextContent("Maria (Telegram 4242)");
+    expect(c3).toHaveTextContent("Refused by Home Assistant");
+    expect(c4).toHaveTextContent("Controller unreachable");
+    expect(c5).toHaveTextContent("Pending");
+    expect(c6).toHaveTextContent("Interrupted");
+  });
+
+  it("words the action: on, on at a percent, and off", async () => {
+    renderDashboard({
+      [COMMANDS]: commandsPage([
+        command("c1", { command: { action: "on", brightness_pct: 30 } }),
+        command("c2", { command: { action: "on" } }),
+        command("c3", { command: { action: "off" } }),
+      ]),
+    });
+
+    await waitFor(() => expect(articles()).toHaveLength(3));
+    const [c1, c2, c3] = articles();
+    expect(c1).toHaveTextContent("Turn on at 30%");
+    expect(c2).toHaveTextContent("Turn on");
+    expect(c2).not.toHaveTextContent("Turn on at");
+    expect(c3).toHaveTextContent("Turn off");
+  });
+
+  it("names the light from the catalog and falls back to the raw entity id", async () => {
+    renderDashboard({
+      [COMMANDS]: commandsPage([
+        command("c1", { entity_id: fixtures.reading.id }),
+        command("c2", { entity_id: "light.removed_lamp" }),
+      ]),
+    });
+
+    await waitFor(() => expect(articles()).toHaveLength(2));
+    const [c1, c2] = articles();
+    expect(c1).toHaveTextContent("Reading lamp");
+    expect(c2).toHaveTextContent("light.removed_lamp");
+  });
+
+  it("shows the evidence ID only when the command matched an event", async () => {
+    renderDashboard({
+      [COMMANDS]: commandsPage([
+        command("c1", { outcome: "observed", event_id: "change-3" }),
+        command("c2", { outcome: "not_observed", event_id: null }),
+      ]),
+    });
+
+    await waitFor(() => expect(articles()).toHaveLength(2));
+    const [observed, missing] = articles();
+    expect(observed).toHaveTextContent("Evidence ID: change-3");
+    expect(missing).not.toHaveTextContent("Evidence ID");
+  });
+
+  it("renders a Telegram name with markup as literal text", async () => {
+    const name = "<img src=x onerror=attack()> <b>Eve</b>";
+    renderDashboard({
+      [COMMANDS]: commandsPage([command("c1", { sender: { kind: "telegram", id: 7, name } })]),
+    });
+
+    await waitFor(() => expect(articles()).toHaveLength(1));
+    expect(articles()[0]).toHaveTextContent(`${name} (Telegram 7)`);
+    expect(byId("commands").querySelector("img, b")).toBeNull();
+  });
+
+  it("loads older commands, appends them, and drops the button on the last page", async () => {
+    const { api, user } = renderDashboard({
+      [COMMANDS]: (call) =>
+        call.url.searchParams.has("cursor")
+          ? commandsPage([command("c3", { sender: { kind: "telegram", id: 9, name: "Old" } })])
+          : commandsPage([command("c1"), command("c2")], "cursor-2"),
+    });
+
+    await waitFor(() => expect(articles()).toHaveLength(2));
+    await user.click(commandsSection().getByRole("button", { name: "Load older commands" }));
+
+    await waitFor(() => expect(articles()).toHaveLength(3));
+    expect(articles()[2]).toHaveTextContent("Old (Telegram 9)");
+    const older = api.callsTo(COMMANDS).at(-1);
+    expect(older?.url.searchParams.get("cursor")).toBe("cursor-2");
+    expect(older?.url.searchParams.get("limit")).toBe("20");
+    expect(screen.queryByRole("button", { name: "Load older commands" })).toBeNull();
+  });
+
+  it("keeps older commands shown across polls", async () => {
+    const { api, user } = renderDashboard({
+      [COMMANDS]: (call) =>
+        call.url.searchParams.has("cursor")
+          ? commandsPage([command("c3")])
+          : commandsPage([command("c1")], "cursor-2"),
+    });
+    await waitFor(() => expect(articles()).toHaveLength(1));
+    await user.click(commandsSection().getByRole("button", { name: "Load older commands" }));
+    await waitFor(() => expect(articles()).toHaveLength(2));
+
+    const catalogRequests = api.callsTo("GET /api/catalog").length;
+    await nextPoll();
+    await waitFor(() =>
+      expect(api.callsTo("GET /api/catalog").length).toBeGreaterThan(catalogRequests),
+    );
+
+    expect(articles()).toHaveLength(2);
+  });
+
+  it("pages events and commands independently", async () => {
+    const { api, user } = renderDashboard({
+      "GET /api/events": (call) =>
+        call.url.searchParams.has("cursor")
+          ? { ...fixtures.eventsPage2, events: [fixtures.change2, fixtures.change1] }
+          : fixtures.eventsPage1,
+      [COMMANDS]: commandsPage([command("c1")], "cursor-2"),
+    });
+    const timeline = within(byId("timeline"));
+    await waitFor(() => expect(timeline.getByText("Evidence ID: change-3")).toBeInTheDocument());
+    await waitFor(() => expect(articles()).toHaveLength(1));
+    const commandRequests = api.callsTo(COMMANDS).length;
+
+    await user.click(screen.getByRole("button", { name: "Load older changes" }));
+
+    await waitFor(() => expect(timeline.getByText("Evidence ID: change-1")).toBeInTheDocument());
+    expect(api.callsTo(COMMANDS)).toHaveLength(commandRequests);
+    expect(api.callsTo(COMMANDS).every((call) => !call.url.searchParams.has("cursor"))).toBe(true);
+    expect(
+      commandsSection().getByRole("button", { name: "Load older commands" }),
+    ).toBeInTheDocument();
+    expect(articles()).toHaveLength(1);
+  });
+
+  it("returns to the newest commands on Refresh history and keeps refreshing them", async () => {
+    const { api, user } = renderDashboard({
+      [COMMANDS]: (call) =>
+        call.url.searchParams.has("cursor")
+          ? commandsPage([command("c-old")])
+          : commandsPage([command("c-new")], "cursor-2"),
+    });
+    await waitFor(() => expect(articles()).toHaveLength(1));
+    await user.click(commandsSection().getByRole("button", { name: "Load older commands" }));
+    await waitFor(() => expect(articles()).toHaveLength(2));
+    const before = api.callsTo(COMMANDS).length;
+
+    await user.click(screen.getByRole("button", { name: "Refresh history" }));
+
+    await waitFor(() => expect(api.callsTo(COMMANDS).length).toBeGreaterThan(before));
+    expect(api.callsTo(COMMANDS).at(-1)?.url.searchParams.has("cursor")).toBe(false);
+    await waitFor(() => expect(articles()).toHaveLength(1));
+    const afterRefresh = api.callsTo(COMMANDS).length;
+
+    await nextPoll();
+    await waitFor(() => expect(api.callsTo(COMMANDS).length).toBeGreaterThan(afterRefresh));
+    expect(api.callsTo(COMMANDS).at(-1)?.url.searchParams.has("cursor")).toBe(false);
+  });
+
+  it("refreshes the newest commands when Refresh history is clicked during an older request", async () => {
+    const { api, user } = renderDashboard({
+      [COMMANDS]: (call) =>
+        call.url.searchParams.has("cursor")
+          ? commandsPage([
+              command("c-old", { sender: { kind: "telegram", id: 99, name: "Older" } }),
+            ])
+          : commandsPage([command("c1")], "cursor-2"),
+    });
+    await waitFor(() => expect(articles()).toHaveLength(1));
+    // Only the older page waits, so it can answer after the refresh.
+    const release = api.hold(COMMANDS, (call) => call.url.searchParams.has("cursor"));
+    await user.click(commandsSection().getByRole("button", { name: "Load older commands" }));
+    await waitFor(() =>
+      expect(api.callsTo(COMMANDS).at(-1)?.url.searchParams.has("cursor")).toBe(true),
+    );
+    api.reply(COMMANDS, (call) =>
+      call.url.searchParams.has("cursor")
+        ? commandsPage([command("c-old", { sender: { kind: "telegram", id: 99, name: "Older" } })])
+        : commandsPage(
+            [command("c-new", { sender: { kind: "browser_chat" } }), command("c1")],
+            "cursor-2",
+          ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Refresh history" }));
+    await waitFor(() => expect(articles()).toHaveLength(2));
+    // The stale older page lands last, with no poll after it to hide an overwrite.
+    await act(async () => {
+      release();
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(articles()).toHaveLength(2);
+    expect(articles()[0]).toHaveTextContent("Browser chat");
+    expect(commandsSection().queryByText(/Older \(Telegram 99\)/)).toBeNull();
+    const afterRefresh = api.callsTo(COMMANDS).length;
+
+    await nextPoll();
+    await waitFor(() => expect(api.callsTo(COMMANDS).length).toBeGreaterThan(afterRefresh));
+    expect(api.callsTo(COMMANDS).at(-1)?.url.searchParams.has("cursor")).toBe(false);
+  });
+
+  it("replaces stale command records on the next poll", async () => {
+    const { api } = renderDashboard({
+      [COMMANDS]: commandsPage([command("c1", { outcome: "pending" })]),
+    });
+    await waitFor(() => expect(articles()[0]).toHaveTextContent("Pending"));
+
+    api.reply(
+      COMMANDS,
+      commandsPage([
+        command("c2", { sender: { kind: "browser_chat" } }),
+        command("c1", { outcome: "observed", event_id: "change-3" }),
+      ]),
+    );
+    await nextPoll();
+
+    await waitFor(() => expect(articles()).toHaveLength(2));
+    expect(articles()[0]).toHaveTextContent("Browser chat");
+    expect(articles()[1]).toHaveTextContent("Observed");
+    expect(articles()[1]).not.toHaveTextContent("Pending");
+    expect(articles()[1]).toHaveTextContent("Evidence ID: change-3");
+  });
+
+  it("keeps the last command list when a later read fails", async () => {
+    const { api } = renderDashboard({ [COMMANDS]: commandsPage([command("c1")]) });
+    await waitFor(() => expect(articles()).toHaveLength(1));
+
+    api.fail(COMMANDS, "network");
+    await nextPoll();
+    await waitFor(() => expect(api.callsTo(COMMANDS).length).toBeGreaterThan(1));
+
+    expect(articles()).toHaveLength(1);
+    expect(byId("timeline-status")).not.toHaveTextContent(HISTORY_FAILED);
+    expect(document.body).not.toHaveTextContent(UNREACHABLE);
+  });
+});

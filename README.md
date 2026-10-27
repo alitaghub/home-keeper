@@ -160,8 +160,9 @@ shows `CONTROL ON`, and each monitored light with a known on or off state gets a
 **Turn on** or **Turn off** button. One click sends the command. The dashboard
 then shows what Home Keeper observed: the change, no change within 5 seconds, a
 refusal from Home Assistant, or an unreachable controller. Every command is
-recorded. [docs/control.md](docs/control.md) covers the dashboard, the API, the
-refusals and the limits.
+recorded, and the dashboard lists recent commands with their sender and outcome
+beside the recorded changes. [docs/control.md](docs/control.md) covers the
+dashboard, the API, the refusals and the limits.
 
 ## Chat with the agent
 

@@ -47,3 +47,56 @@ export function useTimeline() {
 
   return { events, status, hasMore, loading, load, showingOlder };
 }
+
+type CommandRecord = Schemas["CommandRecord"];
+
+// Commands page like events, apart from them: the two lists are not interleaved.
+export function useCommands() {
+  // The newest page supersedes an older page in flight: "Refresh history" must win
+  // over "Load older commands". Only the latest request's result is applied.
+  const latest = useRef(0);
+  const inFlight = useRef<"newest" | "older" | null>(null);
+  const cursor = useRef<string | null>(null);
+  // Set when a request starts, so a poll during an older load does not replace it.
+  const showingOlder = useRef(false);
+  const loaded = useRef<CommandRecord[]>([]);
+  const [commands, setCommands] = useState<CommandRecord[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async (older = false) => {
+    // A newest page in flight answers any request; a second older page would repeat the first.
+    if (inFlight.current === "newest" || (older && inFlight.current === "older")) return;
+    const seq = ++latest.current;
+    const wasOlder = showingOlder.current;
+    inFlight.current = older ? "older" : "newest";
+    showingOlder.current = older;
+    setLoading(true);
+    try {
+      const page = await unwrap(
+        api.GET("/api/commands", {
+          params: {
+            query: older && cursor.current ? { limit: 20, cursor: cursor.current } : { limit: 20 },
+          },
+        }),
+      );
+      if (seq !== latest.current) return;
+      const previous = older ? loaded.current : [];
+      const ids = new Set(previous.map((command) => command.id));
+      loaded.current = [...previous, ...page.commands.filter((command) => !ids.has(command.id))];
+      cursor.current = page.next_cursor;
+      setHasMore(Boolean(page.next_cursor));
+      setCommands(loaded.current);
+    } catch {
+      // Command history is secondary: a failed read keeps the last list and adds no message.
+      if (seq === latest.current) showingOlder.current = wasOlder;
+    } finally {
+      if (seq === latest.current) {
+        inFlight.current = null;
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  return { commands, hasMore, loading, load, showingOlder };
+}
