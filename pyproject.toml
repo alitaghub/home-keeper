@@ -20,7 +20,6 @@ package = false
 [tool.uv.sources]
 home-keeper = { workspace = true }
 home-keeper-agent = { workspace = true }
-home-keeper-renamed = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
@@ -33,7 +32,6 @@ testpaths = [
     "apps/keeper/tests/integration",
     "apps/agent/tests/unit",
     "apps/agent/tests/integration",
-    "packages/renamed-settings/tests/unit",
     "tests",
 ]
 # Shared test helpers live in apps/keeper/tests/support and apps/agent/tests/agent_support.py;
@@ -50,7 +48,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source_pkgs = ["home_keeper", "home_keeper_agent", "home_keeper_renamed"]
+source_pkgs = ["home_keeper", "home_keeper_agent"]
 
 [tool.coverage.report]
 # A few points under measured coverage, so refactors don't trip it but real drops do.
@@ -109,8 +107,6 @@ include = [
     "apps/keeper/tests",
     "apps/agent/src",
     "apps/agent/tests",
-    "packages/renamed-settings/src",
-    "packages/renamed-settings/tests",
     "e2e",
     "scripts",
     "tests",
@@ -121,7 +117,6 @@ extraPaths = [
     "apps/keeper/tests",
     "apps/agent/src",
     "apps/agent/tests",
-    "packages/renamed-settings/src",
     "scripts",
 ]
 # Local stubs; see typings/httpx2/__init__.pyi.

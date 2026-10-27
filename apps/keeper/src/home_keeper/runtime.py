@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import uvicorn
 
 from home_keeper.api import create_app
-from home_keeper_renamed import reject_renamed_variables
 
 
 def load_token(path: Path) -> str:
@@ -67,7 +66,6 @@ def parse_timezone(variable: str, value: str) -> ZoneInfo:
 
 
 def main() -> None:
-    reject_renamed_variables(os.environ)
     token = create_token(Path(os.environ.get("HOME_KEEPER_TOKEN_FILE", "/secrets/service-token")))
     port = int(os.environ.get("HOME_KEEPER_PORT", "8000"))
     hosts = local_authorities(port, ("127.0.0.1", "localhost", "api"))

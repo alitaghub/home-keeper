@@ -10,7 +10,6 @@ resolution-markers = [
 members = [
     "home-keeper",
     "home-keeper-agent",
-    "home-keeper-renamed",
     "home-keeper-workspace",
 ]
 
@@ -863,7 +862,6 @@ version = "0.1.0"
 source = { editable = "apps/keeper" }
 dependencies = [
     { name = "fastapi" },
-    { name = "home-keeper-renamed" },
     { name = "httpx" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -872,7 +870,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "home-keeper-renamed", editable = "packages/renamed-settings" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
     { name = "websockets", specifier = ">=15,<16" },
@@ -884,7 +881,6 @@ version = "0.1.0"
 source = { editable = "apps/agent" }
 dependencies = [
     { name = "deepagents" },
-    { name = "home-keeper-renamed" },
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-openai" },
@@ -901,7 +897,6 @@ serve = [
 requires-dist = [
     { name = "aegra-cli", marker = "extra == 'serve'", specifier = "==0.10.8" },
     { name = "deepagents", specifier = "==0.7.25" },
-    { name = "home-keeper-renamed", editable = "packages/renamed-settings" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "langchain", specifier = "==1.4.5" },
     { name = "langchain-openai", specifier = "==1.7.1" },
@@ -909,11 +904,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2,<3" },
 ]
 provides-extras = ["serve"]
-
-[[package]]
-name = "home-keeper-renamed"
-version = "0.1.0"
-source = { editable = "packages/renamed-settings" }
 
 [[package]]
 name = "home-keeper-workspace"

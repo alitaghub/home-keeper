@@ -22,7 +22,6 @@ from home_keeper.home_assistant import (
 )
 from home_keeper.models import ChangeEvent, SelectionSnapshot
 from home_keeper.runtime import load_token
-from home_keeper_renamed import reject_renamed_variables
 
 
 def _health(client: httpx.Client, error: str | None) -> None:
@@ -274,7 +273,6 @@ class CollectionSession:
 
 
 def main() -> None:
-    reject_renamed_variables(os.environ)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     # Library debug output can include request headers or authentication frames.
     logging.getLogger("httpx").setLevel(logging.WARNING)

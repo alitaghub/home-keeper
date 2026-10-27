@@ -19,7 +19,6 @@ from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
 from home_keeper.runtime import parse_origin
-from home_keeper_renamed import reject_renamed_variables
 
 OWNER_USERNAME = "owner"
 READY_TIMEOUT_SECONDS = 300
@@ -228,7 +227,6 @@ def show_login(login_file: Path, public_url: str) -> None:
 
 
 def main() -> None:
-    reject_renamed_variables(os.environ)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     token_file = Path(os.environ.get("HOME_KEEPER_HA_TOKEN_FILE", "/ha-token/token"))

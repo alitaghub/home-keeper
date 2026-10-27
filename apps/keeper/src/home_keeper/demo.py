@@ -13,7 +13,6 @@ import httpx
 from home_keeper.events import change_event
 from home_keeper.models import LightState
 from home_keeper.runtime import load_token
-from home_keeper_renamed import reject_renamed_variables
 
 # The replay phase whose events are delivered twice.
 DUPLICATE_PHASE = 3
@@ -182,7 +181,6 @@ def reconcile(client: httpx.Client, replay: DemoReplay) -> None:
 
 
 def main() -> None:
-    reject_renamed_variables(os.environ)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

@@ -11,9 +11,6 @@ actually do on your machine, and shows honest gaps where collection stopped.
 An agent can only act well on a home it can see, so Home Keeper starts with
 seeing. Today it does not control devices: it never sends a command to one.
 
-Upgrading from Home Observer? Follow [docs/upgrade.md](docs/upgrade.md) before
-you start the stack under the new name.
-
 ![The Home Keeper dashboard with two monitored lamps](docs/images/dashboard.png)
 
 ## How it works
@@ -184,7 +181,6 @@ user IDs, setup, limits, and what goes through Telegram.
 | [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
 | [Telegram](docs/telegram.md)                   | Talk to the agent through a private family bot                     |
 | [Security](docs/security.md)                     | Understand the trust boundaries around the token, API and browser  |
-| [Upgrade](docs/upgrade.md)                       | Move a Home Observer install to Home Keeper without losing data    |
 
 ## Repository layout
 
@@ -194,7 +190,6 @@ user IDs, setup, limits, and what goes through Telegram.
 | `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
 | `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
 | `apps/chat`     | Image recipe for the unmodified Agent Chat UI                      |
-| `packages/renamed-settings` | Shared Python code: the startup check for pre-rename variables |
 | `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |
 | `docs`          | User and design docs                                               |
 

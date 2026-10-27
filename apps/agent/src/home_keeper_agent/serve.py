@@ -10,8 +10,6 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from home_keeper_renamed import reject_renamed_variables
-
 DEFAULT_CHAT_ORIGIN = "http://127.0.0.1:3000"
 
 
@@ -46,7 +44,6 @@ def aegra_config(origin: str, graph_file: Path) -> dict[str, object]:
 
 
 def main() -> None:
-    reject_renamed_variables(os.environ)
     try:
         origin = parse_origin(os.environ.get("CHAT_ORIGIN", "").strip() or DEFAULT_CHAT_ORIGIN)
     except ValueError as error:

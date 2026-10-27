@@ -14,16 +14,6 @@ services:
       HOME_KEEPER_RETENTION_DAYS: ${HOME_KEEPER_RETENTION_DAYS:-30}
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
-      # Old names forwarded bare, so a leftover .env value fails the startup check.
-      OBSERVER_PORT:
-      OBSERVER_BIND:
-      OBSERVER_DB:
-      OBSERVER_SOURCE_ID:
-      OBSERVER_TOKEN_FILE:
-      OBSERVER_HA_PUBLIC_URL:
-      OBSERVER_RETENTION_DAYS:
-      OBSERVER_RECONCILIATION_SECONDS:
-      OBSERVER_TIMEZONE:
     volumes:
       - data:/data
       - service-secret:/secrets
@@ -43,10 +33,6 @@ services:
     environment:
       HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
-      # Old names forwarded bare, so a leftover .env value fails the startup check.
-      OBSERVER_PORT:
-      OBSERVER_TOKEN_FILE:
-      OBSERVER_RECONCILIATION_SECONDS:
     volumes:
       - service-secret:/secrets:ro
     networks: [collection]

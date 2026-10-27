@@ -31,8 +31,6 @@ from pydantic import (
     model_validator,
 )
 
-from home_keeper_renamed import reject_renamed_variables
-
 CONFIGURATION_ERROR = (
     "Set TELEGRAM_BOT_TOKEN and a comma-separated TELEGRAM_ALLOWED_USER_IDS "
     "containing positive numeric user IDs."
@@ -757,7 +755,6 @@ class TelegramBot:
 
 
 def main() -> None:
-    reject_renamed_variables(os.environ)
     # httpx's INFO request log includes the Telegram token in its URL.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

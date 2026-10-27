@@ -17,8 +17,6 @@ COPY pyproject.toml uv.lock ./
 COPY apps/keeper/pyproject.toml ./apps/keeper/
 # uv needs every workspace member's manifest to read the lockfile; the keeper installs with the shared package.
 COPY apps/agent/pyproject.toml ./apps/agent/
-COPY packages/renamed-settings/pyproject.toml ./packages/renamed-settings/
-COPY packages/renamed-settings/src ./packages/renamed-settings/src
 COPY apps/keeper/src ./apps/keeper/src
 # The API serves the dashboard from ./web relative to the working directory.
 COPY --from=web /src/apps/web/dist ./web

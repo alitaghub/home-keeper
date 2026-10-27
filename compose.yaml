@@ -23,11 +23,6 @@ services:
     environment:
       HOME_KEEPER_HA_URL: http://homeassistant:8123
       HOME_KEEPER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
-      # Old names forwarded bare, so a leftover .env value fails the startup check.
-      OBSERVER_HA_URL:
-      OBSERVER_HA_PUBLIC_URL:
-      OBSERVER_HA_TOKEN_FILE:
-      OBSERVER_HA_LOGIN_FILE:
     volumes:
       - ha-token:/ha-token
       - ha-owner:/ha-owner
@@ -51,16 +46,6 @@ services:
       HOME_KEEPER_RETENTION_DAYS: ${HOME_KEEPER_RETENTION_DAYS:-30}
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
-      # Old names forwarded bare, so a leftover .env value fails the startup check.
-      OBSERVER_PORT:
-      OBSERVER_BIND:
-      OBSERVER_DB:
-      OBSERVER_SOURCE_ID:
-      OBSERVER_TOKEN_FILE:
-      OBSERVER_HA_PUBLIC_URL:
-      OBSERVER_RETENTION_DAYS:
-      OBSERVER_RECONCILIATION_SECONDS:
-      OBSERVER_TIMEZONE:
     volumes:
       - data:/data
       - service-secret:/secrets
@@ -82,12 +67,6 @@ services:
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_HA_URL: http://homeassistant:8123
       HOME_KEEPER_HA_TOKEN_FILE: /ha-token/token
-      # Old names forwarded bare, so a leftover .env value fails the startup check.
-      OBSERVER_PORT:
-      OBSERVER_TOKEN_FILE:
-      OBSERVER_RECONCILIATION_SECONDS:
-      OBSERVER_HA_URL:
-      OBSERVER_HA_TOKEN_FILE:
     volumes:
       - service-secret:/secrets:ro
       - ha-token:/ha-token:ro

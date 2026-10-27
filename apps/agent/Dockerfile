@@ -10,8 +10,6 @@ COPY pyproject.toml uv.lock ./
 # uv needs every workspace member's manifest to read the lockfile; the agent installs with the shared package.
 COPY apps/keeper/pyproject.toml ./apps/keeper/
 COPY apps/agent/pyproject.toml ./apps/agent/
-COPY packages/renamed-settings/pyproject.toml ./packages/renamed-settings/
-COPY packages/renamed-settings/src ./packages/renamed-settings/src
 COPY apps/agent/src ./apps/agent/src
 RUN uv sync --locked --no-dev --no-editable --package home-keeper-agent --extra serve
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1

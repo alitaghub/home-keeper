@@ -51,8 +51,6 @@ services:
       AZURE_OPENAI_API_KEY:
       # Only listed variables reach the container. Another provider's key goes here too.
       OPENAI_API_KEY:
-      # Old names forwarded bare, so a leftover .env value fails the startup check.
-      OBSERVER_URL:
     # `dashboard` reaches the keeper API, `agent-db` reaches Postgres, and
     # `default` is egress to the model provider. Never the home-assistant network.
     networks: [dashboard, agent-db, default]

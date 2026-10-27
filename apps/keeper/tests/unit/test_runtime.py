@@ -30,9 +30,7 @@ def test_configured_url_rejects_anything_but_an_http_origin(value: str) -> None:
         parse_origin("URL", value)
 
 
-def test_renamed_settings_reach_the_app_and_server(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_settings_reach_the_app_and_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     received: dict[str, object] = {}
 
     def fake_create_app(**settings: object) -> str:
