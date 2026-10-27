@@ -38,7 +38,8 @@ instead of `READ ONLY`. Each monitored light that is available and recorded
 `on` or `off` gets a button and a brightness slider: **Turn off** for a light
 that is on, **Turn on** for a light that is off. A pending, unknown or
 unavailable light gets neither. With control `off`, the dashboard shows no
-buttons or sliders and looks as it does without the profile.
+buttons or sliders and looks as it does without the profile. The **Setup**
+tab's notice also says whether light control is on or off.
 
 The slider sends `on` at the chosen percent once it stops moving for 0.4
 seconds, so a drag sends one command. Moving the slider of a light that is off

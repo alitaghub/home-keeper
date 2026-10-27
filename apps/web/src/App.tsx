@@ -386,14 +386,14 @@ export function App() {
           </div>
           <p id="source-notice" className="notice">
             {!snapshot
-              ? "Waiting for the configured collector. No model or device controls are connected."
+              ? "Waiting for the configured collector."
               : live
                 ? controlOn
                   ? "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is on for monitored lights."
-                  : "Home Assistant discovery. Only selected individual Hue lights are recorded. No model or device controls are connected."
+                  : "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is off: Home Keeper only records."
                 : controlOn
-                  ? "Demo data only. No hardware, Home Assistant, or model is connected. Light control is on for monitored lights."
-                  : "Demo data only. No hardware, Home Assistant, model, or device controls are connected."}
+                  ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
+                  : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records."}
           </p>
           <p id="catalog-status" className="history-status" role="status" aria-live="polite">
             {snapshot && catalogStatus(snapshot.catalog)}
