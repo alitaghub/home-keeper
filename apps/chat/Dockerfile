@@ -6,7 +6,7 @@ ARG CHAT_UI_COMMIT=675be8e530d6ecc78ad44f698c5a64d8b0c3c2cc
 # Next.js inlines NEXT_PUBLIC_* values into the browser bundle at build time.
 # The browser calls Aegra directly at this URL, so it must be the published one.
 # Upstream's /api passthrough stays unused: LANGGRAPH_API_URL is never set.
-ARG NEXT_PUBLIC_API_URL=http://127.0.0.1:2026
+ARG NEXT_PUBLIC_API_URL=http://localhost:2026
 ARG NEXT_PUBLIC_ASSISTANT_ID=agent
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_ASSISTANT_ID=$NEXT_PUBLIC_ASSISTANT_ID \

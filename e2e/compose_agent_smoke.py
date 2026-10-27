@@ -17,8 +17,9 @@ from typing import Any
 import httpx
 
 REPO = Path(__file__).resolve().parents[1]
-AGENT_URL = f"http://127.0.0.1:{os.environ.get('AGENT_PORT', '2026')}"
-CHAT_URL = f"http://127.0.0.1:{os.environ.get('CHAT_PORT', '3000')}"
+# The browser addresses: localhost, which also reaches the stack through an SSH port forward.
+AGENT_URL = f"http://localhost:{os.environ.get('AGENT_PORT', '2026')}"
+CHAT_URL = f"http://localhost:{os.environ.get('CHAT_PORT', '3000')}"
 AGENT_SERVICES = {"postgres", "agent", "chat"}
 TIMEOUT = 90
 
