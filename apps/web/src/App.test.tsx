@@ -1211,7 +1211,8 @@ describe("command history in the timeline", () => {
           : commandsPage([command("c1")], "cursor-2"),
     });
     await waitFor(() => expect(articles()).toHaveLength(1));
-    const release = api.hold(COMMANDS);
+    // Only the older page waits, so it can answer after the refresh.
+    const release = api.hold(COMMANDS, (call) => call.url.searchParams.has("cursor"));
     await user.click(commandsSection().getByRole("button", { name: "Load older commands" }));
     await waitFor(() =>
       expect(api.callsTo(COMMANDS).at(-1)?.url.searchParams.has("cursor")).toBe(true),
@@ -1226,11 +1227,14 @@ describe("command history in the timeline", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Refresh history" }));
-    await waitFor(() => expect(api.callsTo("GET /api/events").length).toBeGreaterThan(1));
-    await act(async () => release());
-    await nextPoll();
-
     await waitFor(() => expect(articles()).toHaveLength(2));
+    // The stale older page lands last, with no poll after it to hide an overwrite.
+    await act(async () => {
+      release();
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(articles()).toHaveLength(2);
     expect(articles()[0]).toHaveTextContent("Browser chat");
     expect(commandsSection().queryByText(/Older \(Telegram 99\)/)).toBeNull();
     const afterRefresh = api.callsTo(COMMANDS).length;

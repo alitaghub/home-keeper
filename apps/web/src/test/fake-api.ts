@@ -58,7 +58,7 @@ export function installFakeApi(overrides: Replies = {}) {
   // Object.entries widens keys to string; every key of a Replies object is a Route.
   const replies = new Map(Object.entries({ ...defaults, ...overrides }) as [Route, Reply<Route>][]);
   const failures = new Map<Route, Failure>();
-  const holds = new Map<Route, Promise<void>>();
+  const holds = new Map<Route, { held: Promise<void>; when: (call: ApiCall) => boolean }>();
   const calls: ApiCall[] = [];
   const unmatched: string[] = [];
 
@@ -90,7 +90,8 @@ export function installFakeApi(overrides: Replies = {}) {
     };
     calls.push(call);
     // A held route answers only after release(); the call is already recorded.
-    await holds.get(route);
+    const hold = holds.get(route);
+    if (hold?.when(call)) await hold.held;
     const failure = failures.get(route);
     if (failure === "network") throw new TypeError("Failed to fetch");
     if (failure !== undefined) {
@@ -121,15 +122,15 @@ export function installFakeApi(overrides: Replies = {}) {
     fail: (route: Route, failure: Failure): void => {
       failures.set(route, failure);
     },
-    /** Keeps requests to `route` pending until the returned function runs. */
-    hold: (route: Route): (() => void) => {
+    /** Keeps requests to `route`, or only those `when` picks, pending until the returned function runs. */
+    hold: (route: Route, when: (call: ApiCall) => boolean = () => true): (() => void) => {
       let release = () => {};
-      holds.set(
-        route,
-        new Promise<void>((resolve) => {
+      holds.set(route, {
+        held: new Promise<void>((resolve) => {
           release = resolve;
         }),
-      );
+        when,
+      });
       return () => {
         holds.delete(route);
         release();
