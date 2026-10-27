@@ -311,3 +311,9 @@ def test_internal_routes_are_not_published(tmp_path: Path) -> None:
     paths = schema_app(tmp_path).openapi()["paths"]
     internal = [path for path in paths if path.startswith("/internal")]
     assert internal == [], f"internal routes in OpenAPI: {internal}"
+
+
+def test_command_route_declares_its_refusal_body(tmp_path: Path) -> None:
+    operation = schema_app(tmp_path).openapi()["paths"]["/api/lights/{entity_id}/command"]["post"]
+    schema = operation["responses"]["409"]["content"]["application/json"]["schema"]
+    assert schema == {"$ref": "#/components/schemas/CommandRefused"}

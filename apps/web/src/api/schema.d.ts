@@ -374,6 +374,23 @@ export interface components {
              */
             sent_at: string;
         };
+        /** CommandRefusal */
+        CommandRefusal: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state";
+            /** Message */
+            message: string;
+        };
+        /**
+         * CommandRefused
+         * @description The 409 body of a refused command.
+         */
+        CommandRefused: {
+            detail: components["schemas"]["CommandRefusal"];
+        };
         /** CommandRequest */
         CommandRequest: {
             /** Command */
@@ -1131,6 +1148,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommandRecord"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandRefused"];
                 };
             };
             /** @description Validation Error */

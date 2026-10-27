@@ -1,4 +1,3 @@
-import contextlib
 import json
 import logging
 import stat
@@ -662,11 +661,32 @@ def test_recovery_never_deletes_an_admin_holding_the_control_username(
     install(monkeypatch, home)
     (tmp_path / "token").write_text("kept")
 
-    # Setup may fail here, since the username is taken; it must not remove the admin.
-    with contextlib.suppress(SetupError):
-        setup(tmp_path, home).run()
+    # The username is taken, so control stays off; setup must not remove the admin.
+    setup(tmp_path, home).run()
 
     assert admin.id in home.users
     assert home.credentials["home-keeper-control"] == ("their-password", admin.id)
     if (tmp_path / "control-token").exists():
         assert not home.user_of((tmp_path / "control-token").read_text()).is_admin
+
+
+@pytest.mark.parametrize("failure", ["control username taken by an admin", "token refused"])
+def test_failed_control_provisioning_on_upgrade_still_lets_collection_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failure: str
+) -> None:
+    # Control is optional, and the collector waits for setup to succeed.
+    home = FakeHomeAssistant(
+        onboarded=True, valid_token="kept", refuse_long_lived=failure == "token refused"
+    )
+    if failure == "control username taken by an admin":
+        admin = home.add_user("Someone", [ADMIN])
+        home.credentials["home-keeper-control"] = ("their-password", admin.id)
+    install(monkeypatch, home)
+    (tmp_path / "token").write_text("kept")
+
+    with caplog.at_level(logging.WARNING):
+        setup(tmp_path, home).run()
+
+    assert (tmp_path / "token").read_text() == "kept"
+    assert not (tmp_path / "control-token").exists()
+    assert "Light control is off" in caplog.text

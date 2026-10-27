@@ -65,7 +65,9 @@ copy then goes stale, but setup does not need it again.
   install from before light control: it creates the control user and its token
   with the collector's token. It does not need the owner password. A control
   user left without a stored token, for example by an interrupted run, is
-  replaced.
+  replaced. If Home Assistant refuses, for example because another account uses
+  the username `home-keeper-control`, setup still succeeds and collection
+  starts. Setup logs that light control is off and tries again on the next `up`.
 - Home Assistant rejects the stored control token (for example, you revoked
   it): setup still succeeds and collection starts. Setup logs that light control
   is off and changes nothing. To turn control on again, delete the control token

@@ -463,6 +463,23 @@ class CommandRecord(WireModel):
     event_id: Identity | None
 
 
+# Why the API refused a command before sending it.
+CommandRefusalCode = Literal[
+    "control_off", "not_monitored", "state_unknown", "unavailable", "already_in_state"
+]
+
+
+class CommandRefusal(WireModel):
+    code: CommandRefusalCode
+    message: str
+
+
+class CommandRefused(WireModel):
+    """The 409 body of a refused command."""
+
+    detail: CommandRefusal
+
+
 class CommandsPage(WireModel):
     commands: list[CommandRecord]
     next_cursor: str | None

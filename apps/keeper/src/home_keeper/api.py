@@ -11,6 +11,8 @@ from typing import Annotated, Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import anyio.to_thread
+from anyio import CapacityLimiter
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -28,6 +30,8 @@ from home_keeper.models import (
     ChangeEvent,
     CommandOutcome,
     CommandRecord,
+    CommandRefusalCode,
+    CommandRefused,
     CommandRequest,
     CommandsPage,
     ControlHeartbeat,
@@ -65,6 +69,9 @@ UTC_ZONE = ZoneInfo("UTC")
 # A recorded brightness this close to the commanded value counts as the same brightness.
 BRIGHTNESS_TOLERANCE = 2
 COMMAND_POLL_SECONDS = 0.1
+# Controller sends can block for seconds, so they get their own few threads and never
+# take every worker of the shared pool that ingestion needs.
+CONCURRENT_SENDS = 4
 
 
 @dataclass(frozen=True)
@@ -201,6 +208,10 @@ def create_app(
 
     def conflict(code: str, message: str) -> HTTPException:
         return HTTPException(409, {"code": code, "message": message})
+
+    def refused(code: CommandRefusalCode, message: str) -> HTTPException:
+        # The body CommandRefused declares for the command route's 409.
+        return conflict(code, message)
 
     def rejection(rejected: Rejected) -> HTTPException:
         if rejected.code == "future_timestamp":
@@ -754,20 +765,20 @@ def create_app(
             if not entity.supported:
                 raise HTTPException(422, "Entity is unsupported")
             if controller is None or control_status(db).state == "off":
-                raise conflict("control_off", "Light control is off")
+                raise refused("control_off", "Light control is off")
             if entity_id not in store.selection(db).entity_ids:
-                raise conflict("not_monitored", "Monitor this light before switching it")
+                raise refused("not_monitored", "Monitor this light before switching it")
             reading = store.current(db, entity_id)
             if reading is None or reading.state not in ("on", "off", "unavailable"):
-                raise conflict("state_unknown", "The light's current state is unknown")
+                raise refused("state_unknown", "The light's current state is unknown")
             if reading.state == "unavailable":
-                raise conflict("unavailable", "The light is unavailable")
+                raise refused("unavailable", "The light is unavailable")
             # Home Assistant fires no change for these, so the outcome could never be observed.
             if shows(reading, command):
-                raise conflict("already_in_state", "The light is already in that state")
+                raise refused("already_in_state", "The light is already in that state")
             source_entity_id = reading.source_entity_id or store.source_entity_id(db, entity_id)
             if source_entity_id is None:
-                raise conflict("state_unknown", "The light's current state is unknown")
+                raise refused("state_unknown", "The light's current state is unknown")
             return Accepted(controller, source_entity_id)
 
     def save_command(record: CommandRecord) -> None:
@@ -786,10 +797,13 @@ def create_app(
         with store.transaction("DEFERRED") as db:
             return find_observation(db, entity_id, command, sent_at)
 
+    send_limiter = CapacityLimiter(CONCURRENT_SENDS)
+
     @app.post(
         "/api/lights/{entity_id}/command",
         response_model=CommandRecord,
         response_model_exclude_unset=True,
+        responses={409: {"model": CommandRefused}},
     )
     async def command_light(entity_id: str, request: CommandRequest):
         # Async, with each database read and the send in the thread pool only briefly, so
@@ -810,8 +824,11 @@ def create_app(
         observed: Observed | None = None
         outcome: CommandOutcome
         try:
-            result = await run_in_threadpool(
-                accepted.controller.send, accepted.source_entity_id, request.command
+            result = await anyio.to_thread.run_sync(
+                accepted.controller.send,
+                accepted.source_entity_id,
+                request.command,
+                limiter=send_limiter,
             )
         except ControllerUnreachable:
             outcome = "unreachable"

@@ -5,6 +5,7 @@ description = "Local smart-home observation with explicit device selection"
 requires-python = ">=3.13"
 dependencies = [
     "home-keeper-light-command",
+    "anyio>=4,<5",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
     "httpx>=0.28,<1",

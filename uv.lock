@@ -863,6 +863,7 @@ name = "home-keeper"
 version = "0.1.0"
 source = { editable = "apps/keeper" }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "home-keeper-light-command" },
     { name = "httpx" },
@@ -872,6 +873,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4,<5" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "home-keeper-light-command", editable = "packages/light-command" },
     { name = "httpx", specifier = ">=0.28,<1" },

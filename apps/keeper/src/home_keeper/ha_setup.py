@@ -156,8 +156,7 @@ class Setup:
             if self.control_token_file is None:
                 logging.info("Home Assistant already set up; stored token is valid")
             elif not self.control_token_file.exists():
-                logging.info("Creating the Home Keeper control user")
-                self.create_control_token(collector_token)
+                self.provision_control(collector_token)
             elif self.token_accepted(self.control_token_file):
                 logging.info("Home Assistant already set up; stored tokens are valid")
             else:
@@ -179,7 +178,7 @@ class Setup:
         collector_token = self.create_long_lived_token(self.onboard(login))
         write_private(self.token_file, collector_token)
         if self.control_token_file is not None:
-            self.create_control_token(collector_token)
+            self.provision_control(collector_token)
         logging.info(
             "Home Assistant is ready. Show the login: "
             "docker compose run --rm --no-deps ha-setup login"
@@ -255,6 +254,21 @@ class Setup:
                 },
             )
         ).access_token
+
+    def provision_control(self, owner_token: str) -> None:
+        """Create the control user and its token. Control is optional, so a failure only turns
+        it off: the collector waits for setup to succeed, and collection must still start."""
+        logging.info("Creating the Home Keeper control user")
+        try:
+            self.create_control_token(owner_token)
+        except ValidationError:
+            # Validation messages quote their input, which can hold a token or password.
+            logging.warning(
+                "Light control is off: unexpected reply from Home Assistant. "
+                "The next `up` tries again."
+            )
+        except (SetupError, httpx.HTTPError, WebSocketException, OSError) as error:
+            logging.warning("Light control is off. The next `up` tries again. Cause: %s", error)
 
     def create_control_token(self, owner_token: str) -> None:
         """Create the non-admin control user with the owner's token; store the user's token."""

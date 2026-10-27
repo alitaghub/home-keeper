@@ -1,5 +1,6 @@
 """Light commands: control capability, refusals, observed outcomes and the command audit."""
 
+import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -29,6 +30,7 @@ from support.control import (
 
 import home_keeper.api as api_module
 from home_keeper.api import create_app
+from home_keeper.models import CommandRefused
 from home_keeper.store import Store
 
 STALE_SECONDS = 15
@@ -122,8 +124,9 @@ def refusal(response: httpx.Response) -> object:
     detail = response.json()["detail"]
     if isinstance(detail, str):
         return detail
-    assert isinstance(detail["message"], str), detail
-    return detail["code"]
+    # A 409 must match the body the route declares in OpenAPI.
+    assert response.status_code == 409, response.text
+    return CommandRefused.model_validate_json(response.content).detail.code
 
 
 def test_control_is_on_only_while_the_controller_heartbeat_is_fresh(tmp_path: Path) -> None:
@@ -657,6 +660,62 @@ def test_collector_ingestion_is_not_held_up_by_a_burst_of_command_waits(tmp_path
 
         anyio.run(main)
     assert latency[0] < 1.0, f"event ingestion waited {latency[0]:.2f}s behind command waits"
+    assert len(statuses) == burst
+    assert all(status < 500 for status in statuses), statuses
+
+
+def test_collector_ingestion_is_not_held_up_by_stalled_controller_sends(tmp_path: Path) -> None:
+    burst = 40  # AnyIO's default worker-thread limit.
+    with home(tmp_path, wait=0.1) as house:
+        house.controller.clock = [house.clock[0]]
+        # A stalled controller: every send blocks until the collector's event is recorded.
+        release = threading.Event()
+        house.controller.on_send = lambda: release.wait(10)
+        payload = event(
+            house.revision,
+            "during-stall",
+            entity_id="bulb-a",
+            source_entity_id=DESK,
+            event_time=NOW.isoformat(),
+            received_at=NOW.isoformat(),
+            old=LIGHT_OFF,
+            new={"state": "on", "brightness": 100},
+        )
+        statuses: list[int] = []
+        latency: list[float] = []
+
+        async def main() -> None:
+            transport = httpx.ASGITransport(app=house.client.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as api:
+
+                async def send_command() -> None:
+                    response = await api.post(
+                        "/api/lights/bulb-a/command",
+                        json={"command": ON, "sender": DASHBOARD},
+                        headers={"X-Home-Keeper": "1"},
+                        timeout=30,
+                    )
+                    statuses.append(response.status_code)
+
+                async with anyio.create_task_group() as group:
+                    for _ in range(burst):
+                        group.start_soon(send_command)
+                    # Let every send start that the API admits; without a limit, all 40 do.
+                    deadline = time.monotonic() + 5
+                    while len(house.controller.sent) < burst and time.monotonic() < deadline:  # noqa: ASYNC110 -- worker threads fill `sent`, so no event fires
+                        await anyio.sleep(0.05)
+                    started = time.monotonic()
+                    try:
+                        response = await api.post(
+                            "/internal/events", json=payload, headers=AUTH, timeout=30
+                        )
+                    finally:
+                        latency.append(time.monotonic() - started)
+                        release.set()
+                    assert response.json()["recorded"], response.text
+
+        anyio.run(main)
+    assert latency[0] < 1.0, f"event ingestion waited {latency[0]:.2f}s behind controller sends"
     assert len(statuses) == burst
     assert all(status < 500 for status in statuses), statuses
 
