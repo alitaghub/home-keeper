@@ -10,11 +10,11 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-DEFAULT_CHAT_ORIGIN = "http://127.0.0.1:3000"
+DEFAULT_CHAT_ORIGIN = "http://localhost:3000"
 
 
 def parse_origin(value: str) -> str:
-    """Return an http(s) origin such as http://127.0.0.1:3000, or raise ValueError."""
+    """Return an http(s) origin such as http://localhost:3000, or raise ValueError."""
     error = ValueError(f"CHAT_ORIGIN must be an http(s) origin without a path, got {value!r}")
     try:
         parts = urlsplit(value)

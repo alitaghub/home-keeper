@@ -176,7 +176,7 @@ It uses only the recorded evidence and says how much time is unknown. With the
 docker compose --profile agent up --build --wait
 ```
 
-Open the chat at <http://127.0.0.1:3000>. The demo works too: add
+Open the chat at <http://localhost:3000>. The demo works too: add
 `--profile agent` to its command. [docs/agent.md](docs/agent.md) covers models,
 ports and limits.
 

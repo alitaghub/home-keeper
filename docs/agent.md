@@ -53,7 +53,7 @@ docker compose --profile agent up --build --wait                     # bundled H
 docker compose -f compose.demo.yaml --profile agent up --build --wait  # synthetic demo
 ```
 
-Open the chat at <http://127.0.0.1:3000>. To use Telegram too, see
+Open the chat at <http://localhost:3000>. To use Telegram too, see
 [Telegram setup](telegram.md). It uses this same agent with separate
 conversations and explicit monitoring approvals.
 
@@ -72,8 +72,10 @@ with everything else.
 If a port is taken, override it, for example
 `AGENT_PORT=12026 CHAT_PORT=13000 docker compose --profile agent up --build --wait`.
 The chat page in your browser calls Aegra directly on its port. Aegra allows
-only the chat page's origin, `http://127.0.0.1:$CHAT_PORT`, and refuses every
-other website. The chat image has Aegra's address built in, so changing
+only the chat page's origin, `http://localhost:$CHAT_PORT`, and refuses every
+other website. Open the chat at `localhost`, not `127.0.0.1`: the browser treats them as
+different origins, so the page at `127.0.0.1` cannot reach Aegra. `localhost` also
+works through an SSH port forward. The chat image has Aegra's address built in, so changing
 `AGENT_PORT` rebuilds it. Agent Chat UI also ships an `/api` proxy to Aegra; it
 is left without a target, because it would let any website through.
 The container writes its Aegra config at startup from `CHAT_ORIGIN`; `apps/agent/aegra.json` is only for running `aegra dev` locally.

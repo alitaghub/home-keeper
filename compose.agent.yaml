@@ -43,7 +43,7 @@ services:
       AUTH_TYPE: noop
       HOME_KEEPER_URL: http://api:${HOME_KEEPER_PORT:-8000}
       # The only browser origin Aegra allows (CORS): the chat page.
-      CHAT_ORIGIN: http://127.0.0.1:${CHAT_PORT:-3000}
+      CHAT_ORIGIN: http://localhost:${CHAT_PORT:-3000}
       # Passed through from the shell or .env; left unset when missing, so the
       # agent keeps its default model and names any missing variable at startup.
       AGENT_MODEL:
@@ -75,7 +75,7 @@ services:
       args:
         # The browser calls Aegra directly, so this is its published loopback URL.
         # It is baked into the browser bundle.
-        NEXT_PUBLIC_API_URL: http://127.0.0.1:${AGENT_PORT:-2026}
+        NEXT_PUBLIC_API_URL: http://localhost:${AGENT_PORT:-2026}
         NEXT_PUBLIC_ASSISTANT_ID: agent
     restart: unless-stopped
     # No LANGGRAPH_API_URL: upstream's /api passthrough answers every origin with

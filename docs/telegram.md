@@ -85,7 +85,7 @@ also need the [`control` profile](control.md).
   the next question is answered normally.
 
 Telegram history is separate from browser chat and from other family members'
-conversations. Browser chat still runs at <http://127.0.0.1:3000>. Anyone who can
+conversations. Browser chat still runs at <http://localhost:3000>. Anyone who can
 reach the existing local Aegra API can still inspect threads, as described in
 [the agent limits](agent.md#limits).
 
