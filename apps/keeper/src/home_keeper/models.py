@@ -11,6 +11,9 @@ from pydantic import (
     model_validator,
 )
 
+# The command shape is shared with the controller and the demo collector.
+from home_keeper_light_command import LightCommand
+
 Identity = Annotated[
     str, StringConstraints(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.:-]+$")
 ]
@@ -397,3 +400,70 @@ class UsageReport(WireModel):
     timezone: str
     retained_since: Timestamp
     lights: list[LightUsage]
+
+
+class ControlHeartbeat(WireModel):
+    """The controller's proof that it is running and can be sent commands."""
+
+    received_at: datetime
+
+    @field_validator("received_at")
+    @classmethod
+    def utc_timestamp(cls, value: datetime) -> datetime:
+        return to_utc(value)
+
+
+class ControlStatus(WireModel):
+    # `on` while the controller's latest heartbeat is fresh.
+    state: Literal["on", "off"]
+    heartbeat_at: Timestamp | None
+
+
+class DashboardSender(WireModel):
+    kind: Literal["dashboard"]
+
+
+class BrowserChatSender(WireModel):
+    kind: Literal["browser_chat"]
+
+
+class TelegramSender(WireModel):
+    kind: Literal["telegram"]
+    id: int = Field(strict=True, gt=0)
+    # The display name at send time. Untrusted text, like device names.
+    name: Name
+
+
+# Who asked for a command. A label the caller reports for the audit, not authentication.
+Sender = Annotated[
+    DashboardSender | BrowserChatSender | TelegramSender, Field(discriminator="kind")
+]
+
+
+class CommandRequest(WireModel):
+    command: LightCommand
+    sender: Sender
+
+
+# What Home Keeper saw after it forwarded a command. `pending` while it waits;
+# `interrupted` when the API restarted before the outcome was known.
+CommandOutcome = Literal[
+    "pending", "observed", "not_observed", "refused", "unreachable", "interrupted"
+]
+
+
+class CommandRecord(WireModel):
+    id: str
+    entity_id: Identity
+    command: LightCommand
+    sender: Sender
+    sent_at: Timestamp
+    outcome: CommandOutcome
+    # The recorded event that showed the change, when an event (not a snapshot) showed it.
+    event_id: Identity | None
+
+
+class CommandsPage(WireModel):
+    commands: list[CommandRecord]
+    next_cursor: str | None
+    retained_since: Timestamp

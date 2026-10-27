@@ -36,6 +36,18 @@ The dashboard refreshes every three seconds. **Refresh discovery** requests a
 new catalog on the next collection pass. A newly discovered light stays
 unselected until you choose it.
 
+## Switch a demo light
+
+Add the `control` profile to switch the synthetic lights:
+
+```sh
+docker compose -f compose.demo.yaml --profile control up --build --wait
+```
+
+A command on a monitored demo light changes it at once, records the change,
+and keeps the light out of the replay sequence for three collection passes.
+[control.md](control.md) shows how to send one.
+
 ## Restart, stop and reset
 
 ```sh

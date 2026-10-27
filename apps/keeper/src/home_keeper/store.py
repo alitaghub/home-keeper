@@ -45,6 +45,9 @@ class Store:
                 CREATE INDEX IF NOT EXISTS event_order ON events(event_time, id);
                 CREATE INDEX IF NOT EXISTS event_expiration ON events(persisted_at);
                 CREATE INDEX IF NOT EXISTS event_scope ON events(entity_id, event_time, id);
+                -- One light's newest events, read while a command waits for its result.
+                DROP INDEX IF EXISTS event_entity;
+                CREATE INDEX IF NOT EXISTS event_receipt_scope ON events(entity_id, persisted_at);
                 CREATE TABLE IF NOT EXISTS current_state(
                     entity_id TEXT PRIMARY KEY, source_time TEXT NOT NULL, data TEXT NOT NULL
                 );
@@ -58,6 +61,11 @@ class Store:
                     entity_id TEXT PRIMARY KEY, received_at TEXT NOT NULL,
                     persisted_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS commands(
+                    id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, sent_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS command_order ON commands(sent_at, id);
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(current_state)")}
             if "snapshot_started_at" not in columns:
@@ -121,6 +129,21 @@ class Store:
         return current_reading.validate_json(row[0]) if row else None
 
     @staticmethod
+    def source_entity_id(db: sqlite3.Connection, entity_id: str) -> str | None:
+        """The light's newest recorded Home Assistant entity ID, from any stored reading."""
+        for table in ("events", "baselines"):
+            row = db.execute(
+                # Only fixed table names are interpolated; values are bound parameters.
+                f"SELECT json_extract(data, '$.source_entity_id') FROM {table} "  # noqa: S608
+                "WHERE entity_id=? AND json_extract(data, '$.source_entity_id') IS NOT NULL "
+                "ORDER BY rowid DESC LIMIT 1",
+                (entity_id,),
+            ).fetchone()
+            if row:
+                return row[0]
+        return None
+
+    @staticmethod
     def health(db: sqlite3.Connection) -> HealthReport | None:
         row = db.execute("SELECT value FROM metadata WHERE key='health'").fetchone()
         return HealthReport.model_validate_json(row[0]) if row else None
@@ -128,6 +151,8 @@ class Store:
     @staticmethod
     def cleanup(db: sqlite3.Connection, cutoff: str) -> None:
         db.execute("DELETE FROM events WHERE persisted_at < ?", (cutoff,))
+        # The API stamps sent_at with its own clock, like persisted_at.
+        db.execute("DELETE FROM commands WHERE sent_at < ?", (cutoff,))
         db.execute(
             "DELETE FROM coverage WHERE recovered_at IS NOT NULL AND recovered_at < ?", (cutoff,)
         )

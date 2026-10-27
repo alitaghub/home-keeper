@@ -1,11 +1,14 @@
+import asyncio
 import json
 import secrets
 import sqlite3
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import MAXYEAR, UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -13,14 +16,22 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import TypeAdapter
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
+from home_keeper.control import Controller, ControllerUnreachable
 from home_keeper.models import (
     BaselineRecord,
     BaselinesPage,
     Catalog,
     CatalogResponse,
     ChangeEvent,
+    CommandOutcome,
+    CommandRecord,
+    CommandRequest,
+    CommandsPage,
+    ControlHeartbeat,
+    ControlStatus,
     Coverage,
     CoverageGap,
     CoverageReport,
@@ -35,6 +46,8 @@ from home_keeper.models import (
     HealthReport,
     HealthStatus,
     Identity,
+    LightCommand,
+    LightReading,
     MonitoredEntities,
     MonitoredEntity,
     Observation,
@@ -46,8 +59,72 @@ from home_keeper.models import (
 from home_keeper.recorder import Recorder, Rejected, update_current
 from home_keeper.store import Store, current_reading
 from home_keeper.usage import light_usage
+from home_keeper_light_command import LightOff, brightness_value
 
 UTC_ZONE = ZoneInfo("UTC")
+# A recorded brightness this close to the commanded value counts as the same brightness.
+BRIGHTNESS_TOLERANCE = 2
+COMMAND_POLL_SECONDS = 0.1
+
+
+@dataclass(frozen=True)
+class Accepted:
+    """A command that passed every check, with what sending and observing it need."""
+
+    controller: Controller
+    source_entity_id: str
+
+
+@dataclass(frozen=True)
+class Observed:
+    """A reading that showed a command's result; `event_id` is None for a snapshot."""
+
+    event_id: str | None
+
+
+def shows(reading: LightReading | None, command: LightCommand) -> bool:
+    """Whether a reading shows the state a command asks for."""
+    if reading is None:
+        return False
+    if isinstance(command, LightOff):
+        return reading.state == "off"
+    if reading.state != "on":
+        return False
+    if command.brightness_pct is None:
+        return True
+    return (
+        reading.brightness is not None
+        and abs(reading.brightness - brightness_value(command.brightness_pct))
+        <= BRIGHTNESS_TOLERANCE
+    )
+
+
+def received_after(reading: BaselineRecord | EventRecord, sent_at: datetime) -> bool:
+    return datetime.fromisoformat(reading.received_at) > sent_at
+
+
+def find_observation(
+    db: sqlite3.Connection, entity_id: str, command: LightCommand, sent_at: datetime
+) -> Observed | None:
+    """A reading of the light received after the send that shows the command's state."""
+    # The recorder rejects receipts later than persistence, so a reading received after the
+    # send was also stored after it; that narrows each query to the newest rows.
+    after = sent_at.isoformat()
+    for row in db.execute(
+        "SELECT data FROM events WHERE entity_id=? AND persisted_at>? ORDER BY persisted_at",
+        (entity_id, after),
+    ):
+        event = EventRecord.model_validate_json(row[0])
+        if received_after(event, sent_at) and shows(event.new, command):
+            return Observed(event.id)
+    for row in db.execute(
+        "SELECT data FROM baselines WHERE entity_id=? AND persisted_at>? ORDER BY persisted_at",
+        (entity_id, after),
+    ):
+        baseline = BaselineRecord.model_validate_json(row[0])
+        if received_after(baseline, sent_at) and shows(baseline, command):
+            return Observed(None)
+    return None
 
 
 def create_app(
@@ -62,6 +139,9 @@ def create_app(
     allowed_hosts: tuple[str, ...] = ("testserver", "127.0.0.1:8000", "localhost:8000"),
     allowed_origins: tuple[str, ...] = ("http://127.0.0.1:8000", "http://localhost:8000"),
     timezone: ZoneInfo = UTC_ZONE,
+    controller: Controller | None = None,
+    command_wait_seconds: float = 5.0,
+    control_stale_seconds: float = 15.0,
 ) -> FastAPI:
     if (
         isinstance(retention_days, bool)
@@ -106,6 +186,11 @@ def create_app(
             update_current(db, row["entity_id"], source_time, value)
         if store.last_confirmed(db):
             store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "restart")
+        # A command still pending was cut off by a restart; its outcome is unknown.
+        db.execute(
+            "UPDATE commands SET data=json_set(data, '$.outcome', 'interrupted') "
+            "WHERE json_extract(data, '$.outcome')='pending'"
+        )
     recorder = Recorder(store, source_id, now)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -630,6 +715,173 @@ def create_app(
                     )
                 )
             return MonitoredEntities(entities=results)
+
+    @app.post("/internal/control", dependencies=[Depends(internal_auth)], include_in_schema=False)
+    def ingest_control(payload: ControlHeartbeat):
+        if payload.received_at > now().astimezone(UTC):
+            raise HTTPException(422, "Future receipt timestamp")
+        with store.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO metadata VALUES('control_heartbeat_at', ?)",
+                (payload.received_at.isoformat(),),
+            )
+        return {"accepted": True}
+
+    def control_status(db: sqlite3.Connection) -> ControlStatus:
+        row = db.execute("SELECT value FROM metadata WHERE key='control_heartbeat_at'").fetchone()
+        heartbeat_at: str | None = row[0] if row else None
+        fresh = heartbeat_at is not None and (
+            0
+            <= (now() - datetime.fromisoformat(heartbeat_at)).total_seconds()
+            < control_stale_seconds
+        )
+        # Without a configured controller, no heartbeat can turn control on.
+        return ControlStatus(
+            state="on" if fresh and controller is not None else "off", heartbeat_at=heartbeat_at
+        )
+
+    @app.get("/api/control", response_model=ControlStatus)
+    def control():
+        with store.transaction("DEFERRED") as db:
+            return control_status(db)
+
+    def accept(entity_id: str, command: LightCommand) -> Accepted:
+        # Every refusal happens before anything is sent or stored.
+        with store.transaction("DEFERRED") as db:
+            entity = store.entity(db, entity_id)
+            if entity is None:
+                raise HTTPException(404, "Unknown entity")
+            if not entity.supported:
+                raise HTTPException(422, "Entity is unsupported")
+            if controller is None or control_status(db).state == "off":
+                raise conflict("control_off", "Light control is off")
+            if entity_id not in store.selection(db).entity_ids:
+                raise conflict("not_monitored", "Monitor this light before switching it")
+            reading = store.current(db, entity_id)
+            if reading is None or reading.state not in ("on", "off", "unavailable"):
+                raise conflict("state_unknown", "The light's current state is unknown")
+            if reading.state == "unavailable":
+                raise conflict("unavailable", "The light is unavailable")
+            # Home Assistant fires no change for these, so the outcome could never be observed.
+            if shows(reading, command):
+                raise conflict("already_in_state", "The light is already in that state")
+            source_entity_id = reading.source_entity_id or store.source_entity_id(db, entity_id)
+            if source_entity_id is None:
+                raise conflict("state_unknown", "The light's current state is unknown")
+            return Accepted(controller, source_entity_id)
+
+    def save_command(record: CommandRecord) -> None:
+        with store.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO commands VALUES(?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.entity_id,
+                    record.sent_at,
+                    record.model_dump_json(exclude_unset=True),
+                ),
+            )
+
+    def observation(entity_id: str, command: LightCommand, sent_at: datetime) -> Observed | None:
+        with store.transaction("DEFERRED") as db:
+            return find_observation(db, entity_id, command, sent_at)
+
+    @app.post(
+        "/api/lights/{entity_id}/command",
+        response_model=CommandRecord,
+        response_model_exclude_unset=True,
+    )
+    async def command_light(entity_id: str, request: CommandRequest):
+        # Async, with each database read and the send in the thread pool only briefly, so
+        # waiting commands cannot hold the workers that ingest the readings they wait for.
+        accepted = await run_in_threadpool(accept, entity_id, request.command)
+        sent_at = now().astimezone(UTC)
+        record = CommandRecord(
+            id=str(uuid4()),
+            entity_id=entity_id,
+            command=request.command,
+            sender=request.sender,
+            sent_at=sent_at.isoformat(),
+            outcome="pending",
+            event_id=None,
+        )
+        # Stored before the send, so a crash during it still leaves the command on record.
+        await run_in_threadpool(save_command, record)
+        observed: Observed | None = None
+        outcome: CommandOutcome
+        try:
+            result = await run_in_threadpool(
+                accepted.controller.send, accepted.source_entity_id, request.command
+            )
+        except ControllerUnreachable:
+            outcome = "unreachable"
+        else:
+            if result == "refused":
+                outcome = "refused"
+            else:
+                deadline = time.monotonic() + command_wait_seconds
+                while True:
+                    observed = await run_in_threadpool(
+                        observation, entity_id, request.command, sent_at
+                    )
+                    remaining = deadline - time.monotonic()
+                    if observed is not None or remaining <= 0:
+                        break
+                    await asyncio.sleep(min(COMMAND_POLL_SECONDS, remaining))
+                outcome = "observed" if observed is not None else "not_observed"
+        record = record.model_copy(
+            update={
+                "outcome": outcome,
+                "event_id": observed.event_id if observed is not None else None,
+            }
+        )
+        await run_in_threadpool(save_command, record)
+        return record
+
+    @app.get("/api/commands", response_model=CommandsPage, response_model_exclude_unset=True)
+    def commands(
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
+        cursor: Annotated[str | None, Query(max_length=200)] = None,
+    ):
+        try:
+            start = Observation.utc_timestamp(start)
+            end = Observation.utc_timestamp(end)
+            if start and end and start > end:
+                raise ValueError("Reversed range")
+            position = None
+            if cursor is not None:
+                timestamp, identity = cursor.split("|", 1)
+                position = (
+                    to_utc(datetime.fromisoformat(timestamp)).isoformat(),
+                    TypeAdapter(Identity).validate_python(identity),
+                )
+        except (ValueError, TypeError):
+            raise HTTPException(422, "Invalid event scope") from None
+        clauses, parameters = ["sent_at>=?"], [retention_cutoff()]
+        for operator, value in ((">=", start), ("<=", end)):
+            if value is not None:
+                clauses.append(f"sent_at {operator} ?")
+                parameters.append(value.isoformat())
+        if position:
+            clauses.append("(sent_at < ? OR (sent_at=? AND id < ?))")
+            parameters.extend((position[0], position[0], position[1]))
+        with store.transaction("DEFERRED") as db:
+            rows = db.execute(
+                # Only fixed SQL fragments are concatenated; values are bound parameters.
+                "SELECT data FROM commands WHERE "  # noqa: S608
+                + " AND ".join(clauses)
+                + " ORDER BY sent_at DESC, id DESC LIMIT ?",
+                (*parameters, limit + 1),
+            ).fetchall()
+        values = [CommandRecord.model_validate_json(row[0]) for row in rows[:limit]]
+        return CommandsPage(
+            commands=values,
+            next_cursor=f"{values[-1].sent_at}|{values[-1].id}" if len(rows) > limit else None,
+            retained_since=retention_cutoff(),
+        )
 
     web_path = Path.cwd() / "web"
     if web_path.exists():

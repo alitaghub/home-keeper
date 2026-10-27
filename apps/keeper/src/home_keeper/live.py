@@ -21,7 +21,7 @@ from home_keeper.home_assistant import (
     Subscription,
 )
 from home_keeper.models import ChangeEvent, SelectionSnapshot
-from home_keeper.runtime import load_token
+from home_keeper.tokens import load_token
 
 
 def _health(client: httpx.Client, error: str | None) -> None:

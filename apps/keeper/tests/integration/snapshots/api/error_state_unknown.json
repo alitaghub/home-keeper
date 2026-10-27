@@ -1,0 +1,9 @@
+{
+  "status": 409,
+  "body": {
+    "detail": {
+      "code": "state_unknown",
+      "message": "The light's current state is unknown"
+    }
+  }
+}

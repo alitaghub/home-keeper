@@ -24,6 +24,9 @@ This starts four services:
   (set `HOME_KEEPER_PORT` to change the port).
 - `collector`: the live collector that reads Home Assistant.
 
+With `--profile control`, a fifth service, `controller`, switches monitored
+lights. See [Switch lights](#switch-lights).
+
 ### What setup does
 
 `ha-setup` completes Home Assistant onboarding through its HTTP API, with no
@@ -37,6 +40,14 @@ clicks:
    checks it, only the collector mounts that volume, read-only.
 4. It stores the owner login with mode `600` in the `ha-owner` volume. Only
    `ha-setup` mounts that volume.
+5. With the owner's collector token, it creates the user "Home Keeper control"
+   (username `home-keeper-control`) in Home Assistant's non-admin **Users**
+   group, with a random password it does not keep. It creates a long-lived token for that user and stores it in
+   the `ha-control-token` volume with mode `600`. Only `ha-setup` and the
+   controller mount that volume, and the controller mounts it read-only.
+
+Setup creates the control user even when you do not use the `control` profile,
+so turning control on later needs no extra step.
 
 Print the login at any time. Setup never writes the password to its log:
 
@@ -49,10 +60,20 @@ copy then goes stale, but setup does not need it again.
 
 `ha-setup` runs on every `up`:
 
-- A valid token is stored: it validates the token and keeps the existing setup.
+- Both tokens are stored and valid: it keeps the existing setup.
+- The collector's token is stored but the control token is not, as in an
+  install from before light control: it creates the control user and its token
+  with the collector's token. It does not need the owner password. A control
+  user left without a stored token, for example by an interrupted run, is
+  replaced.
+- Home Assistant rejects the stored control token (for example, you revoked
+  it): setup still succeeds and collection starts. Setup logs that light control
+  is off and changes nothing. To turn control on again, delete the control token
+  file and run `up`:
+  `docker compose run --rm --no-deps --entrypoint rm ha-setup /ha-control-token/token`.
 - Home Assistant is not onboarded yet: it onboards it.
-- Home Assistant is onboarded but no token is stored, or Home Assistant rejects
-  the token (for example, you revoked it): `up` fails. Reset with
+- Home Assistant is onboarded but no collector token is stored, or Home
+  Assistant rejects the collector token (for example, you revoked it): `up` fails. Reset with
   `docker compose down --volumes`, which also deletes Home Keeper history, or use
   [your own Home Assistant](#use-your-own-home-assistant) with a token you create.
 
@@ -86,6 +107,17 @@ yet, the dashboard links to the Home Assistant integrations page.
   [official installation guide](https://www.home-assistant.io/installation/linux/).
 - Linux and WSL2 with Docker Engine are tested, including pairing a real Hue
   Bridge. macOS with Docker Desktop should work but has not been tested.
+
+### Switch lights
+
+```sh
+docker compose --profile control up --build --wait
+```
+
+The controller uses the control user's token, never the owner's. To stop
+control without stopping collection, stop the controller, or delete the
+"Home Keeper control" user's token in Home Assistant under that user's
+profile. [control.md](control.md) covers the commands.
 
 ### Stop and reset
 
@@ -145,6 +177,30 @@ the token in transit.
 
 Use both Compose files for every command, for example
 `docker compose -f compose.yaml -f compose.external.yaml down`.
+
+### Turn on light control
+
+Light control needs its own token, for a second Home Assistant user that is not
+an administrator. Then you can revoke control without breaking collection, and
+Home Assistant's logbook names that user for every command.
+
+1. In Home Assistant, open **Settings → People → Users** (turn on advanced mode
+   in your profile if the tab is missing) and add a user, for example
+   "Home Keeper control". Leave **Administrator** off.
+2. Log in as that user, open its profile, and on the **Security** tab create a
+   long-lived access token.
+3. Save the token alone in a file outside this repository, with the same care
+   and permissions as the collector's token above.
+4. Start with the `control` profile:
+
+```sh
+export HOME_KEEPER_HA_CONTROL_TOKEN_FILE=/absolute/path/to/ha-control-token
+docker compose -f compose.yaml -f compose.external.yaml --profile control up --build --wait
+```
+
+Keep `HOME_KEEPER_HA_URL` and `HOME_KEEPER_HA_TOKEN_FILE` set as above. When
+`HOME_KEEPER_HA_CONTROL_TOKEN_FILE` is missing, the controller cannot start and
+Docker reports the placeholder path `/nonexistent/set-HOME_KEEPER_HA_CONTROL_TOKEN_FILE`.
 
 ## Discover and select lights
 

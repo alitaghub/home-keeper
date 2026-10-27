@@ -1,0 +1,10 @@
+[project]
+name = "home-keeper-light-command"
+version = "0.1.0"
+description = "The fixed light commands the Home Keeper API forwards and the controller carries out"
+requires-python = ">=3.13"
+dependencies = ["httpx>=0.28,<1", "pydantic>=2,<3"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

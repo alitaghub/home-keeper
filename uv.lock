@@ -10,6 +10,8 @@ resolution-markers = [
 members = [
     "home-keeper",
     "home-keeper-agent",
+    "home-keeper-controller",
+    "home-keeper-light-command",
     "home-keeper-workspace",
 ]
 
@@ -862,6 +864,7 @@ version = "0.1.0"
 source = { editable = "apps/keeper" }
 dependencies = [
     { name = "fastapi" },
+    { name = "home-keeper-light-command" },
     { name = "httpx" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -870,6 +873,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "home-keeper-light-command", editable = "packages/light-command" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
     { name = "websockets", specifier = ">=15,<16" },
@@ -906,12 +910,51 @@ requires-dist = [
 provides-extras = ["serve"]
 
 [[package]]
+name = "home-keeper-controller"
+version = "0.1.0"
+source = { editable = "apps/controller" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "home-keeper-light-command" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "uvicorn" },
+    { name = "websockets" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "home-keeper-light-command", editable = "packages/light-command" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "pydantic", specifier = ">=2,<3" },
+    { name = "uvicorn", specifier = ">=0.34,<1" },
+    { name = "websockets", specifier = ">=15,<16" },
+]
+
+[[package]]
+name = "home-keeper-light-command"
+version = "0.1.0"
+source = { editable = "packages/light-command" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "pydantic", specifier = ">=2,<3" },
+]
+
+[[package]]
 name = "home-keeper-workspace"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "home-keeper" },
     { name = "home-keeper-agent" },
+    { name = "home-keeper-controller" },
 ]
 
 [package.dev-dependencies]
@@ -926,6 +969,7 @@ dev = [
 requires-dist = [
     { name = "home-keeper", editable = "apps/keeper" },
     { name = "home-keeper-agent", editable = "apps/agent" },
+    { name = "home-keeper-controller", editable = "apps/controller" },
 ]
 
 [package.metadata.requires-dev]

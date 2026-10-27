@@ -27,6 +27,17 @@ from support.api import (
     observation,
     select,
 )
+from support.control import (
+    BROWSER_CHAT,
+    DESK,
+    OFF,
+    ON,
+    TELEGRAM,
+    FakeController,
+    beat,
+    command,
+    on,
+)
 
 from home_keeper.api import create_app
 
@@ -167,6 +178,78 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
     return result
 
 
+def control_responses(tmp_path: Path) -> dict[str, Recorded]:
+    """Control status, each command outcome, the command audit and the refusals."""
+    clock = [NOW]
+    controller = FakeController(clock)
+    app = create_app(
+        tmp_path / "control.sqlite",
+        TOKEN,
+        now=lambda: clock[0],
+        controller=controller,
+        command_wait_seconds=0.2,
+        control_stale_seconds=15,
+    )
+    result: dict[str, Recorded] = {}
+    with TestClient(app) as client:
+        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
+        revision = select(client)
+        result["control_off"] = record(client.get("/api/control"))
+        result["error_control_off"] = record(command(client, ON))
+        beat(client, clock[0])
+        result["control_on"] = record(client.get("/api/control"))
+        result["error_command_unknown_entity"] = record(command(client, ON, entity="missing"))
+        result["error_command_unsupported_entity"] = record(command(client, ON, entity="room"))
+        result["error_not_monitored"] = record(command(client, ON, entity="bulb-b"))
+        result["error_state_unknown"] = record(command(client, ON))
+        unavailable = observation(
+            revision, state="unavailable", availability="unavailable", source_entity_id=DESK
+        )
+        client.post("/internal/baselines", json=unavailable, headers=AUTH)
+        result["error_unavailable"] = record(command(client, ON))
+        clock[0] += timedelta(seconds=1)
+        off = observation(revision, clock[0].isoformat(), state="off", source_entity_id=DESK)
+        client.post("/internal/baselines", json=off, headers=AUTH)
+        result["error_already_in_state"] = record(command(client, OFF))
+        result["error_invalid_command"] = record(command(client, {"action": "toggle"}))
+
+        def report(at: datetime) -> None:
+            payload = event(
+                revision,
+                "after-send",
+                source_entity_id=DESK,
+                event_time=at.isoformat(),
+                received_at=at.isoformat(),
+                old={"state": "off"},
+                new={"state": "on", "brightness": 77},
+            )
+            client.post("/internal/events", json=payload, headers=AUTH).raise_for_status()
+
+        controller.deliver = report
+        result["command_observed"] = record(command(client, on(30), TELEGRAM))
+        controller.join()
+        controller.deliver = None
+        controller.reply = "refused"
+        result["command_refused"] = record(command(client, OFF, BROWSER_CHAT))
+        controller.reply = "ok"
+        result["command_not_observed"] = record(command(client, OFF))
+        controller.unreachable = True
+        result["command_unreachable"] = record(command(client, OFF))
+
+        result["commands"] = record(client.get("/api/commands"))
+        first = client.get("/api/commands", params={"limit": 2})
+        result["commands_page_1"] = record(first)
+        cursor = first.json()["next_cursor"]
+        assert cursor is not None
+        result["commands_page_2"] = record(
+            client.get("/api/commands", params={"limit": 2, "cursor": cursor})
+        )
+        result["error_commands_invalid_cursor"] = record(
+            client.get("/api/commands", params={"cursor": "not-a-cursor"})
+        )
+    return result
+
+
 # pytest needs the case names before the responses exist, so the snapshot files name them.
 SNAPSHOT_NAMES = sorted(path.stem for path in SNAPSHOTS.glob("*.json"))
 
@@ -174,7 +257,7 @@ SNAPSHOT_NAMES = sorted(path.stem for path in SNAPSHOTS.glob("*.json"))
 @pytest.fixture(scope="module")
 def responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Recorded]:
     path = tmp_path_factory.mktemp("contract")
-    return empty_responses(path) | seeded_responses(path)
+    return empty_responses(path) | seeded_responses(path) | control_responses(path)
 
 
 def snapshot_text(recorded: Recorded) -> str:

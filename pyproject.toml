@@ -4,7 +4,7 @@
 name = "home-keeper-workspace"
 version = "0.0.0"
 requires-python = ">=3.13"
-dependencies = ["home-keeper", "home-keeper-agent"]
+dependencies = ["home-keeper", "home-keeper-agent", "home-keeper-controller"]
 
 [dependency-groups]
 dev = [
@@ -20,6 +20,8 @@ package = false
 [tool.uv.sources]
 home-keeper = { workspace = true }
 home-keeper-agent = { workspace = true }
+home-keeper-controller = { workspace = true }
+home-keeper-light-command = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
@@ -32,6 +34,8 @@ testpaths = [
     "apps/keeper/tests/integration",
     "apps/agent/tests/unit",
     "apps/agent/tests/integration",
+    "apps/controller/tests/unit",
+    "apps/controller/tests/integration",
     "tests",
 ]
 # Shared test helpers live in apps/keeper/tests/support and apps/agent/tests/agent_support.py;
@@ -48,7 +52,12 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source_pkgs = ["home_keeper", "home_keeper_agent"]
+source_pkgs = [
+    "home_keeper",
+    "home_keeper_agent",
+    "home_keeper_controller",
+    "home_keeper_light_command",
+]
 
 [tool.coverage.report]
 # A few points under measured coverage, so refactors don't trip it but real drops do.
@@ -107,6 +116,9 @@ include = [
     "apps/keeper/tests",
     "apps/agent/src",
     "apps/agent/tests",
+    "apps/controller/src",
+    "apps/controller/tests",
+    "packages/light-command/src",
     "e2e",
     "scripts",
     "tests",
@@ -117,6 +129,9 @@ extraPaths = [
     "apps/keeper/tests",
     "apps/agent/src",
     "apps/agent/tests",
+    "apps/controller/src",
+    "apps/controller/tests",
+    "packages/light-command/src",
     "scripts",
 ]
 # Local stubs; see typings/httpx2/__init__.pyi.

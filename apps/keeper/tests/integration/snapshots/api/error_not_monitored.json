@@ -1,0 +1,9 @@
+{
+  "status": 409,
+  "body": {
+    "detail": {
+      "code": "not_monitored",
+      "message": "Monitor this light before switching it"
+    }
+  }
+}
