@@ -155,11 +155,13 @@ Add the `control` profile to let the API switch monitored lights:
 docker compose --profile control up --build --wait
 ```
 
-The demo works too: add `--profile control` to its command. A command returns
-what Home Keeper then observed: the change, no change within 5 seconds, a
+The demo works too: add `--profile control` to its command. The dashboard then
+shows `CONTROL ON`, and each monitored light with a known on or off state gets a
+**Turn on** or **Turn off** button. One click sends the command. The dashboard
+then shows what Home Keeper observed: the change, no change within 5 seconds, a
 refusal from Home Assistant, or an unreachable controller. Every command is
-recorded. [docs/control.md](docs/control.md) covers the API, the refusals and the
-limits.
+recorded. [docs/control.md](docs/control.md) covers the dashboard, the API, the
+refusals and the limits.
 
 ## Chat with the agent
 

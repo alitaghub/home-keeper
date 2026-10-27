@@ -32,12 +32,13 @@ export type ApiCall = {
 export type Reply<R extends Route> = ResponseBody<R> | ((call: ApiCall) => ResponseBody<R>);
 export type Replies = { [R in Route]?: Reply<R> };
 /** A dropped connection, or an HTTP error status. */
-export type Failure = "network" | number;
+export type Failure = "network" | number | { status: number; body: unknown };
 
 const defaults: Replies = {
   "GET /api/catalog": fixtures.catalog,
   "GET /api/selection": fixtures.emptySelection,
   "GET /api/monitored": fixtures.emptyMonitored,
+  "GET /api/control": fixtures.controlOff,
   "GET /api/health": fixtures.health,
   "GET /api/coverage": fixtures.emptyCoverage,
   "GET /api/events": fixtures.emptyEvents,
@@ -56,6 +57,7 @@ export function installFakeApi(overrides: Replies = {}) {
   // Object.entries widens keys to string; every key of a Replies object is a Route.
   const replies = new Map(Object.entries({ ...defaults, ...overrides }) as [Route, Reply<Route>][]);
   const failures = new Map<Route, Failure>();
+  const holds = new Map<Route, Promise<void>>();
   const calls: ApiCall[] = [];
   const unmatched: string[] = [];
 
@@ -86,12 +88,16 @@ export function installFakeApi(overrides: Replies = {}) {
       body: text ? JSON.parse(text) : undefined,
     };
     calls.push(call);
+    // A held route answers only after release(); the call is already recorded.
+    await holds.get(route);
     const failure = failures.get(route);
     if (failure === "network") throw new TypeError("Failed to fetch");
     if (failure !== undefined) {
-      return new Response(JSON.stringify({ detail: "Keeper error" }), {
-        status: failure,
-      });
+      const { status, body } =
+        typeof failure === "number"
+          ? { status: failure, body: { detail: "Keeper error" } }
+          : failure;
+      return new Response(JSON.stringify(body), { status });
     }
     const reply = replies.get(route);
     const body = typeof reply === "function" ? reply(call) : reply;
@@ -113,6 +119,20 @@ export function installFakeApi(overrides: Replies = {}) {
     },
     fail: (route: Route, failure: Failure): void => {
       failures.set(route, failure);
+    },
+    /** Keeps requests to `route` pending until the returned function runs. */
+    hold: (route: Route): (() => void) => {
+      let release = () => {};
+      holds.set(
+        route,
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      return () => {
+        holds.delete(route);
+        release();
+      };
     },
   };
 }

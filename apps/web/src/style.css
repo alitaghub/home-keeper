@@ -3,3 +3,4 @@
 .history-status{color:#95a6ba;font-size:12px;line-height:1.6}.change-values{padding-left:20px;line-height:1.8;font-size:13px;overflow-wrap:anywhere}.recorded-event .evidence-id{font-family:ui-monospace,monospace}#timeline-more{margin-top:18px}button:disabled{opacity:.55;cursor:wait}[hidden]{display:none!important}@media(max-width:640px){#timeline-heading{font-size:18px}#timeline-refresh{white-space:normal}}
 
 .light-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.lamp-card{border:1px solid #2b3948;border-radius:9px;background:#172333;padding:16px;min-width:0}.lamp-card strong{min-width:0}.other-entities{margin-top:22px;border-top:1px solid #2b3948;padding-top:18px}.other-entities summary{color:#95a6ba;font-size:13px;cursor:pointer}.other-entities[open] summary{color:#cddbe9}@media(max-width:640px){.light-grid{grid-template-columns:1fr}}
+.state-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
