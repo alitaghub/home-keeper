@@ -33,12 +33,17 @@ seconds of Home Assistant accepting the token again.
 
 ## Switch a light from the dashboard
 
-While control is `on`, the dashboard's "Monitored lights" panel shows
-`CONTROL ON` instead of `READ ONLY`. Each monitored light that is available and
-recorded `on` or `off` gets a button: **Turn off** for a light that is on,
-**Turn on** for a light that is off. A pending, unknown or unavailable light gets
-no button. With control `off`, the dashboard shows no buttons and looks as it
-does without the profile.
+While control is `on`, the **Home** tab's status line shows `CONTROL ON`
+instead of `READ ONLY`. Each monitored light that is available and recorded
+`on` or `off` gets a button and a brightness slider: **Turn off** for a light
+that is on, **Turn on** for a light that is off. A pending, unknown or
+unavailable light gets neither. With control `off`, the dashboard shows no
+buttons or sliders and looks as it does without the profile.
+
+The slider sends `on` at the chosen percent once it stops moving for 0.4
+seconds, so a drag sends one command. Moving the slider of a light that is off
+turns it on at that brightness. Like the button, it returns to the recorded
+brightness after the command.
 
 One click sends the command, with no confirmation and sender `dashboard`. The
 button reads **Sending…** and stays disabled until the API answers. The API
@@ -49,7 +54,7 @@ again, the dashboard reloads in the background, and it shows one message:
 
 | Outcome        | Message                                                         |
 | -------------- | --------------------------------------------------------------- |
-| `observed`     | `<light> is now on.` or `<light> is now off.`                   |
+| `observed`     | `<light> is now on.`, `<light> is now on at 40%.` or `<light> is now off.` |
 | `not_observed` | `Sent to <light>, but no change was seen yet.`                  |
 | `refused`      | `Home Assistant refused the command for <light>.`               |
 | `unreachable`  | `Cannot reach the light controller. <light> may not have changed.` |
@@ -64,8 +69,7 @@ status messages appear beside it and do not replace it.
 
 The button always follows the recorded state, not the requested one. Until the
 reload finishes, and after a `not_observed` until the collector records the new
-state, it still offers the old action. The dashboard has no brightness control;
-use the API for that.
+state, it still offers the old action.
 
 ## Send a command
 
@@ -146,12 +150,12 @@ Commands expire with the same retention as events; see
 
 ### Command history in the dashboard
 
-The "Recorded changes" panel shows **Light commands** above the recorded
-changes. The list appears while control is `on`, or while any recorded command
+The **History** tab shows **Light commands** above the recorded changes. The list appears while control is `on`, or while any recorded command
 exists. With control `on` and no commands, it reads "No light commands yet."
 
 Each row shows the light, the command (`Turn on`, `Turn on at 30%` or
-`Turn off`), the outcome, the sender and the time sent. The sender reads
+`Turn off`), the outcome, the sender and the time sent. Today's rows show the
+time only; hover over it for the full date. The sender reads
 `Dashboard`, `Browser chat`, or the Telegram user's name and ID, such as
 `Sam (Telegram 12345)`. When a recorded change confirmed the command, the row
 also shows `Evidence ID:` with that change's ID, the same ID the change shows
@@ -187,4 +191,3 @@ on a monitored demo light returns `observed`.
   user does.
 - The controller gives Home Assistant 4 seconds per command, from connecting to
   the answer. A slower answer reads as `unreachable`, even if the light switched.
-- The dashboard switches lights on and off only. Brightness needs the API.
