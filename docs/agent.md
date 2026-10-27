@@ -29,8 +29,8 @@ the approval prompt, the agent checks the light and the control state itself.
 It shows no prompt, and says why, when light control is off, the light is not
 monitored (it offers to monitor it), the light is unavailable or has no known
 on/off state, the light is already in that state, or the brightness is outside
-1 to 100 percent. In Telegram, a light command is not supported yet: the bot
-answers with its unsupported-approval message and sends nothing.
+1 to 100 percent. In Telegram, only people on the control allowlist can
+switch lights; see [Telegram light control](telegram.md#switch-lights).
 
 It cannot:
 

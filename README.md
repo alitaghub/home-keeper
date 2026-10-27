@@ -188,8 +188,9 @@ docker compose --profile agent --profile telegram up --build --wait
 ```
 
 For the demo, add `-f compose.demo.yaml` after `docker compose`. Each allowed
-family member gets their own saved conversation. Monitoring changes need
-Approve/Reject buttons; `/new` starts fresh. The bot uses one sequential worker
+family member gets their own saved conversation. Monitoring and light changes
+need Approve/Reject buttons, and only people on the control list can approve
+light changes; `/new` starts fresh. The bot uses one sequential worker
 and exposes no port. [docs/telegram.md](docs/telegram.md) covers bot creation,
 user IDs, setup, limits, and what goes through Telegram.
 
