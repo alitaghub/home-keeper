@@ -103,7 +103,10 @@ def format_lights(monitored: Monitored) -> str:
         return "No lights are monitored."
     lines = [f"{len(monitored.entities)} monitored light(s):"]
     for light in monitored.entities:
-        line = f"- {light.id} name={_name(light.name)}: {_reading(light.baseline)}"
+        line = f"- {light.id} name={_name(light.name)}"
+        if light.device_name:
+            line += f" device={_name(light.device_name)}"
+        line += f": {_reading(light.baseline)}"
         line += f", data {light.freshness}, last confirmed {light.confirmed_at or 'never'}"
         if not light.supported and light.reason:
             line += f", unsupported: {_name(light.reason)}"

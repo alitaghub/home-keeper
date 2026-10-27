@@ -98,6 +98,18 @@ def test_list_lights_reads_the_lights_and_the_control_state() -> None:
     assert {request.headers["X-Home-Keeper"] for request in keeper.requests} == {"1"}
 
 
+def test_list_lights_names_each_light_by_its_device_when_the_entity_has_no_name() -> None:
+    # Home Assistant gives a Hue light no entity name; the device carries it.
+    status, body = lights_response()
+    assert isinstance(body, dict)
+    body["entities"][0] |= {"name": "Unnamed entity", "device_name": "Lounge"}
+    keeper = FakeKeeper({"/api/monitored": (status, body), "/api/control": control_response("on")})
+
+    result = call(keeper.tools(), "list_lights", {})
+
+    assert 'device="Lounge"' in result
+
+
 @pytest.mark.parametrize(
     ("control", "first_line"),
     [
