@@ -765,6 +765,8 @@ def test_commands_page_newest_first_and_filter_by_send_time(tmp_path: Path) -> N
         {"limit": 0},
         {"limit": 501},
         {"cursor": "not-a-cursor"},
+        # Year 1 with a positive offset falls before the first UTC instant.
+        {"cursor": "0001-01-01T00:00:00+14:00|light.desk"},
         {"start": "2026-10-12T10:00:00"},
         {"start": NOW.isoformat(), "end": (NOW - timedelta(seconds=1)).isoformat()},
     ],

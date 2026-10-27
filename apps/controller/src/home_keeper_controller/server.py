@@ -108,14 +108,12 @@ def read_secret(path: Path, description: str) -> str:
 
 def backend(name: str, service_token: str) -> Lights:
     if name == "home_assistant":
+        token_file = Path(
+            os.environ.get("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", "/ha-control-token/token")
+        )
         return HomeAssistantLights(
             os.environ.get("HOME_KEEPER_HA_URL", ""),
-            read_secret(
-                Path(
-                    os.environ.get("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", "/ha-control-token/token")
-                ),
-                "Home Assistant control token",
-            ),
+            lambda: read_secret(token_file, "Home Assistant control token"),
         )
     if name == "demo":
         return CommandClient(DEMO_COLLECTOR_URL, service_token, COMMAND_DEADLINE_SECONDS)

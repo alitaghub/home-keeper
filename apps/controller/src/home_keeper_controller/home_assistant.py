@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -63,8 +64,13 @@ class HomeAssistantLights:
     """Sends `light.turn_on` or `light.turn_off` over Home Assistant's websocket API."""
 
     def __init__(
-        self, url: str, token: str, timeout_seconds: float = COMMAND_DEADLINE_SECONDS
+        self,
+        url: str,
+        token: Callable[[], str],
+        timeout_seconds: float = COMMAND_DEADLINE_SECONDS,
     ) -> None:
+        """`token` reads the control token. Each connection reads it again, so a token
+        that setup replaces works without a controller restart."""
         parsed = urlsplit(url)
         try:
             _ = parsed.port  # Raises ValueError for an out-of-range or non-numeric port.
@@ -81,13 +87,13 @@ class HomeAssistantLights:
             or not url.isascii()
         ):
             raise ValueError("Home Assistant URL must be an http(s) origin")
-        if not valid_token(token):
-            raise ValueError("Home Assistant control token is invalid")
+        self._token = token
+        # Read once now, so a bad token is a configuration error at start.
+        self._read_token()
         if not 0 < timeout_seconds <= MAX_TIMEOUT_SECONDS:
             raise ValueError("Timeout out of range")
         scheme = "wss" if parsed.scheme == "https" else "ws"
         self._websocket_url = f"{scheme}://{parsed.netloc}/api/websocket"
-        self._token = token
         self._timeout = timeout_seconds
         self._authorized = False
         self._checked_at: float | None = None
@@ -119,6 +125,12 @@ class HomeAssistantLights:
         except (ControllerUnreachable, OSError, WebSocketException, ValueError):
             return False
 
+    def _read_token(self) -> str:
+        token = self._token()
+        if not valid_token(token):
+            raise ValueError("Home Assistant control token is invalid")
+        return token
+
     def _connect(self) -> ClientConnection:
         return connect(
             self._websocket_url,
@@ -133,7 +145,7 @@ class HomeAssistantLights:
         """Whether Home Assistant accepts the token on this connection."""
         if self._receive(socket, deadline, AuthFrame).type != "auth_required":
             raise ControllerUnreachable
-        socket.send(json.dumps({"type": "auth", "access_token": self._token}))
+        socket.send(json.dumps({"type": "auth", "access_token": self._read_token()}))
         return self._receive(socket, deadline, AuthFrame).type == "auth_ok"
 
     def send(self, source_entity_id: str, command: LightCommand) -> Literal["ok", "refused"]:

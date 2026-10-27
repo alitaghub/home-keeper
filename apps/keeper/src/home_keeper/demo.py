@@ -117,6 +117,8 @@ class DemoReplay:
         self.lock = Lock()
         # Lights a command switched, with the replay passes they still skip.
         self.held: dict[str, int] = {}
+        # Each light's brightness from when it was last on, which an off state does not carry.
+        self.last_brightness: dict[str, int] = {}
         self.states = {
             entity["id"]: LightState.model_validate(
                 {
@@ -143,6 +145,11 @@ class DemoReplay:
         value = sequence[self.phase % len(sequence)]
         self.phase += 1
         previous = self.states
+        self.last_brightness |= {
+            identity: old.brightness
+            for identity, old in previous.items()
+            if old.brightness is not None
+        }
         self.states = {
             identity: old if identity in self.held else self._next(old, value, event_time)
             for identity, old in previous.items()
@@ -168,6 +175,8 @@ class DemoReplay:
         old = self.states.get(identity)
         if old is None or old.state not in ("on", "off"):
             return None
+        if old.brightness is not None:
+            self.last_brightness[identity] = old.brightness
         if isinstance(command, LightOff):
             value: dict[str, object] = {"state": "off"}
         else:
@@ -175,7 +184,7 @@ class DemoReplay:
             brightness = (
                 brightness_value(command.brightness_pct)
                 if command.brightness_pct is not None
-                else old.brightness or BRIGHTNESS_MAX
+                else self.last_brightness.get(identity, BRIGHTNESS_MAX)
             )
             value = {"state": "on", "brightness": brightness, "color_mode": "brightness"}
         new = self._next(old, value, event_time)

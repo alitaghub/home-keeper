@@ -73,6 +73,8 @@ copy then goes stale, but setup does not need it again.
   is off and changes nothing. To turn control on again, delete the control token
   file and run `up`:
   `docker compose run --rm --no-deps --entrypoint rm ha-setup /ha-control-token/token`.
+  The running controller reads the new token, so control turns on within 30
+  seconds without a restart.
 - Home Assistant is not onboarded yet: it onboards it.
 - Home Assistant is onboarded but no collector token is stored, or Home
   Assistant rejects the collector token (for example, you revoked it): `up` fails. Reset with

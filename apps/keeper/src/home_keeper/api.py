@@ -875,7 +875,8 @@ def create_app(
                     to_utc(datetime.fromisoformat(timestamp)).isoformat(),
                     TypeAdapter(Identity).validate_python(identity),
                 )
-        except (ValueError, TypeError):
+        # OverflowError: a timestamp near year 1 or 9999 can fall outside UTC.
+        except (ValueError, TypeError, OverflowError):
             raise HTTPException(422, "Invalid event scope") from None
         clauses, parameters = ["sent_at>=?"], [retention_cutoff()]
         for operator, value in ((">=", start), ("<=", end)):

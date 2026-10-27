@@ -143,7 +143,7 @@ def call(service: str, entity: str, **data: object) -> Frame:
 def test_light_commands_become_the_two_fixed_service_calls() -> None:
     home = FakeHomeAssistant()
     with running(home) as origin:
-        lights = HomeAssistantLights(origin, HA_TOKEN)
+        lights = HomeAssistantLights(origin, lambda: HA_TOKEN)
         results = [
             lights.send("light.desk", light_command({"action": "on", "brightness_pct": 30})),
             lights.send("light.reading", light_command({"action": "on"})),
@@ -161,7 +161,7 @@ def test_light_commands_become_the_two_fixed_service_calls() -> None:
 def test_home_assistant_rejecting_the_call_is_refused() -> None:
     home = FakeHomeAssistant(success=False)
     with running(home) as origin:
-        result = HomeAssistantLights(origin, HA_TOKEN).send(
+        result = HomeAssistantLights(origin, lambda: HA_TOKEN).send(
             "light.desk", light_command({"action": "off"})
         )
     assert result == "refused"
@@ -170,7 +170,7 @@ def test_home_assistant_rejecting_the_call_is_refused() -> None:
 
 def test_unreachable_home_assistant_raises_unreachable() -> None:
     with pytest.raises(ControllerUnreachable):
-        HomeAssistantLights(closed_origin(), HA_TOKEN).send(
+        HomeAssistantLights(closed_origin(), lambda: HA_TOKEN).send(
             "light.desk", light_command({"action": "on"})
         )
 
@@ -178,7 +178,7 @@ def test_unreachable_home_assistant_raises_unreachable() -> None:
 def test_rejected_control_token_raises_unreachable_and_calls_nothing() -> None:
     home = FakeHomeAssistant()
     with running(home) as origin, pytest.raises(ControllerUnreachable):
-        HomeAssistantLights(origin, "revoked-token").send(
+        HomeAssistantLights(origin, lambda: "revoked-token").send(
             "light.desk", light_command({"action": "on"})
         )
     assert all(frame.get("type") == "auth" for frames in home.connections for frame in frames)
@@ -187,7 +187,7 @@ def test_rejected_control_token_raises_unreachable_and_calls_nothing() -> None:
 def test_command_server_forwards_only_light_commands_to_home_assistant() -> None:
     home = FakeHomeAssistant()
     with running(home) as origin:
-        app = create_app(SERVICE_TOKEN, HomeAssistantLights(origin, HA_TOKEN))
+        app = create_app(SERVICE_TOKEN, HomeAssistantLights(origin, lambda: HA_TOKEN))
         with TestClient(app) as client:
             for source, command in (
                 ("switch.plug", {"action": "on"}),
@@ -218,12 +218,12 @@ def test_command_server_reports_refused_and_unreachable_home_assistant() -> None
     body = {"source_entity_id": "light.desk", "command": {"action": "off"}}
     home = FakeHomeAssistant(success=False)
     with running(home) as origin:
-        app = create_app(SERVICE_TOKEN, HomeAssistantLights(origin, HA_TOKEN))
+        app = create_app(SERVICE_TOKEN, HomeAssistantLights(origin, lambda: HA_TOKEN))
         with TestClient(app) as client:
             refused = client.post("/internal/command", json=body, headers=SERVICE)
     assert (refused.status_code, refused.json()) == (200, {"result": "refused"})
 
-    app = create_app(SERVICE_TOKEN, HomeAssistantLights(closed_origin(), HA_TOKEN))
+    app = create_app(SERVICE_TOKEN, HomeAssistantLights(closed_origin(), lambda: HA_TOKEN))
     with TestClient(app) as client:
         failed = client.post("/internal/command", json=body, headers=SERVICE)
     # Any non-2xx answer other than refused reads as unreachable to the API.
@@ -239,7 +239,7 @@ def test_slow_home_assistant_within_the_deadline_still_switches_the_light() -> N
     # Three replies of one second each: three seconds in all.
     home = FakeHomeAssistant(delay=1.0)
     with running(home) as origin:
-        result = HomeAssistantLights(origin, HA_TOKEN).send(
+        result = HomeAssistantLights(origin, lambda: HA_TOKEN).send(
             "light.desk", light_command({"action": "on"})
         )
     assert result == "ok"
@@ -252,7 +252,7 @@ def test_home_assistant_slower_than_the_deadline_is_unreachable_within_it() -> N
     with running(home) as origin:
         started = time.monotonic()
         with pytest.raises(ControllerUnreachable):
-            HomeAssistantLights(origin, HA_TOKEN).send(
+            HomeAssistantLights(origin, lambda: HA_TOKEN).send(
                 "light.desk", light_command({"action": "on"})
             )
         elapsed = time.monotonic() - started
@@ -278,6 +278,28 @@ def test_home_assistant_backend_built_from_the_environment_switches_the_light(
                 headers=SERVICE,
             )
     assert (response.status_code, response.json()) == (200, {"result": "ok"})
+    assert home.calls() == [call("turn_off", "light.desk")]
+
+
+def test_replaced_control_token_switches_the_light_without_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token_file = tmp_path / "control-token"
+    token_file.write_text("revoked-control-token")
+    home = FakeHomeAssistant()
+    with running(home) as origin:
+        monkeypatch.setenv("HOME_KEEPER_HA_URL", origin)
+        monkeypatch.setenv("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", str(token_file))
+        lights = backend("home_assistant", SERVICE_TOKEN)
+        with pytest.raises(ControllerUnreachable):
+            lights.send("light.desk", light_command({"action": "off"}))
+        assert [frames[0]["access_token"] for frames in home.connections] == [
+            "revoked-control-token"
+        ]
+        home.connections.clear()
+        # As ha-setup does after you delete the revoked token and run `up`.
+        token_file.write_text(f"{HA_TOKEN}\n")
+        assert lights.send("light.desk", light_command({"action": "off"})) == "ok"
     assert home.calls() == [call("turn_off", "light.desk")]
 
 
