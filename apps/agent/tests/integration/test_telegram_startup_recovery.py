@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from home_observer_agent import telegram
+from home_keeper_agent import telegram
 
 
 def run_startup(

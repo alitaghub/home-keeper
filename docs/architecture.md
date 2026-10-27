@@ -1,6 +1,6 @@
 # Architecture
 
-Home Observer has three running parts: a collector that reads the home, an API
+Home Keeper has three running parts: a collector that reads the home, an API
 that decides what to keep, and a dashboard that shows it. They run as two
 containers from one image. The default stack adds a bundled Home Assistant and
 a one-shot `ha-setup` container that onboards it and stores the collector's token.
@@ -20,7 +20,7 @@ flowchart LR
     setup["ha-setup<br/><i>runs once</i>"] -- "onboarding,<br/>long-lived token" --> ha
     setup -- "token volume<br/>(collector reads it)" --> collector
 
-    subgraph observer["Home Observer (Docker Compose)"]
+    subgraph keeper["Home Keeper (Docker Compose)"]
         direction LR
         collector["Collector<br/><i>live or demo</i>"]
         api["API<br/><i>FastAPI</i>"]
@@ -59,9 +59,9 @@ flowchart LR
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |
 | Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
 | Chat      | `apps/chat`                            | Optional. Builds the unmodified Agent Chat UI. Your browser talks to the agent directly.    |
-| Telegram  | `apps/agent/src/home_observer_agent/telegram.py` | Optional. Polls private messages from allowed users and forwards questions and approvals to the agent. Publishes no port. |
+| Telegram  | `apps/agent/src/home_keeper_agent/telegram.py` | Optional. Polls private messages from allowed users and forwards questions and approvals to the agent. Publishes no port. |
 
-Python code lives in `apps/observer/src/home_observer`.
+Python code lives in `apps/keeper/src/home_keeper`.
 
 ## Rules the layout enforces
 

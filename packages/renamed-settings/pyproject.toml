@@ -1,0 +1,10 @@
+[project]
+name = "home-keeper-renamed"
+version = "0.1.0"
+description = "Refuse to start while a variable from before the Home Keeper rename is set"
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

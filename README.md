@@ -1,18 +1,20 @@
-# Home Observer
+# Home Keeper
 
 [![CI](https://github.com/alitaghub/home-observer/actions/workflows/ci.yaml/badge.svg)](https://github.com/alitaghub/home-observer/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Home Observer records what your smart-home devices actually do. It reads them
-through [Home Assistant](https://www.home-assistant.io/), keeps the evidence on
-your machine, and never sends a command to a device.
+Home Keeper is an agent that looks after your home. Recording is its
+foundation: it reads your smart-home devices through
+[Home Assistant](https://www.home-assistant.io/), keeps a record of what they
+actually do on your machine, and shows honest gaps where collection stopped.
 
-The long-term goal is an agent that understands your home and runs it for you.
-An agent can only act well on a home it can see, so this project starts with
-seeing: a trustworthy, typed record of state changes, with honest gaps where
-collection stopped.
+An agent can only act well on a home it can see, so Home Keeper starts with
+seeing. Today it does not control devices: it never sends a command to one.
 
-![The Home Observer dashboard with two monitored lamps](docs/images/dashboard.png)
+Upgrading from Home Observer? Follow [docs/upgrade.md](docs/upgrade.md) before
+you start the stack under the new name.
+
+![The Home Keeper dashboard with two monitored lamps](docs/images/dashboard.png)
 
 ## How it works
 
@@ -22,9 +24,9 @@ flowchart LR
         lights["Lights"] --> ha["Home Assistant<br/>bundled or your own"]
     end
 
-    subgraph observer["Home Observer · on your machine"]
+    subgraph keeper["Home Keeper · on your machine"]
         collector["Collector"]
-        api["Observer API"]
+        api["Home Keeper API"]
         db[("SQLite<br/>recorded evidence")]
         dashboard["Dashboard<br/>devices and history"]
         collector -- "observations" --> api
@@ -49,11 +51,11 @@ flowchart LR
     agent <-->|"model calls"| model["Your model provider"]
 
     classDef homeNode fill:#f0fdf4,stroke:#15803d,color:#14532d
-    classDef observerNode fill:#eff6ff,stroke:#2563eb,color:#1e3a8a
+    classDef keeperNode fill:#eff6ff,stroke:#2563eb,color:#1e3a8a
     classDef agentNode fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95
     classDef externalNode fill:#fff7ed,stroke:#c2410c,color:#7c2d12
     class lights,ha homeNode
-    class collector,api,db,dashboard observerNode
+    class collector,api,db,dashboard keeperNode
     class chat,agent,pg,bot agentNode
     class telegram,model externalNode
 ```
@@ -79,8 +81,9 @@ flow and the terms the code uses.
 
 ## Design principles
 
-- **Read-only.** The connector makes fixed reads and one event subscription. It
-  has no code path that changes a device.
+- **Read-only today.** The connector makes fixed reads and one event
+  subscription. It has no code path that changes a device: today Home Keeper
+  does not control devices.
 - **Opt-in.** Discovery is not permission. Each light is recorded only after you
   select it, and a removal takes effect even if a slow read is still in flight.
 - **Evidence, not guesses.** Every event keeps three timestamps: when Home
@@ -95,7 +98,7 @@ flow and the terms the code uses.
 ## Start
 
 You need Docker with Compose. One command starts Home Assistant and Home
-Observer. You do not need Home Assistant installed first:
+Keeper. You do not need Home Assistant installed first:
 
 ```sh
 docker compose up --build --wait
@@ -116,8 +119,8 @@ token for the collector. Then:
 3. Open the dashboard at <http://127.0.0.1:8000>, click **Refresh discovery**,
    then **Monitor** on a lamp.
 
-If port 8000 or 8123 is taken, set `OBSERVER_PORT` or `HA_PORT`, for example
-`OBSERVER_PORT=18000 HA_PORT=18123 docker compose up --build --wait`.
+If port 8000 or 8123 is taken, set `HOME_KEEPER_PORT` or `HA_PORT`, for example
+`HOME_KEEPER_PORT=18000 HA_PORT=18123 docker compose up --build --wait`.
 
 `docker compose down` stops everything and keeps Home Assistant, the token and
 your history in Docker volumes. Later starts validate the saved token directly
@@ -181,15 +184,17 @@ user IDs, setup, limits, and what goes through Telegram.
 | [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
 | [Telegram](docs/telegram.md)                   | Talk to the agent through a private family bot                     |
 | [Security](docs/security.md)                     | Understand the trust boundaries around the token, API and browser  |
+| [Upgrade](docs/upgrade.md)                       | Move a Home Observer install to Home Keeper without losing data    |
 
 ## Repository layout
 
 | Path            | What lives there                                                   |
 | --------------- | ------------------------------------------------------------------ |
-| `apps/observer` | Python service: FastAPI API, collectors, Home Assistant setup, SQLite store, tests |
+| `apps/keeper`   | Python service: FastAPI API, collectors, Home Assistant setup, SQLite store, tests |
 | `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
 | `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
 | `apps/chat`     | Image recipe for the unmodified Agent Chat UI                      |
+| `packages/renamed-settings` | Shared Python code: the startup check for pre-rename variables |
 | `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |
 | `docs`          | User and design docs                                               |
 

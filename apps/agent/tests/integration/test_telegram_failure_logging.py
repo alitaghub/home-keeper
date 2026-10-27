@@ -5,7 +5,7 @@ import pytest
 from pydantic import SecretStr
 from telegram_support import FakeTelegram, incoming, telegram_body
 
-from home_observer_agent.telegram import UNCERTAIN, Settings, TelegramBot
+from home_keeper_agent.telegram import UNCERTAIN, Settings, TelegramBot
 
 
 @pytest.mark.parametrize("failure", ["http_503", "invalid_state"])

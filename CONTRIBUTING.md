@@ -56,7 +56,7 @@ copy it again into worktrees that already exist.
 ### Pull request titles
 
 PR titles follow [Conventional Commits](https://www.conventionalcommits.org/),
-for example `fix(observer): keep gaps open after a failed heartbeat`. The
+for example `fix(keeper): keep gaps open after a failed heartbeat`. The
 `PR title` workflow checks this. Allowed types:
 
 `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`,

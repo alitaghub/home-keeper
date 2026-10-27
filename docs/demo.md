@@ -8,9 +8,9 @@ the repository root:
 docker compose -f compose.demo.yaml up --build --wait
 ```
 
-Open <http://127.0.0.1:8000>. Set `OBSERVER_PORT` to publish on another loopback
+Open <http://127.0.0.1:8000>. Set `HOME_KEEPER_PORT` to publish on another loopback
 port when 8000 is taken, for example
-`OBSERVER_PORT=18000 docker compose -f compose.demo.yaml up --build --wait`.
+`HOME_KEEPER_PORT=18000 docker compose -f compose.demo.yaml up --build --wait`.
 
 ## What the demo shows
 
@@ -44,7 +44,7 @@ docker compose -f compose.demo.yaml restart
 docker compose -f compose.demo.yaml down
 ```
 
-The demo runs as Compose project `home-observer-demo`, with its own volumes.
+The demo runs as Compose project `home-keeper-demo`, with its own volumes.
 SQLite data and the internal service credential persist there.
 `docker compose -f compose.demo.yaml down --volumes` deletes those volumes. It
 does not touch the home stack. Stop the home stack before you start the demo;

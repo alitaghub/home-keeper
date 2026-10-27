@@ -85,7 +85,7 @@ export function App() {
       if (!showingOlder.current) await loadTimeline();
     } catch {
       setMessage(
-        "Cannot reach the observer. Collection freshness is unknown until connection returns.",
+        "Cannot reach Home Keeper. Collection freshness is unknown until connection returns.",
       );
     }
   }, [loadTimeline, showingOlder]);
@@ -134,7 +134,7 @@ export function App() {
     <>
       <header>
         <div className="brand">
-          ◉ <strong>Home Observer</strong>
+          ◉ <strong>Home Keeper</strong>
         </div>
         <span id="source" className="demo">
           {snapshot ? (live ? "HOME ASSISTANT" : "SYNTHETIC DEMO") : "CONNECTING"}

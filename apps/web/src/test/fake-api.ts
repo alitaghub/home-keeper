@@ -1,4 +1,4 @@
-// A fake observer API on `globalThis.fetch`, typed from the generated OpenAPI paths.
+// A fake keeper API on `globalThis.fetch`, typed from the generated OpenAPI paths.
 import { vi } from "vitest";
 import type { paths } from "../api/schema";
 import * as fixtures from "./fixtures";
@@ -89,7 +89,7 @@ export function installFakeApi(overrides: Replies = {}) {
     const failure = failures.get(route);
     if (failure === "network") throw new TypeError("Failed to fetch");
     if (failure !== undefined) {
-      return new Response(JSON.stringify({ detail: "Observer error" }), {
+      return new Response(JSON.stringify({ detail: "Keeper error" }), {
         status: failure,
       });
     }

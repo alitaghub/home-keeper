@@ -14,7 +14,7 @@ FAKE_HOME_ASSISTANT = Path(__file__).resolve().parent / "fake_home_assistant.py"
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="observer-live-proof-") as directory:
+    with tempfile.TemporaryDirectory(prefix="keeper-live-proof-") as directory:
         root = Path(directory)
         # This is a public fixture value, not a Home Assistant credential.
         token = root / "token"
@@ -39,18 +39,18 @@ def main() -> None:
     cap_drop: [ALL]
 """)
         env = os.environ | {
-            "OBSERVER_HA_URL": "http://fake-ha:8123",
-            "OBSERVER_HA_PUBLIC_URL": "http://ha.example.test:8123",
-            "OBSERVER_HA_TOKEN_FILE": str(token),
-            "OBSERVER_RECONCILIATION_SECONDS": "1",
-            # The proof publishes its own port, so ignore a caller's OBSERVER_PORT.
-            "OBSERVER_PORT": "8000",
+            "HOME_KEEPER_HA_URL": "http://fake-ha:8123",
+            "HOME_KEEPER_HA_PUBLIC_URL": "http://ha.example.test:8123",
+            "HOME_KEEPER_HA_TOKEN_FILE": str(token),
+            "HOME_KEEPER_RECONCILIATION_SECONDS": "1",
+            # The proof publishes its own port, so ignore a caller's HOME_KEEPER_PORT.
+            "HOME_KEEPER_PORT": "8000",
         }
         command = [
             "docker",
             "compose",
             "-p",
-            "observer-live-proof",
+            "keeper-live-proof",
             "-f",
             str(REPO / "compose.yaml"),
             "-f",
@@ -77,11 +77,11 @@ def main() -> None:
                 v["target"] == "/run/secrets/ha-token"
                 for v in configuration["services"]["api"]["volumes"]
             )
-            assert "OBSERVER_HA_URL" not in configuration["services"]["api"]["environment"]
+            assert "HOME_KEEPER_HA_URL" not in configuration["services"]["api"]["environment"]
             compose("up", "--build", "--wait")
             with httpx.Client(
                 base_url="http://127.0.0.1:18001",
-                headers={"Host": "localhost:8000", "X-Home-Observer": "1"},
+                headers={"Host": "localhost:8000", "X-Home-Keeper": "1"},
                 timeout=5,
                 trust_env=False,
             ) as client:

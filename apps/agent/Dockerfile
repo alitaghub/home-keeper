@@ -7,11 +7,13 @@ COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-# uv needs every workspace member's manifest to read the lockfile; only the agent installs.
-COPY apps/observer/pyproject.toml ./apps/observer/
+# uv needs every workspace member's manifest to read the lockfile; the agent installs with the shared package.
+COPY apps/keeper/pyproject.toml ./apps/keeper/
 COPY apps/agent/pyproject.toml ./apps/agent/
+COPY packages/renamed-settings/pyproject.toml ./packages/renamed-settings/
+COPY packages/renamed-settings/src ./packages/renamed-settings/src
 COPY apps/agent/src ./apps/agent/src
-RUN uv sync --locked --no-dev --no-editable --package home-observer-agent --extra serve
+RUN uv sync --locked --no-dev --no-editable --package home-keeper-agent --extra serve
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1
 RUN groupadd --gid 10001 agent && useradd --uid 10001 --gid 10001 agent \
     && mkdir /state && chown agent:agent /state
@@ -19,4 +21,4 @@ USER 10001:10001
 # Writes Aegra's config for CHAT_ORIGIN to /tmp, then runs `aegra serve` on all interfaces;
 # Compose publishes the port on 127.0.0.1 only.
 EXPOSE 2026
-CMD ["python", "-m", "home_observer_agent.serve"]
+CMD ["python", "-m", "home_keeper_agent.serve"]

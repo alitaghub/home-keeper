@@ -16,10 +16,10 @@ subscription. It waits ten seconds between passes by default. Slow requests
 can lengthen the interval. Change the interval without storing a secret:
 
 ```sh
-OBSERVER_RECONCILIATION_SECONDS=30 docker compose up --build --wait
+HOME_KEEPER_RECONCILIATION_SECONDS=30 docker compose up --build --wait
 ```
 
-For the demo, run `OBSERVER_RECONCILIATION_SECONDS=30 docker compose -f compose.demo.yaml up --build --wait`.
+For the demo, run `HOME_KEEPER_RECONCILIATION_SECONDS=30 docker compose -f compose.demo.yaml up --build --wait`.
 Use a positive interval in seconds. Freshness becomes stale after twice the interval
 or a reported collector failure. Authentication, connection and certificate
 errors appear as safe status messages. A failed refresh retains the previous
@@ -77,7 +77,7 @@ retention cutoff is not proof that collection covered that period continuously.
 Retention defaults to 30 days. Set a positive number of days on the API service:
 
 ```sh
-OBSERVER_RETENTION_DAYS=7 docker compose up --build --wait
+HOME_KEEPER_RETENTION_DAYS=7 docker compose up --build --wait
 ```
 
 For the demo, add `-f compose.demo.yaml`. Retention uses the API
@@ -100,7 +100,7 @@ Days and hours use the API's time zone, UTC by default. Set an IANA name on the
 API service; an unknown name stops the API at startup:
 
 ```sh
-OBSERVER_TIMEZONE=Europe/Copenhagen docker compose up --build --wait
+HOME_KEEPER_TIMEZONE=Europe/Copenhagen docker compose up --build --wait
 ```
 
 The numbers only count what the evidence shows:
@@ -108,7 +108,7 @@ The numbers only count what the evidence shows:
 - A snapshot counts from the moment it was read, and a change from the moment
   Home Assistant fired it. A later snapshot never rewrites an earlier stretch.
 
-  If Home Assistant's clock runs ahead of the observer's, a snapshot can say a
+  If Home Assistant's clock runs ahead of the keeper's, a snapshot can say a
   light last changed after the moment it was read. Usage still counts that
   snapshot from when it was read, but the current state keeps it and ignores
   changes stamped earlier. Until delayed changes arrive, the usage report and

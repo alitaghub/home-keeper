@@ -8,15 +8,15 @@ services:
     profiles: [bundled]
   api:
     environment:
-      OBSERVER_HA_PUBLIC_URL: ${OBSERVER_HA_PUBLIC_URL:-}
+      HOME_KEEPER_HA_PUBLIC_URL: ${HOME_KEEPER_HA_PUBLIC_URL:-}
   collector:
     environment:
-      OBSERVER_HA_URL: ${OBSERVER_HA_URL:?Set the Home Assistant origin}
-      OBSERVER_HA_TOKEN_FILE: /run/secrets/ha-token
+      HOME_KEEPER_HA_URL: ${HOME_KEEPER_HA_URL:?Set the Home Assistant origin}
+      HOME_KEEPER_HA_TOKEN_FILE: /run/secrets/ha-token
     volumes: !override
       - service-secret:/secrets:ro
       - type: bind
-        source: ${OBSERVER_HA_TOKEN_FILE:?Set the absolute token file path}
+        source: ${HOME_KEEPER_HA_TOKEN_FILE:?Set the absolute token file path}
         target: /run/secrets/ha-token
         read_only: true
         bind:

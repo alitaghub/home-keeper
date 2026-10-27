@@ -1,10 +1,10 @@
 # Workspace root. Each app or package under apps/ and packages/ owns its own
 # pyproject.toml; this file holds the shared dev tools and tool configuration.
 [project]
-name = "home-observer-workspace"
+name = "home-keeper-workspace"
 version = "0.0.0"
 requires-python = ">=3.13"
-dependencies = ["home-observer", "home-observer-agent"]
+dependencies = ["home-keeper", "home-keeper-agent"]
 
 [dependency-groups]
 dev = [
@@ -18,8 +18,9 @@ dev = [
 package = false
 
 [tool.uv.sources]
-home-observer = { workspace = true }
-home-observer-agent = { workspace = true }
+home-keeper = { workspace = true }
+home-keeper-agent = { workspace = true }
+home-keeper-renamed = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
@@ -28,15 +29,16 @@ exclude = ["apps/web", "apps/chat"]
 
 [tool.pytest.ini_options]
 testpaths = [
-    "apps/observer/tests/unit",
-    "apps/observer/tests/integration",
+    "apps/keeper/tests/unit",
+    "apps/keeper/tests/integration",
     "apps/agent/tests/unit",
     "apps/agent/tests/integration",
+    "packages/renamed-settings/tests/unit",
     "tests",
 ]
-# Shared test helpers live in apps/observer/tests/support and apps/agent/tests/agent_support.py;
+# Shared test helpers live in apps/keeper/tests/support and apps/agent/tests/agent_support.py;
 # repo tooling lives in scripts.
-pythonpath = ["apps/observer/tests", "apps/agent/tests", "scripts"]
+pythonpath = ["apps/keeper/tests", "apps/agent/tests", "scripts"]
 # importlib mode lets each app keep test files with the same basename.
 addopts = ["--strict-markers", "--import-mode=importlib"]
 # Every warning fails the run. Ignore only known third-party warnings, each with a reason.
@@ -48,7 +50,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source_pkgs = ["home_observer", "home_observer_agent"]
+source_pkgs = ["home_keeper", "home_keeper_agent", "home_keeper_renamed"]
 
 [tool.coverage.report]
 # A few points under measured coverage, so refactors don't trip it but real drops do.
@@ -60,7 +62,7 @@ skip_covered = true
 target-version = "py313"
 line-length = 100
 # Resolve workspace packages as first-party imports.
-src = [".", "apps/*/src"]
+src = [".", "apps/*/src", "packages/*/src"]
 
 [tool.ruff.lint]
 select = [
@@ -86,7 +88,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests: pytest's assert rewriting is the idiom, literal expected values read best inline,
 # and every credential is a synthetic fixture.
-"apps/*/tests/**" = ["S101", "PLR2004", "S105", "S106"]
+"{apps,packages}/*/tests/**" = ["S101", "PLR2004", "S105", "S106"]
 # Smoke scripts assert like tests, use synthetic credentials, and drive docker and HTTP.
 "e2e/**" = ["S101", "PLR2004", "S105", "S310", "S603", "S607"]
 # Repo tooling tests assert like app tests and run the hook scripts with bash.
@@ -103,20 +105,23 @@ pythonVersion = "3.13"
 venvPath = "."
 venv = ".venv"
 include = [
-    "apps/observer/src",
-    "apps/observer/tests",
+    "apps/keeper/src",
+    "apps/keeper/tests",
     "apps/agent/src",
     "apps/agent/tests",
+    "packages/renamed-settings/src",
+    "packages/renamed-settings/tests",
     "e2e",
     "scripts",
     "tests",
 ]
 # Resolve the workspace packages, the shared test helpers and repo tooling as local source.
 extraPaths = [
-    "apps/observer/src",
-    "apps/observer/tests",
+    "apps/keeper/src",
+    "apps/keeper/tests",
     "apps/agent/src",
     "apps/agent/tests",
+    "packages/renamed-settings/src",
     "scripts",
 ]
 # Local stubs; see typings/httpx2/__init__.pyi.

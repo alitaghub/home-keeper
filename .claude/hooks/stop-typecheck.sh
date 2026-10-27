@@ -10,7 +10,7 @@ cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 
 # -uall lists new files one by one; keep the target side of a rename.
 changed=$(git status --porcelain -uall 2>/dev/null | sed 's/^...//; s/^.* -> //')
-py=$(printf '%s\n' "$changed" | grep -E '^(apps/observer/(src|tests)|e2e|tests)/.*\.py$' || true)
+py=$(printf '%s\n' "$changed" | grep -E '^(apps/keeper/(src|tests)|e2e|tests)/.*\.py$' || true)
 web=$(printf '%s\n' "$changed" | grep -E '^apps/web/.*\.(ts|tsx)$' || true)
 out=""
 

@@ -13,13 +13,13 @@ import httpx
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter
 
 REPO = Path(__file__).resolve().parents[1]
-PROJECT = "observer-telegram-proof"
+PROJECT = "keeper-telegram-proof"
 FAKE_PORT = 18312
-OBSERVER_PORT = 18003
+HOME_KEEPER_PORT = 18003
 AGENT_PORT = 18227
 CHAT_PORT = 18311
 FAKE_URL = f"http://127.0.0.1:{FAKE_PORT}"
-OBSERVER_URL = f"http://127.0.0.1:{OBSERVER_PORT}"
+HOME_KEEPER_URL = f"http://127.0.0.1:{HOME_KEEPER_PORT}"
 AGENT_URL = f"http://127.0.0.1:{AGENT_PORT}"
 TIMEOUT = 90
 TOKEN = "123456:synthetic-telegram-token"
@@ -178,7 +178,7 @@ def check_profiles() -> None:
 def main() -> None:
     started = time.monotonic()
     check_profiles()
-    with tempfile.TemporaryDirectory(prefix="observer-telegram-proof-") as directory:
+    with tempfile.TemporaryDirectory(prefix="keeper-telegram-proof-") as directory:
         root = Path(directory)
         root.chmod(0o755)
         config = root / "aegra.json"
@@ -220,7 +220,7 @@ def main() -> None:
       retries: 30
 """)
         env = os.environ | {
-            "OBSERVER_PORT": str(OBSERVER_PORT),
+            "HOME_KEEPER_PORT": str(HOME_KEEPER_PORT),
             "AGENT_PORT": str(AGENT_PORT),
             "CHAT_PORT": str(CHAT_PORT),
         }
@@ -262,8 +262,8 @@ def main() -> None:
                 wait_text(client, "Reply 1: my question", user=202)
                 post_text(client, 4, "monitor light.hue_desk")
                 prompt = wait_text(client, "light.hue_desk?")
-                with httpx.Client(base_url=OBSERVER_URL, timeout=10, trust_env=False) as observer:
-                    assert selection(observer) == []
+                with httpx.Client(base_url=HOME_KEEPER_URL, timeout=10, trust_env=False) as keeper:
+                    assert selection(keeper) == []
                     compose("restart", "telegram", "agent")
                     wait_until(
                         "agent healthy after restart",
@@ -275,7 +275,7 @@ def main() -> None:
                     click(client, 5, prompt, "Approve")
                     wait_until(
                         "approved selection",
-                        lambda: selection(observer) == ["light.hue_desk"],
+                        lambda: selection(keeper) == ["light.hue_desk"],
                     )
                     wait_text(client, "Result:")
                     post_text(client, 6, "stop light.hue_desk")
@@ -295,10 +295,10 @@ def main() -> None:
                             == 2
                         ),
                     )
-                    assert selection(observer) == ["light.hue_desk"]
+                    assert selection(keeper) == ["light.hue_desk"]
                     click(client, 8, stop_prompt, "Approve")
                     wait_text(client, "no longer available")
-                    assert selection(observer) == ["light.hue_desk"]
+                    assert selection(keeper) == ["light.hue_desk"]
                 post_text(client, 9, "/new")
                 wait_text(client, "fresh conversation")
                 post_text(client, 10, "fresh")

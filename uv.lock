@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -8,9 +8,10 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "home-observer",
-    "home-observer-agent",
-    "home-observer-workspace",
+    "home-keeper",
+    "home-keeper-agent",
+    "home-keeper-renamed",
+    "home-keeper-workspace",
 ]
 
 [[package]]
@@ -857,11 +858,12 @@ wheels = [
 ]
 
 [[package]]
-name = "home-observer"
+name = "home-keeper"
 version = "0.1.0"
-source = { editable = "apps/observer" }
+source = { editable = "apps/keeper" }
 dependencies = [
     { name = "fastapi" },
+    { name = "home-keeper-renamed" },
     { name = "httpx" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -870,17 +872,19 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "home-keeper-renamed", editable = "packages/renamed-settings" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
     { name = "websockets", specifier = ">=15,<16" },
 ]
 
 [[package]]
-name = "home-observer-agent"
+name = "home-keeper-agent"
 version = "0.1.0"
 source = { editable = "apps/agent" }
 dependencies = [
     { name = "deepagents" },
+    { name = "home-keeper-renamed" },
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-openai" },
@@ -897,6 +901,7 @@ serve = [
 requires-dist = [
     { name = "aegra-cli", marker = "extra == 'serve'", specifier = "==0.10.8" },
     { name = "deepagents", specifier = "==0.7.25" },
+    { name = "home-keeper-renamed", editable = "packages/renamed-settings" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "langchain", specifier = "==1.4.5" },
     { name = "langchain-openai", specifier = "==1.7.1" },
@@ -906,12 +911,17 @@ requires-dist = [
 provides-extras = ["serve"]
 
 [[package]]
-name = "home-observer-workspace"
+name = "home-keeper-renamed"
+version = "0.1.0"
+source = { editable = "packages/renamed-settings" }
+
+[[package]]
+name = "home-keeper-workspace"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "home-observer" },
-    { name = "home-observer-agent" },
+    { name = "home-keeper" },
+    { name = "home-keeper-agent" },
 ]
 
 [package.dev-dependencies]
@@ -924,8 +934,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "home-observer", editable = "apps/observer" },
-    { name = "home-observer-agent", editable = "apps/agent" },
+    { name = "home-keeper", editable = "apps/keeper" },
+    { name = "home-keeper-agent", editable = "apps/agent" },
 ]
 
 [package.metadata.requires-dev]

@@ -16,7 +16,7 @@ run = [
   "mise install",
   "pnpm install",
   "uv sync",
-  "pnpm --filter @home-observer/web exec playwright install chromium",
+  "pnpm --filter @home-keeper/web exec playwright install chromium",
   "lefthook install",
 ]
 
@@ -43,7 +43,7 @@ run = [
   "uv run ruff format --check .",
   "mise run typecheck",
   "mise run test",
-  "pnpm --filter @home-observer/web build",
+  "pnpm --filter @home-keeper/web build",
   "mise run check:api",
   "mise run lint:workflows",
 ]
@@ -53,11 +53,11 @@ description = "Lint GitHub Actions workflows (actionlint, zizmor)"
 run = ["actionlint", "zizmor .github"]
 
 [tasks."gen:api"]
-description = "Generate the web app's API types from the observer's OpenAPI schema"
+description = "Generate the web app's API types from the keeper's OpenAPI schema"
 run = """
 schema=$(mktemp --suffix=.json)
 trap 'rm -f "$schema"' EXIT
-uv run python -m home_observer.openapi > "$schema"
+uv run python -m home_keeper.openapi > "$schema"
 pnpm exec openapi-typescript "$schema" --output apps/web/src/api/schema.d.ts
 """
 
@@ -77,7 +77,7 @@ run = "uv run python scripts/pr_images.py"
 description = "Start the demo stack, then the Vite dev server with /api proxied to it"
 run = """
 docker compose -f compose.demo.yaml up --build --wait
-OBSERVER_API_ORIGIN="http://127.0.0.1:${OBSERVER_PORT:-8000}" pnpm --filter @home-observer/web dev
+HOME_KEEPER_API_ORIGIN="http://127.0.0.1:${HOME_KEEPER_PORT:-8000}" pnpm --filter @home-keeper/web dev
 """
 
 [tasks.e2e]
@@ -88,11 +88,14 @@ run = """
 trap 'status=$?; [ "$status" -eq 0 ] || docker compose -f compose.demo.yaml --profile agent logs --no-color > compose-logs.txt; docker compose -f compose.demo.yaml --profile agent down' EXIT
 docker compose config --quiet
 docker compose --profile agent config --quiet
+# Both proofs need the demo project down: one starts it and expects it to fail.
+uv run python e2e/renamed_settings_smoke.py
+uv run python e2e/migrate_volumes_smoke.py
 docker compose -f compose.demo.yaml up --build --wait
 uv run python e2e/compose_smoke.py
 uv run python e2e/compose_live_smoke.py
 uv run python e2e/compose_home_smoke.py
-E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${OBSERVER_PORT:-8000}}" pnpm --filter @home-observer/web e2e
+E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${HOME_KEEPER_PORT:-8000}}" pnpm --filter @home-keeper/web e2e
 # Add the agent profile to the running demo stack. The model settings are
 # placeholders with a valid shape; the smoke never calls the model.
 AZURE_OPENAI_ENDPOINT=https://placeholder.invalid AZURE_OPENAI_API_KEY=placeholder \

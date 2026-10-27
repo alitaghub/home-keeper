@@ -1,6 +1,6 @@
 # Security boundary
 
-- The Observer API publishes only on `127.0.0.1`. Its API and collector run as an
+- The Home Keeper API publishes only on `127.0.0.1`. Its API and collector run as an
   unprivileged user, without Linux capabilities, with read-only filesystems
   except their mounted volumes. The bundled Home Assistant also publishes only a
   loopback port and runs with its upstream container identity, without
@@ -31,7 +31,7 @@
 - The optional agent (`--profile agent`) is a separate container. It joins the
   dashboard network to reach the API, an internal network to reach its own
   Postgres, and the default network for egress to the model provider. It never
-  joins the `home-assistant` network and mounts no observer volume, so it cannot
+  joins the `home-assistant` network and mounts no Home Keeper volume, so it cannot
   reach Home Assistant, the token, the database or the service credential. It
   calls only the public `/api/*` routes, through the `api` host name, and sends
   the same mutation header as the dashboard. Its only writes are discovery
@@ -47,7 +47,7 @@
   rebinding is not mitigated. Its Postgres publishes no port.
 
 Do not expose the dashboard or the agent publicly. Neither has user
-authentication. Without the agent profile, Home Observer makes no model calls.
+authentication. Without the agent profile, Home Keeper makes no model calls.
 With it, your questions and the agent's tool results go to the model provider
 you configure in `AGENT_MODEL`. Tool results contain light names, states,
 timestamps and usage numbers from the public API. The Home Assistant token, the
@@ -69,7 +69,7 @@ Old or repeated callback buttons cannot approve another action.
 Questions and replies pass through Telegram, in addition to the model provider's
 existing access to questions and tool results. The bot receives only its bot
 token, allowlist, internal agent address, and private state location. It receives
-no Home Assistant token, model key, Observer database, or Aegra database mount.
+no Home Assistant token, model key, Home Keeper database, or Aegra database mount.
 Its small persistent state stores Telegram progress, conversation references,
 and pending approvals; Aegra keeps the actual conversation history.
 
