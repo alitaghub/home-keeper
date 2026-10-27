@@ -6,7 +6,14 @@ from typing import Literal, Protocol
 
 import httpx
 import pytest
-from agent_support import FakeKeeper, snapshot
+from agent_support import (
+    FakeKeeper,
+    command_requests,
+    command_response,
+    control_response,
+    lights_response,
+    snapshot,
+)
 from langchain_core.messages import AIMessage
 from pydantic import SecretStr
 from telegram_support import (
@@ -1121,3 +1128,38 @@ def test_failure_to_remove_resolved_keyboard_still_resumes_approved_graph(
     assert len(keeper.requests) == 1
     assert telegram.bodies()[-1]["text"] == STALE
     assert "Approved." in [body["text"] for body in telegram.bodies()]
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "state"),
+    [
+        ("turn_off_light", {"entity_id": "bulb-a"}, "on"),
+        ("turn_on_light", {"entity_id": "bulb-a", "brightness_percent": 30}, "off"),
+    ],
+)
+def test_light_command_card_is_unsupported_in_telegram_and_sends_nothing(
+    make_bot: BotFactory, tmp_path: Path, name: str, args: dict[str, object], state: str
+) -> None:
+    telegram = FakeTelegram()
+    keeper = FakeKeeper(
+        {
+            "/api/monitored": lights_response(state),
+            "/api/control": control_response("on"),
+            "/api/lights/bulb-a/command": command_response("observed"),
+        }
+    )
+    request = AIMessage("", tool_calls=[{"name": name, "args": args, "id": "light"}])
+    agent = GraphAegra([request, AIMessage("Done.")], keeper)
+    bot = make_bot(
+        family_settings(tmp_path),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(incoming(1, 11, "Turn the light off"))
+    bot.close()
+
+    assert command_requests(keeper) == []
+    [reply] = telegram.bodies()
+    assert "Unsupported approval" in reply["text"]
+    assert "reply_markup" not in reply

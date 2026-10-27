@@ -887,6 +887,7 @@ version = "0.1.0"
 source = { editable = "apps/agent" }
 dependencies = [
     { name = "deepagents" },
+    { name = "home-keeper-light-command" },
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-openai" },
@@ -903,6 +904,7 @@ serve = [
 requires-dist = [
     { name = "aegra-cli", marker = "extra == 'serve'", specifier = "==0.10.8" },
     { name = "deepagents", specifier = "==0.7.25" },
+    { name = "home-keeper-light-command", editable = "packages/light-command" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "langchain", specifier = "==1.4.5" },
     { name = "langchain-openai", specifier = "==1.7.1" },

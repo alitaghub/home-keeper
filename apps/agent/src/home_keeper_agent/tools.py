@@ -5,28 +5,44 @@ Names from Home Assistant are JSON-quoted so they can never read as instructions
 
 import json
 import logging
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Mapping, Sequence
+from fractions import Fraction
+from typing import Literal
 from urllib.parse import quote
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
+from pydantic import Field, ValidationError
 
 from home_keeper_agent.keeper import (
+    BrowserChatSender,
     Catalog,
+    CommandRecord,
+    CommandRequest,
+    Control,
     CoverageReport,
     DiscoveryRefresh,
     EventsPage,
     Health,
     KeeperClient,
     KeeperError,
+    LightOff,
+    LightOn,
     LightUsage,
     Monitored,
     Params,
     Reading,
     Selection,
+    Sender,
     Usage,
+    Wire,
 )
+from home_keeper_light_command import matches_brightness
 
 EVENT_LIMIT = 100
+LIGHT_TOOLS = ("turn_on_light", "turn_off_light")
+NOT_ALLOWED = "Not sent: you are not allowed to control lights."
 
 
 def _name(value: str) -> str:
@@ -53,18 +69,23 @@ def duration(seconds: float) -> str:
     return f"{exact} ({' '.join(parts)})"
 
 
+def percent(brightness: float) -> int:
+    """A 0-255 brightness as a whole percent, rounded half up, so the model does no math."""
+    return math.floor(Fraction(brightness) * 100 / 255 + Fraction(1, 2))
+
+
 def _reading(reading: Reading | None) -> str:
     if reading is None:
         return "no state"
     if reading.brightness is None:
         return reading.state
-    return f"{reading.state} (brightness {reading.brightness}/255)"
+    return f"{reading.state} (brightness {percent(reading.brightness)}%)"
 
 
 logger = logging.getLogger(__name__)
 
 
-def _guard(render: Callable[[], str]) -> str:
+def _guard[T](render: Callable[[], T]) -> T | str:
     try:
         return render()
     except KeeperError as error:
@@ -81,7 +102,10 @@ def format_lights(monitored: Monitored) -> str:
         return "No lights are monitored."
     lines = [f"{len(monitored.entities)} monitored light(s):"]
     for light in monitored.entities:
-        line = f"- {light.id} name={_name(light.name)}: {_reading(light.baseline)}"
+        line = f"- {light.id} name={_name(light.name)}"
+        if light.device_name:
+            line += f" device={_name(light.device_name)}"
+        line += f": {_reading(light.baseline)}"
         line += f", data {light.freshness}, last confirmed {light.confirmed_at or 'never'}"
         if not light.supported and light.reason:
             line += f", unsupported: {_name(light.reason)}"
@@ -91,7 +115,7 @@ def format_lights(monitored: Monitored) -> str:
 
 def _light_usage(light: LightUsage) -> list[str]:
     brightness = (
-        "unknown" if light.average_brightness is None else f"{number(light.average_brightness)}/255"
+        "unknown" if light.average_brightness is None else f"{percent(light.average_brightness)}%"
     )
     lines = [
         f"- {light.entity_id}: on {duration(light.on_seconds)}, "
@@ -177,11 +201,132 @@ def format_devices(catalog: Catalog) -> str:
     return "\n".join(lines)
 
 
+class RunContext(Wire):
+    """Who asks in this run and whether they may switch lights.
+
+    Read from the run's `configurable`; the browser chat sets neither, so it gets the defaults.
+    """
+
+    sender: Sender = Field(default_factory=BrowserChatSender)
+    may_control: bool = True
+
+
+def run_context(config: RunnableConfig) -> RunContext:
+    try:
+        return RunContext.model_validate(config.get("configurable", {}))
+    except ValidationError:
+        # A context that does not parse must not grant control.
+        return RunContext(may_control=False)
+
+
+class LightCall(Wire):
+    entity_id: str
+    brightness_percent: int | None = None
+
+
+def _once[T](fetch: Callable[[], T]) -> Callable[[], T]:
+    """Fetch at most once, so later calls reuse the answer or the failure without waiting."""
+    results: list[T] = []
+    failures: list[KeeperError] = []
+
+    def get() -> T:
+        if not results and not failures:
+            try:
+                results.append(fetch())
+            except KeeperError as error:
+                failures.append(error)
+        if failures:
+            raise failures[0]
+        return results[0]
+
+    return get
+
+
+def light_refusals(
+    client: KeeperClient, calls: Sequence[tuple[str, Mapping[str, object]]], context: RunContext
+) -> list[str | None]:
+    """Why each light command must not reach the approval card, or None when it may.
+
+    The keeper refuses the same cases; checking first spares approving a command that
+    cannot work. One model response's calls share one read of control and monitored lights.
+    """
+    control = _once(lambda: client.request("GET", "/api/control", Control))
+    monitored = _once(lambda: client.request("GET", "/api/monitored", Monitored))
+    return [_light_refusal(name, args, context, control, monitored) for name, args in calls]
+
+
+def _light_refusal(
+    name: str,
+    args: Mapping[str, object],
+    context: RunContext,
+    control: Callable[[], Control],
+    monitored: Callable[[], Monitored],
+) -> str | None:
+    try:
+        call = LightCall.model_validate(args)
+    except ValidationError:
+        return "Not sent: the arguments are invalid."
+    action: Literal["on", "off"] = "on" if name == "turn_on_light" else "off"
+    brightness = call.brightness_percent if action == "on" else None
+    entity_id = call.entity_id
+
+    def check() -> str | None:
+        if not context.may_control:
+            return NOT_ALLOWED
+        if control().state == "off":
+            return "Not sent: light control is off."
+        if brightness is not None and brightness not in range(1, 101):
+            return "Not sent: brightness must be 1 to 100 percent."
+        light = next((light for light in monitored().entities if light.id == entity_id), None)
+        if light is None:
+            return f"Not sent: {entity_id} is not monitored. Offer to start monitoring it first."
+        return _state_refusal(entity_id, light.baseline, action, brightness)
+
+    return _guard(check)
+
+
+def _state_refusal(
+    entity_id: str, reading: Reading | None, action: Literal["on", "off"], brightness: int | None
+) -> str | None:
+    if reading is not None and reading.state == "unavailable":
+        return f"Not sent: {entity_id} is unavailable."
+    if reading is None or reading.state not in ("on", "off"):
+        return f"Not sent: {entity_id} has no known on/off state."
+    # Home Assistant reports no change for these, so the outcome could never be seen.
+    if reading.state == action and (
+        brightness is None or matches_brightness(reading.brightness, brightness)
+    ):
+        return f"Not sent: {entity_id} is already {action}."
+    return None
+
+
+def format_outcome(entity_id: str, command: LightOn | LightOff, record: CommandRecord) -> str:
+    match record.outcome:
+        case "observed":
+            return f"{entity_id} is now {command.action} (observed)."
+        case "not_observed":
+            return f"Sent to {entity_id}, but no change was seen within 5 seconds."
+        case "refused":
+            return f"Home Assistant refused the command for {entity_id}."
+        case "unreachable":
+            return f"Cannot reach the light controller; {entity_id} may not have changed."
+
+
 def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_lights() -> str:
-        """List the lights the keeper records, with their latest state and freshness."""
-        return _guard(lambda: format_lights(client.request("GET", "/api/monitored", Monitored)))
+        """List the lights the keeper records, with their latest state and freshness. The first
+        line says whether light control is on."""
+
+        def render() -> str:
+            monitored = client.request("GET", "/api/monitored", Monitored)
+            try:
+                control = client.request("GET", "/api/control", Control).state
+            except KeeperError:
+                control = "unknown"
+            return f"Control: {control}\n{format_lights(monitored)}"
+
+        return _guard(render)
 
     @tool
     def get_usage(start: str, end: str, entity_ids: list[str] | None = None) -> str:
@@ -271,6 +416,39 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         """
         return _guard(lambda: select(entity_id, selected=False))
 
+    def send(entity_id: str, command: LightOn | LightOff, config: RunnableConfig) -> str:
+        context = run_context(config)
+        # The pre-check refused this before the card, but the approver's run decides.
+        if not context.may_control:
+            return NOT_ALLOWED
+        # The ID comes from the model, so it is encoded as one path segment.
+        path = f"/api/lights/{quote(entity_id, safe='')}/command"
+        request = CommandRequest(command=command, sender=context.sender)
+        record = client.request("POST", path, CommandRecord, body=request)
+        return format_outcome(entity_id, command, record)
+
+    @tool
+    def turn_on_light(
+        entity_id: str, config: RunnableConfig, brightness_percent: int | None = None
+    ) -> str:
+        """Turn a monitored light on, optionally at a brightness. The user must approve this.
+
+        Args:
+            entity_id: A monitored light's ID as list_lights prints it.
+            brightness_percent: Brightness from 1 to 100 percent; omit to keep the light's own.
+        """
+        command = LightOn(brightness_pct=brightness_percent)
+        return _guard(lambda: send(entity_id, command, config))
+
+    @tool
+    def turn_off_light(entity_id: str, config: RunnableConfig) -> str:
+        """Turn a monitored light off. The user must approve this.
+
+        Args:
+            entity_id: A monitored light's ID as list_lights prints it.
+        """
+        return _guard(lambda: send(entity_id, LightOff(), config))
+
     return [
         list_lights,
         get_usage,
@@ -281,4 +459,6 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         refresh_discovery,
         monitor_light,
         stop_monitoring,
+        turn_on_light,
+        turn_off_light,
     ]

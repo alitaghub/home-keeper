@@ -17,11 +17,26 @@ dashboard uses. It can:
 - list discovered devices and refresh discovery
 - start or stop monitoring a light, after you approve it in the chat. You can
   approve or reject the proposed change; a rejection changes nothing
+- turn a monitored light on, optionally at a brightness from 1 to 100 percent,
+  or off, after you approve it in the chat. This needs the `control` profile
+  (see [control.md](control.md)). The agent reports what Home Keeper then
+  observed: the change, no change within 5 seconds, a refusal from Home
+  Assistant, or an unreachable controller. A rejection sends nothing
+
+The agent can suggest a light change inside an answer, but it proposes a
+command only after you ask for one or agree to its suggestion. Before you see
+the approval prompt, the agent checks the light and the control state itself.
+It shows no prompt, and says why, when light control is off, the light is not
+monitored (it offers to monitor it), the light is unavailable or has no known
+on/off state, the light is already in that state, or the brightness is outside
+1 to 100 percent. In Telegram, a light command is not supported yet: the bot
+answers with its unsupported-approval message and sends nothing.
 
 It cannot:
 
 - see power or energy. Home Keeper does not record it. The agent says so.
-- control a device. It has no path to Home Assistant at all.
+- reach Home Assistant. It sends light commands to the Home Keeper API, which
+  forwards them to the controller.
 - read the database. It sees only what the API returns.
 
 Usage numbers come from the API, not from the model's own arithmetic. Every
@@ -91,8 +106,8 @@ variable in `docker compose logs agent`, and never turns healthy.
 ## What leaves your machine
 
 When the agent is on, your questions and the tool results go to the model
-provider you configured. Tool results contain light names, states, timestamps
-and usage numbers. The Home Assistant token, the database and the service
+provider you configured. Tool results contain light names, states, timestamps,
+usage numbers, the light control state and the outcome of each light command. The Home Assistant token, the database and the service
 credential never leave. [security.md](security.md) has the full boundary.
 
 ## Example questions
@@ -104,12 +119,16 @@ credential never leave. [security.md](security.md) has the full boundary.
 - Were there any collection gaps yesterday?
 - Is collection healthy? When did Home Assistant last answer?
 - Start monitoring the hallway light.
+- Turn the desk lamp off.
+- Set the reading light to 30 percent.
 
 ## Limits
 
 - Neither Aegra nor the chat page has authentication. Anyone who can reach
-  port 2026 can read and write every thread and start the agent. Both bind to
-  `127.0.0.1` for that reason. Do not publish them on your network.
+  port 2026 can read and write every thread and start the agent. With the
+  `control` profile, they can also propose and approve their own light
+  commands. Both bind to `127.0.0.1` for that reason. Do not publish them on
+  your network.
 - CORS only stops other websites from reading Aegra's answers. A page you visit
   can still send simple cross-site requests to it, and Aegra does not check the
   `Host` header, so DNS rebinding is not blocked.

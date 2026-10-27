@@ -2,8 +2,9 @@
 
 The optional Telegram bot gives your family another way to talk to the existing
 Home Keeper agent. Each allowed person has a private, saved conversation.
-The bot can answer questions and propose monitoring changes. It cannot control
-devices.
+The bot can answer questions and propose monitoring changes. It cannot switch
+lights yet: if the agent proposes a light command, the bot answers with its
+unsupported-approval message and sends nothing.
 
 ## Set up the bot
 

@@ -6,7 +6,14 @@ from typing import Any
 
 import httpx
 import pytest
-from agent_support import HOME_KEEPER_URL, FakeKeeper, call, snapshot
+from agent_support import (
+    HOME_KEEPER_URL,
+    FakeKeeper,
+    call,
+    control_response,
+    lights_response,
+    snapshot,
+)
 
 START = "2026-10-12T09:59:00Z"
 END = "2026-10-12T10:00:10Z"
@@ -35,7 +42,6 @@ def normalized(items: list[tuple[str, str]]) -> dict[str, list[str | datetime]]:
 @pytest.mark.parametrize(
     ("name", "args", "path", "params"),
     [
-        pytest.param("list_lights", {}, "/api/monitored", {}, id="list_lights"),
         pytest.param("get_coverage", {}, "/api/coverage", {}, id="get_coverage"),
         pytest.param("get_health", {}, "/api/health", {}, id="get_health"),
         pytest.param("list_devices", {}, "/api/catalog", {}, id="list_devices"),
@@ -78,6 +84,99 @@ def test_read_tool_sends_one_marked_get_to_its_keeper_route(
     assert request.headers["X-Home-Keeper"] == "1"
     expected = [(key, value) for key, values in params.items() for value in values]
     assert normalized(request.url.params.multi_items()) == normalized(expected)
+
+
+def test_list_lights_reads_the_lights_and_the_control_state() -> None:
+    keeper = FakeKeeper(
+        {"/api/monitored": snapshot("monitored"), "/api/control": control_response("on")}
+    )
+
+    call(keeper.tools(), "list_lights", {})
+
+    assert sorted(keeper.paths()) == ["/api/control", "/api/monitored"]
+    assert {request.method for request in keeper.requests} == {"GET"}
+    assert {request.headers["X-Home-Keeper"] for request in keeper.requests} == {"1"}
+
+
+def test_list_lights_names_each_light_by_its_device_when_the_entity_has_no_name() -> None:
+    # Home Assistant gives a Hue light no entity name; the device carries it.
+    status, body = lights_response()
+    assert isinstance(body, dict)
+    body["entities"][0] |= {"name": "Unnamed entity", "device_name": "Lounge"}
+    keeper = FakeKeeper({"/api/monitored": (status, body), "/api/control": control_response("on")})
+
+    result = call(keeper.tools(), "list_lights", {})
+
+    assert 'device="Lounge"' in result
+
+
+@pytest.mark.parametrize(
+    ("control", "first_line"),
+    [
+        pytest.param(control_response("on"), "Control: on", id="on"),
+        pytest.param(control_response("off"), "Control: off", id="off"),
+        pytest.param((500, {"detail": "Internal Server Error"}), "Control: unknown", id="error"),
+        pytest.param((404, {"detail": "Not Found"}), "Control: unknown", id="missing"),
+    ],
+)
+def test_list_lights_starts_with_the_control_state(
+    control: tuple[int, object], first_line: str
+) -> None:
+    keeper = FakeKeeper({"/api/monitored": snapshot("monitored"), "/api/control": control})
+
+    result = call(keeper.tools(), "list_lights", {})
+
+    assert result.splitlines()[0] == first_line
+    assert "bulb-a" in result
+
+
+def test_list_lights_says_control_is_unknown_when_the_keeper_cannot_be_reached_for_it() -> None:
+    keeper = FakeKeeper({"/api/monitored": snapshot("monitored")})
+
+    result = call(keeper.tools(), "list_lights", {})
+
+    assert result.splitlines()[0] == "Control: unknown"
+
+
+@pytest.mark.parametrize(
+    ("brightness", "percent"),
+    [(255, 100), (128, 50), (77, 30), (76, 30), (2, 1), (1, 0), (0, 0)],
+)
+def test_reading_brightness_is_a_rounded_percent(brightness: int, percent: int) -> None:
+    keeper = FakeKeeper(
+        {
+            "/api/monitored": lights_response("on", brightness),
+            "/api/control": control_response("on"),
+        }
+    )
+
+    result = call(keeper.tools(), "list_lights", {})
+
+    assert f"on (brightness {percent}%)" in result, result
+    assert "/255" not in result
+
+
+def test_event_brightness_is_a_percent() -> None:
+    keeper = FakeKeeper({"/api/events": snapshot("events_page_1")})
+
+    result = call(keeper.tools(), "get_events", RANGE)
+
+    # The recorded event turns bulb-a on at brightness 150 of 255.
+    assert "brightness 59%" in result, result
+    assert "/255" not in result
+
+
+@pytest.mark.parametrize(
+    ("average", "percent"),
+    [(255.0, 100), (142.0, 56), (128.5, 50), (100.0, 39), (1.5, 1), (0.5, 0)],
+)
+def test_usage_average_brightness_is_a_rounded_percent(average: float, percent: int) -> None:
+    keeper = FakeKeeper({"/api/usage": (200, usage_of_one_light(average_brightness=average))})
+
+    result = call(keeper.tools(), "get_usage", RANGE)
+
+    assert f"average brightness while on {percent}%" in result, result
+    assert "/255" not in result
 
 
 @pytest.mark.parametrize(
@@ -183,7 +282,9 @@ def test_usage_reports_every_known_value_of_a_light() -> None:
     [bulb_a] = [line for line in result.splitlines() if "bulb-a" in line]
     assert number(47, bulb_a), bulb_a
     assert number(13, bulb_a), bulb_a
-    assert number(142, bulb_a), bulb_a
+    # 142 of 255 is 55.7 percent; the model gets percent so it does no arithmetic.
+    assert "average brightness while on 56%" in bulb_a, bulb_a
+    assert not number(142, bulb_a), bulb_a
     day = next(line for line in result.splitlines() if line.strip().startswith("2026-10-12"))
     assert number(47, day), day
     assert re.search(r"(?<!\d)0?7(:00)?\D{1,4}19(?![\d.])", result), result
@@ -236,7 +337,9 @@ def test_usage_keeps_fractional_numbers_unrounded() -> None:
 
     result = call(keeper.tools(), "get_usage", RANGE)
 
-    for value in ("20.5", "0.5", "128.5"):
+    # 128.5 of 255 is 50.4 percent.
+    assert "average brightness while on 50%" in result, result
+    for value in ("20.5", "0.5"):
         assert re.search(rf"(?<![\d.]){re.escape(value)}(?![\d])", result), result
     # Half a second of unknown time is still unknown time.
     assert not re.search(r"unknown 0s\b", result), result

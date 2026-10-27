@@ -12,6 +12,7 @@ COPY apps/keeper/pyproject.toml ./apps/keeper/
 COPY apps/agent/pyproject.toml ./apps/agent/
 COPY apps/controller/pyproject.toml ./apps/controller/
 COPY packages/light-command/pyproject.toml ./packages/light-command/
+COPY packages/light-command/src ./packages/light-command/src
 COPY apps/agent/src ./apps/agent/src
 RUN uv sync --locked --no-dev --no-editable --package home-keeper-agent --extra serve
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1
