@@ -41,7 +41,7 @@ services:
       REDIS_BROKER_ENABLED: "false"
       # No auth: acceptable only because the port binds to 127.0.0.1.
       AUTH_TYPE: noop
-      OBSERVER_URL: http://api:${OBSERVER_PORT:-8000}
+      HOME_KEEPER_URL: http://api:${HOME_KEEPER_PORT:-8000}
       # The only browser origin Aegra allows (CORS): the chat page.
       CHAT_ORIGIN: http://127.0.0.1:${CHAT_PORT:-3000}
       # Passed through from the shell or .env; left unset when missing, so the
@@ -51,7 +51,7 @@ services:
       AZURE_OPENAI_API_KEY:
       # Only listed variables reach the container. Another provider's key goes here too.
       OPENAI_API_KEY:
-    # `dashboard` reaches the observer API, `agent-db` reaches Postgres, and
+    # `dashboard` reaches the keeper API, `agent-db` reaches Postgres, and
     # `default` is egress to the model provider. Never the home-assistant network.
     networks: [dashboard, agent-db, default]
     read_only: true
@@ -99,14 +99,14 @@ services:
     build:
       context: .
       dockerfile: apps/agent/Dockerfile
-    command: [python, -m, home_observer_agent.telegram]
+    command: [python, -m, home_keeper_agent.telegram]
     restart: unless-stopped
     environment:
       TELEGRAM_BOT_TOKEN:
       TELEGRAM_ALLOWED_USER_IDS:
     volumes:
       - telegram-state:/state
-    # Only Aegra and outbound Telegram. No Observer history, HA token, or database network.
+    # Only Aegra and outbound Telegram. No Home Keeper history, HA token, or database network.
     networks: [default]
     read_only: true
     tmpfs: [/tmp]

@@ -3,8 +3,8 @@ import signal
 
 import pytest
 
-from home_observer_agent import telegram
-from home_observer_agent.telegram import FatalTelegramError, PollError, Settings
+from home_keeper_agent import telegram
+from home_keeper_agent.telegram import FatalTelegramError, PollError, Settings
 
 
 @pytest.mark.parametrize(

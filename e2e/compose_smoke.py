@@ -27,7 +27,7 @@ EXPECTED = {
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--base-url", default=f"http://127.0.0.1:{os.environ.get('OBSERVER_PORT', '8000')}"
+        "--base-url", default=f"http://127.0.0.1:{os.environ.get('HOME_KEEPER_PORT', '8000')}"
     )
     parser.add_argument("--timeout", type=float, default=45)
     parser.add_argument("--skip-bindings", action="store_true")
@@ -41,7 +41,7 @@ def main() -> None:
         headers = (
             {}
             if body is None
-            else {"Content-Type": "application/json", "X-Home-Observer": "1", "Origin": base}
+            else {"Content-Type": "application/json", "X-Home-Keeper": "1", "Origin": base}
         )
         with urlopen(
             Request(

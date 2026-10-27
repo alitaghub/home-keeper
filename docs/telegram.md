@@ -1,7 +1,7 @@
 # Talk to the agent through Telegram
 
 The optional Telegram bot gives your family another way to talk to the existing
-Home Observer agent. Each allowed person has a private, saved conversation.
+Home Keeper agent. Each allowed person has a private, saved conversation.
 The bot can answer questions and propose monitoring changes. It cannot control
 devices.
 
@@ -124,7 +124,7 @@ The saved polling progress belongs to one bot's numeric ID. Rotating the token
 for that same bot keeps its state. To switch to a different bot, use a fresh
 Telegram state volume. The worker refuses to reuse another bot's volume rather
 than silently skip the new bot's messages. Keep the old volume as a backup;
-there is no need to delete Observer history or Aegra's conversations. Volumes
+there is no need to delete Home Keeper history or Aegra's conversations. Volumes
 created before this identity check bind to the configured bot on their first
 upgraded startup; keep the original bot configured for that startup.
 

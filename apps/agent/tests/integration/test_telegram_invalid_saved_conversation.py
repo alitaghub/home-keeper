@@ -2,19 +2,19 @@ import logging
 from pathlib import Path
 
 import pytest
-from agent_support import FakeObserver
+from agent_support import FakeKeeper
 from langchain_core.messages import AIMessage
 from pydantic import SecretStr
 from telegram_support import FakeTelegram, GraphAegra, incoming
 
-from home_observer_agent.telegram import UNCERTAIN, Settings, TelegramBot
+from home_keeper_agent.telegram import UNCERTAIN, Settings, TelegramBot
 
 
 def test_new_recovers_from_invalid_saved_conversation(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     telegram = FakeTelegram()
-    agent = GraphAegra([AIMessage("Recovered answer.")], FakeObserver())
+    agent = GraphAegra([AIMessage("Recovered answer.")], FakeKeeper())
     bot = TelegramBot(
         Settings(
             bot_token=SecretStr("123:secret"),

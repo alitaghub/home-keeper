@@ -1,5 +1,5 @@
 {
-  "name": "@home-observer/web",
+  "name": "@home-keeper/web",
   "private": true,
   "type": "module",
   "scripts": {

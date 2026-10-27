@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, override
 
 import pytest
-from agent_support import READ_TOOLS, WRITE_TOOLS, FakeObserver, ScriptedChatModel, snapshot
+from agent_support import READ_TOOLS, WRITE_TOOLS, FakeKeeper, ScriptedChatModel, snapshot
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -17,13 +17,13 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from pydantic import Field
 
-from home_observer_agent.graph import build_agent
+from home_keeper_agent.graph import build_agent
 
 THREAD: RunnableConfig = {"configurable": {"thread_id": "selection"}}
 
 
-def test_agent_registers_the_observer_tools_and_no_shell_or_subagent() -> None:
-    agent = build_agent(ScriptedChatModel(responses=[AIMessage("unused")]), FakeObserver().client())
+def test_agent_registers_the_keeper_tools_and_no_shell_or_subagent() -> None:
+    agent = build_agent(ScriptedChatModel(responses=[AIMessage("unused")]), FakeKeeper().client())
 
     tool_node = agent.nodes["tools"].bound
     assert isinstance(tool_node, ToolNode)
@@ -32,8 +32,8 @@ def test_agent_registers_the_observer_tools_and_no_shell_or_subagent() -> None:
     assert not names & {"execute", "task"}
 
 
-def test_scripted_tool_calls_reach_the_observer_and_the_final_messages() -> None:
-    observer = FakeObserver(
+def test_scripted_tool_calls_reach_the_keeper_and_the_final_messages() -> None:
+    keeper = FakeKeeper(
         {
             "/api/monitored": snapshot("monitored"),
             "/api/health": snapshot("health"),
@@ -57,13 +57,13 @@ def test_scripted_tool_calls_reach_the_observer_and_the_final_messages() -> None
             AIMessage("You watch two lights; collection is healthy."),
         ]
     )
-    agent = build_agent(model, observer.client())
+    agent = build_agent(model, keeper.client())
 
     question = HumanMessage("Which lights do you watch, and for how long?")
     # langgraph's invoke signature leaves Command's type parameter unparameterized.
     state = agent.invoke({"messages": [question]})  # pyright: ignore[reportUnknownMemberType]
 
-    assert sorted(observer.paths()) == ["/api/health", "/api/monitored", "/api/usage"]
+    assert sorted(keeper.paths()) == ["/api/health", "/api/monitored", "/api/usage"]
     results = {
         message.tool_call_id: message.text
         for message in state["messages"]
@@ -75,10 +75,10 @@ def test_scripted_tool_calls_reach_the_observer_and_the_final_messages() -> None
     assert state["messages"][-1].text == "You watch two lights; collection is healthy."
 
 
-def agent_after_one_call(observer: FakeObserver, tool_call: ToolCall):
+def agent_after_one_call(keeper: FakeKeeper, tool_call: ToolCall):
     """Run an agent (with the checkpointer interrupts need) through one scripted tool call."""
     model = ScriptedChatModel(responses=[AIMessage("", tool_calls=[tool_call]), AIMessage("Done.")])
-    agent = build_agent(model, observer.client(), checkpointer=InMemorySaver())
+    agent = build_agent(model, keeper.client(), checkpointer=InMemorySaver())
     question = HumanMessage("Change what you record.")
     # langgraph's invoke signature leaves Command's type parameter unparameterized.
     agent.invoke({"messages": [question]}, THREAD)  # pyright: ignore[reportUnknownMemberType]
@@ -92,17 +92,17 @@ def agent_after_one_call(observer: FakeObserver, tool_call: ToolCall):
 def test_selection_change_waits_for_approval_and_reject_changes_nothing(
     name: str, selected: bool, decision: str
 ) -> None:
-    observer = FakeObserver({"/api/selection/bulb-a": snapshot("put_selection")})
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
     call: ToolCall = {"name": name, "args": {"entity_id": "bulb-a"}, "id": "call-select"}
 
-    agent = agent_after_one_call(observer, call)
+    agent = agent_after_one_call(keeper, call)
 
     [pause] = agent.get_state(THREAD).interrupts
     approval: HITLRequest = pause.value
     [request] = approval["action_requests"]
     assert request["name"] == name
     assert request["args"] == {"entity_id": "bulb-a"}
-    assert observer.requests == []
+    assert keeper.requests == []
 
     resume = Command(resume={"decisions": [{"type": decision}]})
     # langgraph's invoke signature leaves Command's type parameter unparameterized.
@@ -110,22 +110,22 @@ def test_selection_change_waits_for_approval_and_reject_changes_nothing(
 
     assert agent.get_state(THREAD).interrupts == ()
     if decision == "reject":
-        assert observer.requests == []
+        assert keeper.requests == []
         return
-    [put] = observer.requests
+    [put] = keeper.requests
     assert (put.method, put.url.path) == ("PUT", "/api/selection/bulb-a")
-    assert put.headers["X-Home-Observer"] == "1"
+    assert put.headers["X-Home-Keeper"] == "1"
     assert json.loads(put.content) == {"selected": selected}
 
 
 def test_refresh_discovery_runs_without_approval() -> None:
-    observer = FakeObserver({"/api/discovery/refresh": snapshot("discovery_refresh")})
+    keeper = FakeKeeper({"/api/discovery/refresh": snapshot("discovery_refresh")})
     call: ToolCall = {"name": "refresh_discovery", "args": {}, "id": "call-refresh"}
 
-    agent = agent_after_one_call(observer, call)
+    agent = agent_after_one_call(keeper, call)
 
     assert agent.get_state(THREAD).interrupts == ()
-    assert [(request.method, request.url.path) for request in observer.requests] == [
+    assert [(request.method, request.url.path) for request in keeper.requests] == [
         ("POST", "/api/discovery/refresh")
     ]
 
@@ -149,7 +149,7 @@ class RecordingChatModel(ScriptedChatModel):
 
 def test_model_is_told_the_current_time_on_the_async_path_aegra_uses() -> None:
     model = RecordingChatModel(responses=[AIMessage("Monday to now.")])
-    agent = build_agent(model, FakeObserver().client())
+    agent = build_agent(model, FakeKeeper().client())
 
     before = datetime.now(UTC).replace(microsecond=0)
     asyncio.run(agent.ainvoke({"messages": [HumanMessage("What counts as this week?")]}))  # pyright: ignore[reportUnknownMemberType] -- langgraph leaves Command's type parameter unparameterized

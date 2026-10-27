@@ -1,4 +1,5 @@
-# Home Observer with a bundled Home Assistant: `docker compose up --build --wait`.
+# Home Keeper with a bundled Home Assistant: `docker compose up --build --wait`.
+name: home-keeper
 # The demo lives in compose.demo.yaml; your own Home Assistant uses compose.external.yaml.
 # Add `--profile agent` to also start the chat agent (compose.agent.yaml).
 include:
@@ -17,11 +18,11 @@ services:
   # Onboards Home Assistant once and stores the collector's token. Exits when done.
   ha-setup:
     build: .
-    entrypoint: [python, -m, home_observer.ha_setup]
+    entrypoint: [python, -m, home_keeper.ha_setup]
     command: [setup]
     environment:
-      OBSERVER_HA_URL: http://homeassistant:8123
-      OBSERVER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
+      HOME_KEEPER_HA_URL: http://homeassistant:8123
+      HOME_KEEPER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
     volumes:
       - ha-token:/ha-token
       - ha-owner:/ha-owner
@@ -36,15 +37,15 @@ services:
   api:
     build: .
     ports:
-      - "127.0.0.1:${OBSERVER_PORT:-8000}:${OBSERVER_PORT:-8000}"
+      - "127.0.0.1:${HOME_KEEPER_PORT:-8000}:${HOME_KEEPER_PORT:-8000}"
     environment:
-      OBSERVER_PORT: ${OBSERVER_PORT:-8000}
-      OBSERVER_BIND: 0.0.0.0
-      OBSERVER_SOURCE_ID: home_assistant
-      OBSERVER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
-      OBSERVER_RETENTION_DAYS: ${OBSERVER_RETENTION_DAYS:-30}
-      OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
-      OBSERVER_TIMEZONE: ${OBSERVER_TIMEZONE:-UTC}
+      HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
+      HOME_KEEPER_BIND: 0.0.0.0
+      HOME_KEEPER_SOURCE_ID: home_assistant
+      HOME_KEEPER_HA_PUBLIC_URL: http://127.0.0.1:${HA_PORT:-8123}
+      HOME_KEEPER_RETENTION_DAYS: ${HOME_KEEPER_RETENTION_DAYS:-30}
+      HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
+      HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
     volumes:
       - data:/data
       - service-secret:/secrets
@@ -54,18 +55,18 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${OBSERVER_PORT:-8000}/api/health', timeout=3)"]
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${HOME_KEEPER_PORT:-8000}/api/health', timeout=3)"]
       interval: 5s
       timeout: 4s
       retries: 10
   collector:
     build: .
-    command: [python, -m, home_observer.live]
+    command: [python, -m, home_keeper.live]
     environment:
-      OBSERVER_PORT: ${OBSERVER_PORT:-8000}
-      OBSERVER_RECONCILIATION_SECONDS: ${OBSERVER_RECONCILIATION_SECONDS:-10}
-      OBSERVER_HA_URL: http://homeassistant:8123
-      OBSERVER_HA_TOKEN_FILE: /ha-token/token
+      HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
+      HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
+      HOME_KEEPER_HA_URL: http://homeassistant:8123
+      HOME_KEEPER_HA_TOKEN_FILE: /ha-token/token
     volumes:
       - service-secret:/secrets:ro
       - ha-token:/ha-token:ro

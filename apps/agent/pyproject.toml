@@ -1,7 +1,7 @@
 [project]
-name = "home-observer-agent"
+name = "home-keeper-agent"
 version = "0.1.0"
-description = "Chat agent that answers questions from the Home Observer API"
+description = "Chat agent that answers questions from the Home Keeper API"
 requires-python = ">=3.13"
 # Exact pins: the agent stack moves fast and the image must match what the tests ran.
 dependencies = [
@@ -16,6 +16,8 @@ dependencies = [
 [project.optional-dependencies]
 # Aegra serves the graph in the image only; tests import the graph directly.
 serve = ["aegra-cli==0.10.8"]
+
+[tool.uv.sources]
 
 [build-system]
 requires = ["hatchling"]
