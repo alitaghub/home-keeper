@@ -7,12 +7,15 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter
 
+from home_keeper.migration import SCHEMA_VERSION, upgrade
 from home_keeper.models import (
     BaselineRecord,
     CommandRecord,
     CoverageGap,
     CurrentReading,
+    DeviceKind,
     Entity,
+    EventRecord,
     GapReason,
     HealthReport,
     SelectionSnapshot,
@@ -22,11 +25,12 @@ current_reading: TypeAdapter[CurrentReading] = TypeAdapter(CurrentReading)
 baseline_record: TypeAdapter[BaselineRecord] = TypeAdapter(BaselineRecord)
 
 
-def stored_json(record: CurrentReading | CommandRecord) -> str:
-    """A record's row. A light's omits its device kind so readers that forbid the field still
-    parse it; readers here take a missing kind as a light."""
-    exclude = {"device_kind"} if record.device_kind == "light" else None
-    return record.model_dump_json(exclude_unset=True, exclude=exclude)
+stored_kind: TypeAdapter[DeviceKind | None] = TypeAdapter(DeviceKind | None)
+
+
+def stored_json(record: CurrentReading | EventRecord | CommandRecord) -> str:
+    """A record's row: the fields it was given, so absent light attributes stay absent."""
+    return record.model_dump_json(exclude_unset=True)
 
 
 class Store:
@@ -37,17 +41,12 @@ class Store:
         # The mode is stored in the database file, so setting it once at startup is enough.
         with closing(sqlite3.connect(path, timeout=10)) as db:
             db.execute("PRAGMA journal_mode=WAL")
+        upgrade(path)
         with self.transaction() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS catalog(id TEXT PRIMARY KEY, data TEXT NOT NULL);
-                -- Kinds sit beside the catalog so its rows parse for readers that forbid the field.
-                CREATE TABLE IF NOT EXISTS catalog_kind(
-                    id TEXT PRIMARY KEY, device_kind TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS selection(id TEXT PRIMARY KEY);
-                -- A selected switch's kind outlives its catalog row; a separate table keeps
-                -- `selection` one column for readers and writers that insert one value.
-                CREATE TABLE IF NOT EXISTS selected_switch(id TEXT PRIMARY KEY);
+                -- The kind a device was selected as outlives its catalog row.
+                CREATE TABLE IF NOT EXISTS selection(id TEXT PRIMARY KEY, device_kind TEXT);
                 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 INSERT OR IGNORE INTO metadata VALUES('revision', '0');
                 CREATE TABLE IF NOT EXISTS baselines(
@@ -103,6 +102,10 @@ class Store:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS baseline_scope ON baselines(entity_id, persisted_at)"
             )
+            # A new database starts in the current shape; `upgrade` marks an older one.
+            db.execute(
+                "INSERT OR IGNORE INTO metadata VALUES('schema_version', ?)", (SCHEMA_VERSION,)
+            )
 
     @contextmanager
     def transaction(
@@ -134,25 +137,18 @@ class Store:
         )
 
     @staticmethod
-    def selected_switch(db: sqlite3.Connection, entity_id: str) -> bool:
-        return (
-            db.execute("SELECT 1 FROM selected_switch WHERE id=?", (entity_id,)).fetchone()
-            is not None
-        )
+    def selected_kind(db: sqlite3.Connection, entity_id: str) -> DeviceKind | None:
+        """The kind a selected device had in the catalog when it was selected."""
+        row = db.execute("SELECT device_kind FROM selection WHERE id=?", (entity_id,)).fetchone()
+        return stored_kind.validate_python(row[0]) if row else None
 
     @staticmethod
     def entities(db: sqlite3.Connection, entity_id: str | None = None) -> list[Entity]:
         rows = db.execute(
-            "SELECT c.data, k.device_kind FROM catalog c LEFT JOIN catalog_kind k ON k.id = c.id "
-            "WHERE ? IS NULL OR c.id = ? ORDER BY c.id",
+            "SELECT data FROM catalog WHERE ? IS NULL OR id = ? ORDER BY id",
             (entity_id, entity_id),
         )
-        return [
-            Entity.model_validate_json(data).model_copy(update={"device_kind": kind})
-            if kind
-            else Entity.model_validate_json(data)
-            for data, kind in rows
-        ]
+        return [Entity.model_validate_json(row[0]) for row in rows]
 
     @staticmethod
     def entity(db: sqlite3.Connection, entity_id: str) -> Entity | None:

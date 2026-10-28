@@ -131,7 +131,7 @@ streams events as Home Assistant sends them.
 | ----------- | --------------------------------------------------------------------------------------------- |
 | Source      | Where data comes from: `demo` or `home_assistant`. One database holds one source.             |
 | Catalog     | The devices and entities the collector discovered, with whether each one can be monitored.   |
-| Device kind | What a recorded entity is, from its Home Assistant domain: `light` or `switch` (plugs too). Every reading carries it. A stored light row leaves it out, so the release before plugs can still read the database; a row without it reads as `light`. Separate from a record's `kind` (baseline, event, ...). |
+| Device kind | What a recorded entity is, from its Home Assistant domain: `light` or `switch` (plugs too). Every stored row carries it; a one-time migration, with a backup, added it to older databases. Separate from a record's `kind` (baseline, event, ...). |
 | Selection   | The lights, plugs and switches you chose to monitor, plus a revision number the API owns.    |
 | Baseline    | A snapshot of a device's state. Taken at selection, during polling, and after recovery.      |
 | Event       | One observed change, with old and new values and three timestamps (fired, received, saved).  |

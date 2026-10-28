@@ -13,7 +13,7 @@ def test_usage_read_transaction_does_not_hold_up_collector_writes(tmp_path: Path
         writer = sqlite3.connect(store.path, timeout=0.5)
         try:
             writer.execute("BEGIN IMMEDIATE")
-            writer.execute("INSERT INTO selection VALUES('light.kitchen')")
+            writer.execute("INSERT INTO selection(id) VALUES('light.kitchen')")
             writer.commit()  # a collector write committing mid-report
         finally:
             writer.close()

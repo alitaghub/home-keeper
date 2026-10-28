@@ -61,8 +61,8 @@ def change_event(
         "entity_id": entity_id,
         "source_entity_id": source_entity_id,
         "event_time": event_time.isoformat(),
-        "old": old.stored() if old else None,
-        "new": new.stored() if new else None,
+        "old": evidence(old),
+        "new": evidence(new),
     }
     event_id = hashlib.sha256(
         json.dumps(identity_data, sort_keys=True, separators=(",", ":")).encode()
@@ -73,5 +73,15 @@ def change_event(
             "selection_revision": revision,
             "received_at": received_at or datetime.now(UTC),
             **identity_data,
+            "old": old,
+            "new": new,
         }
+    )
+
+
+def evidence(state: LightState | SwitchState | None) -> dict[str, object] | None:
+    """A state as its event ID hashes it, without the device kind the source entity ID names,
+    so stored event IDs stay stable for duplicate detection."""
+    return (
+        state.model_dump(mode="json", exclude_none=True, exclude={"device_kind"}) if state else None
     )
