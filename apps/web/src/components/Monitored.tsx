@@ -4,8 +4,8 @@ import { brightnessPercent, date } from "../format";
 import { lightName } from "./Catalog";
 
 type Baseline = NonNullable<Schemas["MonitoredEntity"]["baseline"]>;
-export type LightCommand = Schemas["CommandRequest"]["command"];
-export type LightAction = LightCommand["action"];
+export type DeviceCommand = Schemas["CommandRequest"]["command"];
+export type DeviceAction = DeviceCommand["action"];
 
 // A slider sends one command once it stops moving, not one per step.
 const DIMMER_SETTLE_MS = 400;
@@ -58,7 +58,7 @@ function Evidence({ baseline, confirmedAt }: { baseline: Baseline; confirmedAt: 
 }
 
 // Shows the recorded state's opposite, never the requested one: the label changes
-// only once the reload after the command records the light's new state.
+// only once the reload after the command records the device's new state.
 function SwitchButton({
   name,
   action,
@@ -66,9 +66,9 @@ function SwitchButton({
   onClick,
 }: {
   name: string;
-  action: LightAction;
+  action: DeviceAction;
   sending: boolean;
-  onClick: (action: LightAction) => void;
+  onClick: (action: DeviceAction) => void;
 }) {
   const label = `Turn ${action}`;
   return (
@@ -111,7 +111,7 @@ function Dimmer({
   );
 }
 
-type Switch = (entity: Schemas["MonitoredEntity"], command: LightCommand) => void;
+type Switch = (entity: Schemas["MonitoredEntity"], command: DeviceCommand) => void;
 
 function Tile({
   entity,
@@ -126,9 +126,11 @@ function Tile({
 }) {
   const name = lightName(entity);
   const { baseline } = entity;
-  // Only an available light with a known on/off state can be switched.
+  // Only an available device with a known on/off state can be switched.
   const recorded = baseline?.availability === "available" ? baseline.state : null;
   const switchable = onSwitch !== null && (recorded === "on" || recorded === "off");
+  // Plugs and switches are on or off, with no brightness.
+  const dimmable = entity.device_kind !== "switch";
   const brightness = brightnessOf(baseline);
   const percent = recorded === "on" && brightness != null ? brightnessPercent(brightness) : 100;
   // The slider's value while it moves; null shows the recorded brightness.
@@ -166,19 +168,21 @@ function Tile({
               onSwitch(entity, { action });
             }}
           />
-          <Dimmer
-            name={name}
-            value={draft ?? percent}
-            disabled={busy}
-            onChange={(brightness_pct) => {
-              setDraft(brightness_pct);
-              clearTimeout(settle.current);
-              settle.current = setTimeout(() => {
-                setDraft(null);
-                onSwitch(entity, { action: "on", brightness_pct });
-              }, DIMMER_SETTLE_MS);
-            }}
-          />
+          {dimmable && (
+            <Dimmer
+              name={name}
+              value={draft ?? percent}
+              disabled={busy}
+              onChange={(brightness_pct) => {
+                setDraft(brightness_pct);
+                clearTimeout(settle.current);
+                settle.current = setTimeout(() => {
+                  setDraft(null);
+                  onSwitch(entity, { action: "on", brightness_pct });
+                }, DIMMER_SETTLE_MS);
+              }}
+            />
+          )}
         </div>
       )}
       <details className="details">
@@ -210,10 +214,10 @@ export function Monitored({
 }: {
   entities: Schemas["MonitoredEntity"][] | null;
   onStop: (id: string) => void;
-  /** Null while control is off: no light gets a switch. */
+  /** Null while control is off: no light, plug or switch gets a switch. */
   onSwitch: Switch | null;
   onChooseLights: () => void;
-  /** IDs of lights whose command is still running. */
+  /** IDs of devices whose command is still running. */
   sending: ReadonlySet<string>;
 }) {
   const switches = entities?.filter((entity) => entity.device_kind === "switch") ?? [];
@@ -242,10 +246,15 @@ export function Monitored({
       {switches.length > 0 && (
         <section className="switches" aria-labelledby="switches-heading">
           <h2 id="switches-heading">Plugs and switches</h2>
-          {/* Plugs and switches cannot be switched yet, so their cards have no controls. */}
           <div id="monitored-switches" className="tiles">
             {switches.map((entity) => (
-              <Tile key={entity.id} entity={entity} onStop={onStop} onSwitch={null} busy={false} />
+              <Tile
+                key={entity.id}
+                entity={entity}
+                onStop={onStop}
+                onSwitch={onSwitch}
+                busy={sending.has(entity.id)}
+              />
             ))}
           </div>
         </section>

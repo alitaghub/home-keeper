@@ -1,4 +1,4 @@
-"""A stand-in light controller and request builders for the light command API."""
+"""A stand-in device controller and request builders for the device command API."""
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from pydantic_core import to_jsonable_python
 
 from home_keeper.control import ControllerUnreachable
+from home_keeper_light_command import ForwardedCommand
 from support.api import AUTH, BROWSER, Payload
 
 ON: Payload = {"action": "on"}
@@ -26,6 +27,15 @@ type Delivery = Callable[[datetime], object]
 
 def on(brightness_pct: int) -> Payload:
     return {"action": "on", "brightness_pct": brightness_pct}
+
+
+def forwarded(action: Payload, source: str = DESK) -> Payload:
+    """The body the controller receives for `action` on the light or switch `source`."""
+    return {
+        "device_kind": source.partition(".")[0],
+        "source_entity_id": source,
+        "command": action,
+    }
 
 
 def command(
@@ -57,7 +67,7 @@ class FakeController:
 
     def __init__(self, clock: list[datetime]) -> None:
         self.clock = clock
-        self.sent: list[tuple[str, object]] = []
+        self.sent: list[object] = []
         self.sent_at: list[datetime] = []
         self.reply: Literal["ok", "refused"] = "ok"
         self.unreachable = False
@@ -67,8 +77,8 @@ class FakeController:
         self._threads: list[Thread] = []
         self._errors: list[BaseException] = []
 
-    def send(self, source_entity_id: str, command: object) -> Literal["ok", "refused"]:
-        self.sent.append((source_entity_id, to_jsonable_python(command, exclude_none=True)))
+    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+        self.sent.append(to_jsonable_python(forwarded, exclude_none=True))
         self.sent_at.append(self.clock[0])
         self.clock[0] += timedelta(seconds=1)
         if self.on_send is not None:

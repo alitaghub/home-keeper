@@ -25,6 +25,7 @@ from support.control import (
     FakeController,
     beat,
     command,
+    forwarded,
     on,
 )
 
@@ -340,7 +341,8 @@ def test_change_is_forwarded_with_the_source_entity_id_of_the_current_reading(
     with home(tmp_path, reading=reading) as house:
         response = command(house.client, action)
         assert response.status_code == 200, response.text
-        assert house.controller.sent == [(DESK, action)]
+        assert house.controller.sent == [forwarded(action)]
+        assert response.json()["device_kind"] == "light"
 
 
 def test_forwarding_follows_the_source_entity_id_of_the_newest_reading(tmp_path: Path) -> None:
@@ -348,7 +350,7 @@ def test_forwarding_follows_the_source_entity_id_of_the_newest_reading(tmp_path:
         # The latest event attributes bulb-a to a renamed Home Assistant entity.
         house.report("renamed", NOW, {"state": "off"}, old=LIGHT_ON, source="light.desk_2")
         assert command(house.client, on(55)).status_code == 200
-        assert house.controller.sent == [("light.desk_2", on(55))]
+        assert house.controller.sent == [forwarded(on(55), "light.desk_2")]
 
 
 def test_command_is_observed_when_a_matching_event_arrives_after_the_send(
@@ -364,6 +366,7 @@ def test_command_is_observed_when_a_matching_event_arrives_after_the_send(
         assert set(record) == {
             "id",
             "entity_id",
+            "device_kind",
             "command",
             "sender",
             "sent_at",
@@ -373,11 +376,12 @@ def test_command_is_observed_when_a_matching_event_arrives_after_the_send(
         assert record["outcome"] == "observed"
         assert record["event_id"] == "after-send"
         assert record["entity_id"] == "bulb-a"
+        assert record["device_kind"] == "light"
         assert record["command"] == on(30)
         assert record["sender"] == TELEGRAM
         # The send time is taken before the controller is called.
         assert datetime.fromisoformat(record["sent_at"]) == house.controller.sent_at[0] == NOW
-        assert house.controller.sent == [(DESK, on(30))]
+        assert house.controller.sent == [forwarded(on(30))]
         house.controller.join()
         assert house.commands() == [record]
         events = house.client.get("/api/events", params={"entity_id": "bulb-a"}).json()
@@ -418,7 +422,7 @@ def test_brightness_within_two_steps_of_the_requested_percent_counts_as_observed
         record = command(house.client, on(30)).json()
         assert record["outcome"] == outcome
         assert record["event_id"] == ("dimmed" if outcome == "observed" else None)
-        assert house.controller.sent == [(DESK, on(30))]
+        assert house.controller.sent == [forwarded(on(30))]
 
 
 def test_waiting_continues_past_a_non_matching_reading(tmp_path: Path) -> None:
@@ -559,7 +563,7 @@ def test_home_assistant_rejecting_the_call_is_refused_without_waiting(tmp_path: 
         record = command(house.client, ON).json()
         assert time.monotonic() - started < 4
         assert (record["outcome"], record["event_id"]) == ("refused", None)
-        assert house.controller.sent == [(DESK, ON)]
+        assert house.controller.sent == [forwarded(ON)]
         assert house.commands() == [record]
 
 

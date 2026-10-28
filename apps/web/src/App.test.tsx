@@ -758,7 +758,7 @@ describe("light control from the dashboard", () => {
   it.each([
     ["not_observed", "Sent to Desk lamp, but no change was seen yet."],
     ["refused", "Home Assistant refused the command for Desk lamp."],
-    ["unreachable", "Cannot reach the light controller. Desk lamp may not have changed."],
+    ["unreachable", "Cannot reach the controller. Desk lamp may not have changed."],
   ] as const)("shows the %s outcome and keeps the recorded state", async (outcome, message) => {
     const { user } = renderControl({ state: "off", outcome });
 
@@ -843,7 +843,7 @@ describe("light control from the dashboard", () => {
 
     await waitFor(() =>
       expect(byId("message").textContent).toBe(
-        "Cannot reach the light controller. Desk lamp may not have changed.",
+        "Cannot reach the controller. Desk lamp may not have changed.",
       ),
     );
     expect(monitored().queryByText("Sending…")).toBeNull();
@@ -1035,15 +1035,15 @@ describe("command history in the timeline", () => {
     await act(() => vi.advanceTimersByTimeAsync(100));
 
     expect(document.getElementById("commands")).toBeNull();
-    expect(screen.queryByText("Light commands")).toBeNull();
-    expect(screen.queryByText("No light commands yet.")).toBeNull();
+    expect(screen.queryByText("Device commands")).toBeNull();
+    expect(screen.queryByText("No device commands yet.")).toBeNull();
   });
 
   it("says there are no commands yet when control is on", async () => {
     renderDashboard({ "GET /api/control": fixtures.controlOn });
 
-    expect(await screen.findByText("No light commands yet.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Light commands" })).toBeInTheDocument();
+    expect(await screen.findByText("No device commands yet.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Device commands" })).toBeInTheDocument();
   });
 
   it("shows commands when control is off but commands exist, newest page of 20", async () => {
@@ -1051,7 +1051,7 @@ describe("command history in the timeline", () => {
 
     await waitFor(() => expect(articles()).toHaveLength(1));
     expect(api.callsTo(COMMANDS)[0]?.url.searchParams.get("limit")).toBe("20");
-    expect(screen.queryByText("No light commands yet.")).toBeNull();
+    expect(screen.queryByText("No device commands yet.")).toBeNull();
   });
 
   it("renders time, light name, action, sender and outcome for each sender and outcome", async () => {
@@ -1491,7 +1491,7 @@ describe("plugs and switches on Home", () => {
     return card;
   }
 
-  it("shows a monitored plug's state under the lights, without controls or brightness", async () => {
+  it("shows a monitored plug's state under the lights, without brightness", async () => {
     renderHome([fixtures.monitoredSwitch(fixtures.smartPlug, "on")]);
     await screen.findByRole("button", { name: "Turn off Desk lamp" });
 
@@ -1502,18 +1502,9 @@ describe("plugs and switches on Home", () => {
     expect(lamp.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(heading.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(card).getByText("On")).toBeInTheDocument();
-    expect(within(card).queryByRole("button", { name: /^Turn (on|off) / })).toBeNull();
     expect(within(card).queryByRole("slider")).toBeNull();
     expect(card).not.toHaveTextContent("Brightness");
     expect(card).not.toHaveTextContent("%");
-  });
-
-  it("shows a plug recorded off with no switch", async () => {
-    renderHome([fixtures.monitoredSwitch(fixtures.smartPlug, "off")]);
-
-    const card = await plugCard();
-    expect(within(card).getByText("Off")).toBeInTheDocument();
-    expect(within(card).queryByRole("button", { name: /^Turn (on|off) / })).toBeNull();
   });
 
   it("has no plugs section when no switch is monitored", async () => {
@@ -1538,5 +1529,132 @@ describe("plugs and switches on Home", () => {
     expect(plug).toHaveTextContent("off → on");
     expect(plug).not.toHaveTextContent("%");
     expect(timeline.getByText("turned on at 59%")).toBeInTheDocument();
+  });
+});
+
+describe("plug control from the dashboard", () => {
+  const COMMAND = "POST /api/devices/{entity_id}/command";
+  const PLUG_TOGGLE = /^Turn (on|off) Smart plug$/;
+
+  /** Monitors the desk lamp (on) and the smart plug in `state`; control is on unless told otherwise. */
+  function renderPlug(
+    options: {
+      control?: Schemas["ControlStatus"];
+      state?: Schemas["SwitchBaseline"]["state"];
+      availability?: "available" | "unavailable" | "unknown";
+    } = {},
+  ) {
+    return renderDashboard({
+      "GET /api/control": options.control ?? fixtures.controlOn,
+      "GET /api/catalog": { ...fixtures.catalog, entities: [fixtures.desk, fixtures.smartPlug] },
+      "GET /api/selection": {
+        ...fixtures.emptySelection,
+        entity_ids: [fixtures.desk.id, fixtures.smartPlug.id],
+      },
+      "GET /api/monitored": {
+        entities: [
+          fixtures.monitoredLight(fixtures.desk, "on"),
+          fixtures.monitoredSwitch(
+            fixtures.smartPlug,
+            options.state ?? "off",
+            options.availability,
+          ),
+        ],
+      },
+      [COMMAND]: fixtures.switchCommandRecord("observed"),
+    });
+  }
+
+  /** The plug's card, once the lamp's controls show that the control status has loaded. */
+  async function plugCard() {
+    await screen.findByRole("heading", { name: "Desk lamp" });
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    const name = await screen.findByRole("heading", { name: "Smart plug" });
+    const card = name.closest("article");
+    if (!(card instanceof HTMLElement)) throw new Error("The plug's name is not inside a card");
+    return within(card);
+  }
+
+  /** The accessible names of the plug's switch buttons that can be clicked now. */
+  const enabledToggles = (card: Awaited<ReturnType<typeof plugCard>>) =>
+    card
+      .queryAllByRole("button", { name: PLUG_TOGGLE })
+      .filter((button) => !button.hasAttribute("disabled"))
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent);
+
+  it.each([
+    ["off", "Turn on Smart plug"],
+    ["on", "Turn off Smart plug"],
+  ] as const)("offers only the opposite of a plug recorded %s", async (state, name) => {
+    renderPlug({ state });
+    const card = await plugCard();
+
+    await card.findByRole("button", { name });
+    expect(enabledToggles(card)).toEqual([name]);
+    expect(card.queryByRole("slider")).toBeNull();
+    expect(card.queryByLabelText(/Brightness/)).toBeNull();
+  });
+
+  it("shows no plug buttons when control is off", async () => {
+    renderPlug({ control: fixtures.controlOff });
+    const card = await plugCard();
+
+    expect(card.queryAllByRole("button", { name: PLUG_TOGGLE })).toEqual([]);
+  });
+
+  it.each([
+    ["unknown state", "unknown", "available"],
+    ["unavailable plug", "unavailable", "unavailable"],
+  ] as const)("offers no plug switch for an %s", async (_label, state, availability) => {
+    renderPlug({ state, availability });
+    // The lamp's switch shows that control is on.
+    await screen.findByRole("button", { name: "Turn off Desk lamp" });
+    const card = await plugCard();
+
+    expect(enabledToggles(card)).toEqual([]);
+  });
+
+  it("sends on for a plug recorded off, with no brightness, to the device command route", async () => {
+    const { api, user } = renderPlug({ state: "off" });
+    const card = await plugCard();
+
+    await user.click(await card.findByRole("button", { name: "Turn on Smart plug" }));
+
+    await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(1));
+    const [command] = api.callsTo(COMMAND);
+    expect(command?.url.pathname).toBe("/api/devices/switch.smart_plug/command");
+    expect(command?.headers.get("X-Home-Keeper")).toBe("1");
+    expect(command?.body).toEqual({ command: { action: "on" }, sender: { kind: "dashboard" } });
+  });
+
+  it("sends off for a plug recorded on", async () => {
+    const { api, user } = renderPlug({ state: "on" });
+    const card = await plugCard();
+
+    await user.click(await card.findByRole("button", { name: "Turn off Smart plug" }));
+
+    await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(1));
+    expect(api.callsTo(COMMAND)[0]?.body).toEqual({
+      command: { action: "off" },
+      sender: { kind: "dashboard" },
+    });
+  });
+
+  it("disables the plug's buttons while its command runs, and ignores a second click", async () => {
+    const { api, user } = renderPlug({ state: "off" });
+    const release = api.hold(COMMAND);
+    const card = await plugCard();
+    const button = await card.findByRole("button", { name: "Turn on Smart plug" });
+
+    await user.click(button);
+
+    await waitFor(() => expect(enabledToggles(card)).toEqual([]));
+    expect(card.getAllByRole("button", { name: PLUG_TOGGLE }).length).toBeGreaterThan(0);
+    fireEvent.click(button);
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
+
+    release();
+    await waitFor(() => expect(enabledToggles(card)).toEqual(["Turn on Smart plug"]));
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
   });
 });

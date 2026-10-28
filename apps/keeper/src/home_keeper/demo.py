@@ -1,7 +1,7 @@
 """Synthetic connector. No device, vendor, network-administration or model access.
 
-With the `control` profile, the demo controller forwards light commands here, and they
-switch the synthetic home's lights.
+With the `control` profile, the demo controller forwards light and switch commands here,
+and they switch the synthetic home's lights and plug.
 """
 
 import json
@@ -14,7 +14,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, overload
 
 import httpx
 from pydantic import ValidationError
@@ -33,7 +33,12 @@ from home_keeper_light_command import (
     ForwardedCommand,
     ForwardResult,
     LightOff,
+    LightOn,
+    SwitchCommand,
+    SwitchOff,
+    SwitchOn,
     brightness_value,
+    forwarded_command,
 )
 
 # The replay phase whose events are delivered twice.
@@ -184,13 +189,29 @@ class DemoReplay:
             return old.model_validate({"state": value["state"], "device_kind": "switch"} | times)
         return old.model_validate(value | times)
 
+    @overload
     def switch(
         self, identity: str, command: LightCommand, event_time: datetime
-    ) -> tuple[LightState, LightState] | None:
-        """Apply a command and hold the light; returns (old, new), or None if it cannot switch."""
+    ) -> tuple[LightState, LightState] | None: ...
+    @overload
+    def switch(
+        self, identity: str, command: SwitchCommand, event_time: datetime
+    ) -> tuple[SwitchState, SwitchState] | None: ...
+    def switch(
+        self, identity: str, command: LightCommand | SwitchCommand, event_time: datetime
+    ) -> tuple[LightState, LightState] | tuple[SwitchState, SwitchState] | None:
+        """Apply a command and hold the device; returns (old, new), or None if it cannot switch."""
         old = self.states.get(identity)
-        # Plugs cannot be switched yet.
-        if not isinstance(old, LightState) or old.state not in ("on", "off"):
+        if old is None or old.state not in ("on", "off"):
+            return None
+        if isinstance(old, SwitchState):
+            if not isinstance(command, SwitchOn | SwitchOff):
+                return None
+            switched = self._next(old, {"state": command.action}, event_time)
+            self.states[identity] = switched
+            self.held[identity] = HELD_PASSES
+            return old, switched
+        if not isinstance(command, LightOn | LightOff):
             return None
         if old.brightness is not None:
             self.last_brightness[identity] = old.brightness
@@ -210,10 +231,11 @@ class DemoReplay:
         return old, new
 
 
-def switch_light(
+def switch_device(
     client: httpx.Client, replay: DemoReplay, forwarded: ForwardedCommand
 ) -> Literal["ok", "refused"]:
-    """Switch a synthetic light and record the change at once, as Home Assistant would."""
+    """Switch a synthetic light or plug and record the change at once, as Home Assistant
+    would."""
     identity = forwarded.source_entity_id
     with replay.lock:
         fired = datetime.now(UTC)
@@ -261,12 +283,12 @@ def command_server(
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 <= length <= MAX_COMMAND_BYTES:
                     raise ValueError
-                forwarded = ForwardedCommand.model_validate_json(self.rfile.read(length))
+                forwarded = forwarded_command.validate_json(self.rfile.read(length))
             except (ValueError, ValidationError):
                 self._reply(HTTPStatus.UNPROCESSABLE_ENTITY, {"detail": "Invalid request"})
                 return
             try:
-                result = switch_light(client, replay, forwarded)
+                result = switch_device(client, replay, forwarded)
             except (httpx.HTTPError, ValueError):
                 logging.warning("Demo command could not be recorded")
                 self._reply(HTTPStatus.BAD_GATEWAY, {"detail": "Command not recorded"})

@@ -1,4 +1,5 @@
-"""Fixed Home Assistant light calls. There is no passthrough for any other domain or service."""
+"""Four fixed Home Assistant calls: `light.turn_on`, `light.turn_off`, `switch.turn_on` and
+`switch.turn_off`. There is no passthrough for any other domain or service."""
 
 import json
 import logging
@@ -7,17 +8,18 @@ from collections.abc import Callable
 from typing import Literal, Protocol
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, StrictBool, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import ClientConnection, connect
 
 from home_keeper_controller.lights import valid_token
 from home_keeper_light_command import (
     ControllerUnreachable,
-    LightCommand,
-    LightEntityId,
-    LightOff,
+    ForwardedCommand,
+    ForwardedLightCommand,
     LightOn,
+    SwitchOn,
+    forwarded_command,
 )
 
 # Re-exported so callers of this backend can catch its failure from here.
@@ -30,7 +32,6 @@ COMMAND_DEADLINE_SECONDS = 4
 CLOSE_TIMEOUT_SECONDS = 1
 # How often the controller re-checks that Home Assistant accepts the control token.
 AUTH_CHECK_SECONDS = 30
-_LIGHT_ENTITY_ID: TypeAdapter[str] = TypeAdapter(LightEntityId)
 # Library debug output can include the authentication frame.
 _WS_LOGGER = logging.getLogger("home_keeper_controller.transport.private")
 _WS_LOGGER.addHandler(logging.NullHandler())
@@ -60,8 +61,25 @@ class ResultFrame(_Frame):
     success: StrictBool
 
 
+def service_call(forwarded: ForwardedCommand) -> dict[str, object]:
+    """The one Home Assistant service call a command maps to."""
+    call: dict[str, object] = {"target": {"entity_id": forwarded.source_entity_id}}
+    if isinstance(forwarded, ForwardedLightCommand):
+        if isinstance(forwarded.command, LightOn):
+            call |= {"domain": "light", "service": "turn_on"}
+            if forwarded.command.brightness_pct is not None:
+                call["service_data"] = {"brightness_pct": forwarded.command.brightness_pct}
+        else:
+            call |= {"domain": "light", "service": "turn_off"}
+    elif isinstance(forwarded.command, SwitchOn):
+        call |= {"domain": "switch", "service": "turn_on"}
+    else:
+        call |= {"domain": "switch", "service": "turn_off"}
+    return call
+
+
 class HomeAssistantLights:
-    """Sends `light.turn_on` or `light.turn_off` over Home Assistant's websocket API."""
+    """Sends one of the four fixed light and switch calls over Home Assistant's websocket API."""
 
     def __init__(
         self,
@@ -148,32 +166,13 @@ class HomeAssistantLights:
         socket.send(json.dumps({"type": "auth", "access_token": self._read_token()}))
         return self._receive(socket, deadline, AuthFrame).type == "auth_ok"
 
-    def send(self, source_entity_id: str, command: LightCommand) -> Literal["ok", "refused"]:
-        # Checked again here, so no caller can reach Home Assistant with another entity.
+    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+        # Parsed again here, so no caller can reach Home Assistant with another entity or call.
         try:
-            _LIGHT_ENTITY_ID.validate_python(source_entity_id)
+            checked = forwarded_command.validate_python(forwarded.model_dump())
         except ValidationError:
             return "refused"
-        if isinstance(command, LightOn):
-            message: dict[str, object] = {
-                "id": 1,
-                "type": "call_service",
-                "domain": "light",
-                "service": "turn_on",
-                "target": {"entity_id": source_entity_id},
-            }
-            if command.brightness_pct is not None:
-                message["service_data"] = {"brightness_pct": command.brightness_pct}
-        elif isinstance(command, LightOff):  # pyright: ignore[reportUnnecessaryIsInstance] -- untyped callers
-            message = {
-                "id": 1,
-                "type": "call_service",
-                "domain": "light",
-                "service": "turn_off",
-                "target": {"entity_id": source_entity_id},
-            }
-        else:
-            return "refused"
+        message = {"id": 1, "type": "call_service"} | service_call(checked)
         deadline = time.monotonic() + self._timeout
         try:
             with self._connect() as socket:

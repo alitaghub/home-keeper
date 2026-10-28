@@ -49,7 +49,7 @@ export function Commands({
 }) {
   return (
     <div id="commands" className="rows">
-      {commands && !commands.length && <p className="empty">No light commands yet.</p>}
+      {commands && !commands.length && <p className="empty">No device commands yet.</p>}
       {commands?.map((command) => (
         <article key={command.id} className="row command">
           <div className="line">

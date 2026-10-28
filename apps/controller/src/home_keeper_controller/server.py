@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import RequestResponseEndpoint
 
 from home_keeper_controller.home_assistant import COMMAND_DEADLINE_SECONDS, HomeAssistantLights
-from home_keeper_controller.lights import Lights, valid_token
+from home_keeper_controller.lights import Devices, valid_token
 from home_keeper_light_command import ControllerUnreachable, ForwardedCommand, ForwardResult
 from home_keeper_light_command.client import CommandClient
 
@@ -30,7 +30,7 @@ MAX_BODY_BYTES = 64 * 1024
 DEMO_COLLECTOR_URL = "http://collector:8080"
 
 
-def create_app(service_token: str, lights: Lights) -> FastAPI:
+def create_app(service_token: str, devices: Devices) -> FastAPI:
     if not service_token:
         raise ValueError("Service credential required")
     expected = f"Bearer {service_token}".encode()
@@ -59,9 +59,9 @@ def create_app(service_token: str, lights: Lights) -> FastAPI:
     @app.post("/internal/command", response_model=ForwardResult)
     def command(forwarded: ForwardedCommand) -> ForwardResult:
         try:
-            result = lights.send(forwarded.source_entity_id, forwarded.command)
+            result = devices.send(forwarded)
         except ControllerUnreachable:
-            raise HTTPException(502, "Light backend unreachable") from None
+            raise HTTPException(502, "Device backend unreachable") from None
         return ForwardResult(result=result)
 
     return app
@@ -106,7 +106,7 @@ def read_secret(path: Path, description: str) -> str:
     return token
 
 
-def backend(name: str, service_token: str) -> Lights:
+def backend(name: str, service_token: str) -> Devices:
     if name == "home_assistant":
         token_file = Path(
             os.environ.get("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", "/ha-control-token/token")
@@ -131,7 +131,7 @@ def main() -> None:
         time.sleep(1)
     try:
         service_token = read_secret(service_token_path, "Service credential")
-        lights = backend(
+        devices = backend(
             os.environ.get("HOME_KEEPER_CONTROL_BACKEND", "home_assistant"), service_token
         )
         port = int(os.environ.get("HOME_KEEPER_CONTROLLER_PORT", "8080"))
@@ -149,14 +149,14 @@ def main() -> None:
         follow_redirects=False,
     )
     # Only Home Assistant can reject the backend's credential; the demo is always usable.
-    usable = lights.usable if isinstance(lights, HomeAssistantLights) else lambda: True
+    usable = devices.usable if isinstance(devices, HomeAssistantLights) else lambda: True
     stop = Event()
     Thread(
         target=heartbeat, args=(api, stop, usable), name="control-heartbeat", daemon=True
     ).start()
     try:
         uvicorn.run(
-            create_app(service_token, lights),
+            create_app(service_token, devices),
             # Inside the container only; Compose publishes no port for the controller.
             host=os.environ.get("HOME_KEEPER_CONTROLLER_BIND", "0.0.0.0"),  # noqa: S104 -- internal network only
             port=port,

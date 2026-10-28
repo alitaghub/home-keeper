@@ -611,6 +611,8 @@ CommandOutcome = Literal[
 class CommandRecord(WireModel):
     id: str
     entity_id: Identity
+    device_kind: DeviceKind
+    # A switch's command never carries a brightness: the API refuses one before sending.
     command: LightCommand
     sender: Sender
     sent_at: Timestamp
@@ -618,10 +620,22 @@ class CommandRecord(WireModel):
     # The recorded event that showed the change, when an event (not a snapshot) showed it.
     event_id: Identity | None
 
+    @model_validator(mode="before")
+    @classmethod
+    def stored_before_plugs(cls, data: object) -> object:
+        return light_by_default(data)
+
 
 # Why the API refused a command before sending it.
+# `not_supported`: the device cannot do what the command asks, such as a brightness for a plug.
 CommandRefusalCode = Literal[
-    "control_off", "not_monitored", "state_unknown", "unavailable", "already_in_state", "busy"
+    "control_off",
+    "not_monitored",
+    "state_unknown",
+    "unavailable",
+    "already_in_state",
+    "busy",
+    "not_supported",
 ]
 
 

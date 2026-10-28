@@ -6,7 +6,7 @@ containers from one image. The default stack adds a bundled Home Assistant and
 a one-shot `ha-setup` container that onboards it and stores the collector's and
 the controller's tokens.
 The optional `control` profile adds a controller, from its own image, that
-switches monitored lights for the API; [control.md](control.md) covers it.
+switches monitored lights, plugs and switches for the API; [control.md](control.md) covers it.
 The optional `agent` profile adds a chat agent, its chat page and a Postgres for
 its threads; [agent.md](agent.md) covers it.
 The separate `telegram` profile adds a polling worker that connects private
@@ -33,12 +33,12 @@ flowchart LR
         api -- "selection revision" --> collector
         api --> db
         controller["Controller<br/><i>profile control</i>"]
-        api -- "fixed light commands" --> controller
+        api -- "fixed light and switch commands" --> controller
         controller -- "heartbeats" --> api
     end
 
     ha -- "registry reads, state reads,<br/>state_changed events" --> collector
-    controller -- "light.turn_on,<br/>light.turn_off" --> ha
+    controller -- "light.turn_on, light.turn_off,<br/>switch.turn_on, switch.turn_off" --> ha
     browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> api
 
     subgraph agentprofile["Optional agent (profile agent)"]
@@ -88,7 +88,8 @@ Python code lives in `apps/keeper/src/home_keeper`.
   controller code.
 - **Control is opt-in and narrow.** Only the controller calls Home Assistant
   services, and only `light.turn_on` (with an optional brightness percent) and
-  `light.turn_off`, on `light.*` entities. It has no passthrough. It runs only
+  `light.turn_off` on `light.*` entities, and `switch.turn_on` and
+  `switch.turn_off` on `switch.*` entities. It has no passthrough. It runs only
   with the `control` profile, and the API reports control `on` only while the
   controller's heartbeat is fresh.
 - **Every command leaves evidence.** The API refuses a command for a light that
@@ -137,7 +138,7 @@ streams events as Home Assistant sends them.
 | Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the device's current state. |
 | Gap         | A period when collection was interrupted. Open until a recovery snapshot closes it.          |
 | Freshness   | How recently Home Assistant answered. It says nothing about whether the bulb itself answered. |
-| Command     | A request to switch a monitored light, with its sender and the outcome the API observed.     |
+| Command     | A request to switch a monitored light, plug or switch, with its sender and the outcome the API observed. |
 
 ## The API contract
 

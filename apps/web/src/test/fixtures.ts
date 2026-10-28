@@ -290,11 +290,28 @@ export const commandRecord = (
   ({
     id: "command-1",
     entity_id: desk.id,
+    device_kind: "light",
     command: { action },
     sender: { kind: "dashboard" },
     sent_at: "2026-10-12T10:01:00+00:00",
     outcome,
     event_id: outcome === "observed" ? "change-4" : null,
+  }) satisfies Schemas["CommandRecord"];
+
+/** The command record the controller returns for a smart plug command. */
+export const switchCommandRecord = (
+  outcome: Schemas["CommandRecord"]["outcome"],
+  action: "on" | "off" = "on",
+) =>
+  ({
+    id: "command-plug-1",
+    entity_id: smartPlug.id,
+    device_kind: "switch",
+    command: { action },
+    sender: { kind: "dashboard" },
+    sent_at: "2026-10-12T10:01:00+00:00",
+    outcome,
+    event_id: outcome === "observed" ? "change-plug" : null,
   }) satisfies Schemas["CommandRecord"];
 
 /** A command history row; override any field. */
@@ -304,6 +321,7 @@ export const historyCommand = (
 ): Schemas["CommandRecord"] => ({
   id,
   entity_id: desk.id,
+  device_kind: "light",
   command: { action: "on" },
   sender: { kind: "dashboard" },
   sent_at: "2026-10-12T10:01:00+00:00",

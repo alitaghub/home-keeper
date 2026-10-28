@@ -8,24 +8,29 @@ from pydantic_core import to_jsonable_python
 
 from home_keeper.control import ControllerUnreachable
 from home_keeper_controller.server import backend, create_app
+from home_keeper_light_command import ForwardedCommand
 
 SERVICE_TOKEN = "synthetic-service-token"
 SERVICE = {"Authorization": f"Bearer {SERVICE_TOKEN}"}
-VALID = {"source_entity_id": "light.desk", "command": {"action": "on", "brightness_pct": 30}}
+VALID = {
+    "device_kind": "light",
+    "source_entity_id": "light.desk",
+    "command": {"action": "on", "brightness_pct": 30},
+}
 
 
 type Reply = Literal["ok", "refused", "unreachable"]
 
 
 class RecordingLights:
-    """A light backend that records what reaches it."""
+    """A device backend that records what reaches it."""
 
     def __init__(self, reply: Reply = "ok") -> None:
         self.reply: Reply = reply
-        self.sent: list[tuple[str, object]] = []
+        self.sent: list[object] = []
 
-    def send(self, source_entity_id: str, command: object) -> Literal["ok", "refused"]:
-        self.sent.append((source_entity_id, to_jsonable_python(command, exclude_none=True)))
+    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+        self.sent.append(to_jsonable_python(forwarded, exclude_none=True))
         reply = self.reply
         if reply == "unreachable":
             raise ControllerUnreachable
@@ -53,33 +58,66 @@ def test_command_without_the_service_credential_is_unauthorized(
     assert lights.sent == []
 
 
+def light(source: object, command: object, **extra: object) -> dict[str, object]:
+    return {"device_kind": "light", "source_entity_id": source, "command": command, **extra}
+
+
+def switch(source: object, command: object, **extra: object) -> dict[str, object]:
+    return {"device_kind": "switch", "source_entity_id": source, "command": command, **extra}
+
+
+ON = {"action": "on"}
+OFF = {"action": "off"}
+
+
 @pytest.mark.parametrize(
     "body",
     [
-        {"source_entity_id": "switch.plug", "command": {"action": "on"}},
-        {"source_entity_id": "sensor.door", "command": {"action": "off"}},
-        {"source_entity_id": "lightx.desk", "command": {"action": "on"}},
-        {"source_entity_id": "xlight.desk", "command": {"action": "on"}},
-        {"source_entity_id": "light_desk", "command": {"action": "on"}},
-        {"source_entity_id": "light.", "command": {"action": "on"}},
-        {"source_entity_id": "light.*", "command": {"action": "on"}},
-        {"source_entity_id": "light.desk,light.reading", "command": {"action": "on"}},
-        {"source_entity_id": "light.desk;switch.plug", "command": {"action": "on"}},
-        {"source_entity_id": ["light.desk"], "command": {"action": "on"}},
-        {"source_entity_id": "light.desk", "command": {"action": "toggle"}},
-        {"source_entity_id": "light.desk", "command": {"action": "on", "brightness_pct": 0}},
-        {"source_entity_id": "light.desk", "command": {"action": "on", "brightness_pct": 101}},
-        {"source_entity_id": "light.desk", "command": {"action": "off", "brightness_pct": 50}},
-        {"source_entity_id": "light.desk", "command": {"action": "on", "rgb_color": [1, 2, 3]}},
-        {"source_entity_id": "light.desk", "command": {"action": "on"}, "domain": "switch"},
-        {"source_entity_id": "light.desk", "command": {"action": "on"}, "service": "toggle"},
-        {"source_entity_id": "light.desk", "command": {"action": "on"}, "service_data": {}},
-        {"source_entity_id": "light.desk"},
-        {"command": {"action": "on"}},
+        # Each kind takes only its own Home Assistant domain.
+        light("switch.plug", ON),
+        switch("light.desk", ON),
+        switch("light.desk", OFF),
+        light("sensor.door", OFF),
+        switch("sensor.door", OFF),
+        light("lightx.desk", ON),
+        light("xlight.desk", ON),
+        switch("switchx.plug", ON),
+        switch("xswitch.plug", ON),
+        light("light_desk", ON),
+        light("light.", ON),
+        switch("switch.", ON),
+        light("light.*", ON),
+        switch("switch.*", ON),
+        light("light.desk,light.reading", ON),
+        light("light.desk;switch.plug", ON),
+        switch("switch.plug;light.desk", ON),
+        light(["light.desk"], ON),
+        # A plug has no brightness and no other attributes.
+        switch("switch.plug", {"action": "on", "brightness_pct": 30}),
+        switch("switch.plug", {"action": "off", "brightness_pct": 30}),
+        switch("switch.plug", {"action": "toggle"}),
+        light("light.desk", {"action": "toggle"}),
+        light("light.desk", {"action": "on", "brightness_pct": 0}),
+        light("light.desk", {"action": "on", "brightness_pct": 101}),
+        light("light.desk", {"action": "off", "brightness_pct": 50}),
+        light("light.desk", {"action": "on", "rgb_color": [1, 2, 3]}),
+        light("light.desk", ON, domain="switch"),
+        switch("switch.plug", ON, domain="light"),
+        light("light.desk", ON, service="toggle"),
+        switch("switch.plug", ON, service="toggle"),
+        light("light.desk", ON, service_data={}),
+        # No other device kind, and no body without one.
+        {"device_kind": "sensor", "source_entity_id": "sensor.door", "command": ON},
+        {"device_kind": "cover", "source_entity_id": "cover.garage", "command": ON},
+        {"source_entity_id": "light.desk", "command": ON},
+        {"source_entity_id": "switch.plug", "command": ON},
+        {"device_kind": "light", "source_entity_id": "light.desk"},
+        {"device_kind": "switch", "command": ON},
         {"domain": "light", "service": "turn_on", "target": {"entity_id": "light.desk"}},
+        {"domain": "switch", "service": "turn_on", "target": {"entity_id": "switch.plug"}},
     ],
 )
-def test_anything_but_a_fixed_light_command_is_refused_before_home_assistant(
+def test_anything_but_a_fixed_light_or_switch_command_is_refused_before_home_assistant(
     body: dict[str, object],
 ) -> None:
     lights = RecordingLights()
@@ -90,24 +128,24 @@ def test_anything_but_a_fixed_light_command_is_refused_before_home_assistant(
 
 
 @pytest.mark.parametrize(
-    "command",
+    "body",
     [
-        {"action": "on", "brightness_pct": 1},
-        {"action": "on", "brightness_pct": 100},
-        {"action": "on"},
-        {"action": "off"},
+        light("light.hue_desk", {"action": "on", "brightness_pct": 1}),
+        light("light.hue_desk", {"action": "on", "brightness_pct": 100}),
+        light("light.hue_desk", ON),
+        light("light.hue_desk", OFF),
+        switch("switch.smart_plug", ON),
+        switch("switch.smart_plug", OFF),
     ],
 )
-def test_fixed_light_command_reaches_the_backend_unchanged(command: dict[str, object]) -> None:
+def test_fixed_light_or_switch_command_reaches_the_backend_unchanged(
+    body: dict[str, object],
+) -> None:
     lights = RecordingLights()
     with TestClient(create_app(SERVICE_TOKEN, lights)) as client:
-        response = client.post(
-            "/internal/command",
-            json={"source_entity_id": "light.hue_desk", "command": command},
-            headers=SERVICE,
-        )
+        response = client.post("/internal/command", json=body, headers=SERVICE)
     assert (response.status_code, response.json()) == (200, {"result": "ok"})
-    assert lights.sent == [("light.hue_desk", command)]
+    assert lights.sent == [body]
 
 
 def test_backend_refusal_and_failure_are_reported_distinctly() -> None:
@@ -120,7 +158,7 @@ def test_backend_refusal_and_failure_are_reported_distinctly() -> None:
     with TestClient(create_app(SERVICE_TOKEN, failing)) as client:
         failed = client.post("/internal/command", json=VALID, headers=SERVICE)
     assert failed.status_code >= 500, failed.text
-    assert failing.sent == [("light.desk", VALID["command"])]
+    assert failing.sent == [VALID]
 
 
 def test_unknown_controller_backend_is_a_configuration_error() -> None:

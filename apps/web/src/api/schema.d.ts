@@ -98,8 +98,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Command Light */
-        post: operations["command_light_api_devices__entity_id__command_post"];
+        /** Command Device */
+        post: operations["command_device_api_devices__entity_id__command_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -267,6 +267,11 @@ export interface components {
         CommandRecord: {
             /** Command */
             command: components["schemas"]["LightOn"] | components["schemas"]["LightOff"];
+            /**
+             * Device Kind
+             * @enum {string}
+             */
+            device_kind: "light" | "switch";
             /** Entity Id */
             entity_id: string;
             /** Event Id */
@@ -292,7 +297,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state" | "busy";
+            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state" | "busy" | "not_supported";
             /** Message */
             message: string;
         };
@@ -1241,7 +1246,7 @@ export interface operations {
             };
         };
     };
-    command_light_api_devices__entity_id__command_post: {
+    command_device_api_devices__entity_id__command_post: {
         parameters: {
             query?: never;
             header?: never;

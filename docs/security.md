@@ -31,10 +31,13 @@
   filtered inside the connector. Discovery reads the states only to detect light
   groups and keeps nothing else from them. It makes no service call and no device write. The collector image
   contains no controller code.
-- The controller makes exactly two Home Assistant service calls:
+- The controller makes exactly four Home Assistant service calls:
   `light.turn_on`, with an optional `brightness_pct` from 1 to 100, and
-  `light.turn_off`, on `light.*` entity IDs. It rejects any other domain,
-  service, entity ID or field before it contacts Home Assistant. There is no
+  `light.turn_off`, on `light.*` entity IDs, and `switch.turn_on` and
+  `switch.turn_off`, with no data, on `switch.*` entity IDs. Each command names
+  its device kind, and each kind accepts only its own entity IDs and commands.
+  It rejects any other domain, service, entity ID or field, and a brightness for
+  a switch, before it contacts Home Assistant. There is no
   arbitrary HTTP passthrough, service-call passthrough, shell tool or router
   administration endpoint. A Home Assistant token cannot be limited to some
   entities, so these fixed calls and the API's checks are the only limits on the

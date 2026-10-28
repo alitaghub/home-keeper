@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from support.api import AUTH, BROWSER, CATALOG, NOW, TOKEN, app_for, observation, select
 
 from home_keeper.api import create_app
+from home_keeper_light_command import ForwardedCommand
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong-credential"}])
@@ -181,8 +182,8 @@ class RecordingController:
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    def send(self, source_entity_id: str, command: object) -> Literal["ok", "refused"]:
-        self.sent.append(source_entity_id)
+    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+        self.sent.append(forwarded.source_entity_id)
         return "ok"
 
 

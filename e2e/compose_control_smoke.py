@@ -1,4 +1,5 @@
-"""Prove light control on the demo stack: off without the `control` profile, observed with it.
+"""Prove light and plug control on the demo stack: off without the `control` profile, observed
+with it.
 
 Uses its own Compose project and port, and deletes its volumes at the end.
 """
@@ -19,8 +20,10 @@ PROJECT = "keeper-control-proof"
 HOME_KEEPER_PORT = "18005"
 KEEPER = f"http://127.0.0.1:{HOME_KEEPER_PORT}"
 LIGHT = "light.hue_desk"
+PLUG = "switch.smart_plug"
 WRITE = {"X-Home-Keeper": "1", "Origin": KEEPER}
 ON_37: dict[str, object] = {"action": "on", "brightness_pct": 37}
+ON: dict[str, object] = {"action": "on"}
 OFF: dict[str, object] = {"action": "off"}
 # round(37 * 255 / 100); no demo replay phase is within two steps of it.
 BRIGHTNESS_37 = 94
@@ -66,45 +69,48 @@ def wait_until[T](description: str, predicate: Callable[[], T], timeout: float =
     raise AssertionError(f"Timed out waiting for {description}")
 
 
-def command(client: httpx.Client, action: dict[str, object]) -> httpx.Response:
+def command(client: httpx.Client, action: dict[str, object], entity: str = LIGHT) -> httpx.Response:
     return client.post(
-        f"/api/devices/{LIGHT}/command",
+        f"/api/devices/{entity}/command",
         json={"command": action, "sender": {"kind": "dashboard"}},
         headers=WRITE,
     )
 
 
-def current_state(client: httpx.Client) -> Any:
+def current_state(client: httpx.Client, entity: str = LIGHT) -> Any:
     for entry in client.get("/api/monitored").json()["entities"]:
-        if entry["id"] == LIGHT and entry["baseline"]:
+        if entry["id"] == entity and entry["baseline"]:
             return entry["baseline"]["state"]
     return None
 
 
-def switch(client: httpx.Client) -> tuple[dict[str, object], dict[str, Any]]:
-    """Command the opposite of the light's state; retry while a replay phase refuses it."""
+def switch(
+    client: httpx.Client, entity: str = LIGHT, on: dict[str, object] = ON_37
+) -> tuple[dict[str, object], dict[str, Any]]:
+    """Command the opposite of the device's state; retry while a replay phase refuses it."""
 
     def attempt() -> tuple[dict[str, object], dict[str, Any]] | None:
-        action = OFF if current_state(client) == "on" else ON_37
-        response = command(client, action)
+        action = OFF if current_state(client, entity) == "on" else on
+        response = command(client, action, entity)
         if response.status_code == 409 and response.json()["detail"]["code"] in TRANSIENT:
             return None
         assert response.status_code == 200, response.text
         return action, response.json()
 
-    accepted = wait_until(f"an accepted command on {LIGHT}", attempt, timeout=45)
+    accepted = wait_until(f"an accepted command on {entity}", attempt, timeout=45)
     assert accepted is not None
     return accepted
 
 
 def assert_observed(
-    client: httpx.Client, action: dict[str, object], record: dict[str, Any]
+    client: httpx.Client, action: dict[str, object], record: dict[str, Any], entity: str = LIGHT
 ) -> None:
     assert record["outcome"] == "observed", record
-    assert record["entity_id"] == LIGHT
+    assert record["entity_id"] == entity
+    assert record["device_kind"] == ("switch" if entity == PLUG else "light"), record
     assert record["command"] == action
     assert record["event_id"], record
-    events = client.get("/api/events", params={"entity_id": LIGHT, "limit": 100}).json()["events"]
+    events = client.get("/api/events", params={"entity_id": entity, "limit": 100}).json()["events"]
     [recorded] = [item for item in events if item["id"] == record["event_id"]]
     assert recorded["new"]["state"] == action["action"], recorded
     if action is ON_37:
@@ -153,6 +159,31 @@ def main() -> None:
             audit = client.get("/api/commands").json()["commands"]
             assert [record["id"] for record in audit] == [second["id"], first["id"]]
             assert {record["sender"]["kind"] for record in audit} == {"dashboard"}
+
+            # The demo plug switches through the same route, on and off with no brightness.
+            client.put(
+                f"/api/selection/{PLUG}", json={"selected": True}, headers=WRITE
+            ).raise_for_status()
+            wait_until("a baseline for the plug", lambda: current_state(client, PLUG))
+
+            def dimmed_plug() -> bool:
+                response = command(client, ON_37, PLUG)
+                assert response.status_code == 409, response.text
+                return response.json()["detail"]["code"] == "not_supported"
+
+            wait_until("a plug brightness command refused as not supported", dimmed_plug)
+            plug_actions: list[dict[str, object]] = []
+            for _ in range(2):
+                plug_action, plug_record = switch(client, PLUG, ON)
+                assert_observed(client, plug_action, plug_record, PLUG)
+                plug_actions.append(plug_action)
+            assert plug_actions[0] != plug_actions[1]
+            plug_audit = [
+                record
+                for record in client.get("/api/commands").json()["commands"]
+                if record["entity_id"] == PLUG
+            ]
+            assert [record["command"] for record in plug_audit] == plug_actions[::-1]
 
             # A stopped controller: unreachable while its heartbeat is fresh, then control off.
             compose("kill", "controller")

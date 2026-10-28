@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
@@ -39,6 +39,7 @@ from home_keeper.models import (
     Coverage,
     CoverageGap,
     CoverageReport,
+    DeviceKind,
     DeviceObservation,
     DiscoveryRefresh,
     Entity,
@@ -63,7 +64,12 @@ from home_keeper.models import (
 from home_keeper.recorder import Recorder, Rejected, update_current
 from home_keeper.store import Store, baseline_record, current_reading
 from home_keeper.usage import UsageReading, device_usage
-from home_keeper_light_command import LightOff, matches_brightness
+from home_keeper_light_command import (
+    ForwardedCommand,
+    LightOff,
+    forwarded_command,
+    matches_brightness,
+)
 
 UTC_ZONE = ZoneInfo("UTC")
 COMMAND_POLL_SECONDS = 0.1
@@ -71,7 +77,7 @@ COMMAND_POLL_SECONDS = 0.1
 # take every worker of the shared pool that ingestion needs.
 CONCURRENT_SENDS = 4
 # A command that waits longer than this for a send slot is refused, so it never switches a
-# light after its caller gave up (the agent's request times out after 10 seconds).
+# device after its caller gave up (the agent's request times out after 10 seconds).
 SEND_QUEUE_SECONDS = 3
 
 
@@ -80,7 +86,7 @@ class Accepted:
     """A command that passed every check, with what sending and observing it need."""
 
     controller: Controller
-    source_entity_id: str
+    forwarded: ForwardedCommand
 
 
 @dataclass(frozen=True)
@@ -91,8 +97,8 @@ class Observed:
 
 
 def shows(reading: Reading | None, command: LightCommand) -> bool:
-    """Whether a light reading shows the state a command asks for."""
-    if not isinstance(reading, LightReading):
+    """Whether a light, plug or switch reading shows the state a command asks for."""
+    if reading is None:
         return False
     if isinstance(command, LightOff):
         return reading.state == "off"
@@ -100,7 +106,24 @@ def shows(reading: Reading | None, command: LightCommand) -> bool:
         return False
     if command.brightness_pct is None:
         return True
-    return matches_brightness(reading.brightness, command.brightness_pct)
+    # Only a light has a brightness to match.
+    return isinstance(reading, LightReading) and matches_brightness(
+        reading.brightness, command.brightness_pct
+    )
+
+
+def forward(
+    device_kind: DeviceKind, source_entity_id: str, command: LightCommand
+) -> ForwardedCommand:
+    """The controller's body for a command. Raises ValidationError for an entity ID outside
+    the device's own domain, or for a brightness on a plug or switch."""
+    return forwarded_command.validate_python(
+        {
+            "device_kind": device_kind,
+            "source_entity_id": source_entity_id,
+            "command": command.model_dump(exclude_none=True),
+        }
+    )
 
 
 def received_after(reading: BaselineRecord | EventRecord, sent_at: datetime) -> bool:
@@ -110,7 +133,7 @@ def received_after(reading: BaselineRecord | EventRecord, sent_at: datetime) -> 
 def find_observation(
     db: sqlite3.Connection, entity_id: str, command: LightCommand, sent_at: datetime
 ) -> Observed | None:
-    """A reading of the light received after the send that shows the command's state."""
+    """A reading of the device received after the send that shows the command's state."""
     # The recorder rejects receipts later than persistence, so a reading received after the
     # send was also stored after it; that narrows each query to the newest rows.
     after = sent_at.isoformat()
@@ -776,28 +799,38 @@ def create_app(
             entity = store.entity(db, entity_id)
             if entity is None:
                 raise HTTPException(404, "Unknown entity")
-            # Plugs and switches cannot be switched yet: only lights take light commands.
-            if not entity.supported or entity.device_kind == "switch":
+            if not entity.supported:
                 raise HTTPException(422, "Entity is unsupported")
+            # Refusal messages call a plug or switch a device.
+            noun = "device" if entity.device_kind == "switch" else "light"
             if controller is None or control_status(db).state == "off":
                 raise refused("control_off", "Light control is off")
             if entity_id not in store.selection(db).entity_ids:
-                raise refused("not_monitored", "Monitor this light before switching it")
+                raise refused("not_monitored", f"Monitor this {noun} before switching it")
             reading = store.current(db, entity_id)
             if reading is None or reading.state not in ("on", "off", "unavailable"):
-                raise refused("state_unknown", "The light's current state is unknown")
-            # A reading tells a switch apart even when its catalog entry has no device kind.
-            if reading.device_kind != "light":
-                raise HTTPException(422, "Entity is unsupported")
+                raise refused("state_unknown", f"The {noun}'s current state is unknown")
+            # The reading names the kind even when the catalog entry has none.
+            if (
+                reading.device_kind == "switch"
+                and not isinstance(command, LightOff)
+                and command.brightness_pct is not None
+            ):
+                raise refused("not_supported", "A plug or switch has no brightness")
             if reading.state == "unavailable":
-                raise refused("unavailable", "The light is unavailable")
+                raise refused("unavailable", f"The {noun} is unavailable")
             # Home Assistant fires no change for these, so the outcome could never be observed.
             if shows(reading, command):
-                raise refused("already_in_state", "The light is already in that state")
+                raise refused("already_in_state", f"The {noun} is already in that state")
             source_entity_id = reading.source_entity_id or store.source_entity_id(db, entity_id)
             if source_entity_id is None:
-                raise refused("state_unknown", "The light's current state is unknown")
-            return Accepted(controller, source_entity_id)
+                raise refused("state_unknown", f"The {noun}'s current state is unknown")
+            try:
+                forwarded = forward(reading.device_kind, source_entity_id, command)
+            except ValidationError:
+                # Not an entity ID the controller takes for this kind of device.
+                raise HTTPException(422, "Entity is unsupported") from None
+            return Accepted(controller, forwarded)
 
     def save_command(record: CommandRecord) -> None:
         with store.transaction() as db:
@@ -825,7 +858,7 @@ def create_app(
         response_model_exclude_unset=True,
         responses={409: {"model": CommandRefused}},
     )
-    async def command_light(entity_id: str, request: CommandRequest):
+    async def command_device(entity_id: str, request: CommandRequest):
         # Async, with each database read and the send in the thread pool only briefly, so
         # waiting commands cannot hold the workers that ingest the readings they wait for.
         await run_in_threadpool(accept, entity_id, request.command)
@@ -834,13 +867,14 @@ def create_app(
         if queue.cancelled_caught:
             raise refused("busy", "Too many light commands are waiting. Try again")
         try:
-            # Checked again with the slot held: while the command waited, the light may
+            # Checked again with the slot held: while the command waited, the device may
             # have stopped being monitored, or control may have turned off.
             accepted = await run_in_threadpool(accept, entity_id, request.command)
             sent_at = now().astimezone(UTC)
             record = CommandRecord(
                 id=str(uuid4()),
                 entity_id=entity_id,
+                device_kind=accepted.forwarded.device_kind,
                 command=request.command,
                 sender=request.sender,
                 sent_at=sent_at.isoformat(),
@@ -851,10 +885,7 @@ def create_app(
             await run_in_threadpool(save_command, record)
             try:
                 result = await anyio.to_thread.run_sync(
-                    accepted.controller.send,
-                    accepted.source_entity_id,
-                    request.command,
-                    limiter=send_threads,
+                    accepted.controller.send, accepted.forwarded, limiter=send_threads
                 )
             except ControllerUnreachable:
                 result = None

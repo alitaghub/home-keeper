@@ -25,7 +25,7 @@ This starts four services:
 - `collector`: the live collector that reads Home Assistant.
 
 With `--profile control`, a fifth service, `controller`, switches monitored
-lights. See [Switch lights](#switch-lights).
+lights, plugs and switches. See [Switch lights](#switch-lights).
 
 ### What setup does
 
@@ -238,7 +238,8 @@ The dashboard gives the reason for each entity it cannot record:
   sensor.
 
 A plug or switch records its on/off state and availability only. Home Keeper
-keeps no light attributes for it and cannot switch it yet.
+keeps no light attributes for it. With the `control` profile it can switch it
+on or off.
 
 If the state read fails or returns malformed data, discovery fails rather than
 guessing.
