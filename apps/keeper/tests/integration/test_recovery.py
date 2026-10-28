@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry
+from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry, use_transport
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 from websockets.sync.server import ServerConnection, serve
@@ -64,6 +64,8 @@ def home(
     tmp_path: Path,
     race_count: int = 1,
     authentication_invalid: bool | Callable[[], bool] = False,
+    entity: Frame | None = None,
+    devices: list[Frame] | None = None,
 ) -> Generator[Home]:
     token = tmp_path / "ha-token"
     token.write_text("private-recovery-token")
@@ -71,9 +73,16 @@ def home(
     race_sent = Event()
     finish = Event()
     commands: list[str] = []
-    rows = [registry()]
+    rows = [entity or registry()]
+
+    # Discovery reads each new light once, for group markers; every later read is a snapshot.
+    discovered: set[str] = set()
 
     def request(_connection: ServerConnection, incoming: Request) -> Response | None:
+        source = incoming.path.rsplit("/", 1)[-1]
+        if incoming.path.startswith("/api/states/") and source not in discovered:
+            discovered.add(source)
+            return Response(404, "Not Found", Headers(), b"")
         if incoming.path.startswith("/api/states/"):
             # A snapshot cannot begin before the event subscription is acknowledged.
             assert subscribed.wait(1)
@@ -83,7 +92,7 @@ def home(
                 200,
                 "OK",
                 Headers({"Content-Type": "application/json"}),
-                json.dumps(state(100, source=incoming.path.rsplit("/", 1)[-1])).encode(),
+                json.dumps(state(100, source=source)).encode(),
             )
         return None
 
@@ -111,7 +120,9 @@ def home(
             socket.send(json.dumps({"id": 1, "type": "result", "success": True, "result": rows}))
             command = json.loads(socket.recv(timeout=5))
             commands.append(command["type"])
-            socket.send(json.dumps({"id": 2, "type": "result", "success": True, "result": []}))
+            socket.send(
+                json.dumps({"id": 2, "type": "result", "success": True, "result": devices or []})
+            )
 
     with serve(handler, "127.0.0.1", 0, process_request=request) as server:
         worker = Thread(target=server.serve_forever)
@@ -378,6 +389,49 @@ def test_api_detected_gap_closes_after_next_full_pass_without_fabricated_events(
             session.close()
 
 
+def test_switch_gap_closes_with_a_recovery_snapshot_of_the_switch(tmp_path: Path) -> None:
+    plug = registry("plug", "switch.plug") | {"device_id": "device1"}
+    with (
+        home(
+            tmp_path,
+            race_count=0,
+            entity=plug,
+            devices=[{"id": "device1", "name": "Smart plug"}],
+        ) as (connector, _, _),
+        TestClient(
+            create_app(tmp_path / "recorded.sqlite", "internal-secret", source_id="home_assistant"),
+            headers={"Authorization": "Bearer internal-secret"},
+        ) as api,
+    ):
+        session = CollectionSession(api, connector)
+        try:
+            assert session.reconcile()
+            selected = api.put(
+                "/api/selection/ha:plug", json={"selected": True}, headers={"X-Home-Keeper": "1"}
+            )
+            assert selected.status_code == 200, selected.text
+            assert session.reconcile()
+            api.post(
+                "/internal/coverage",
+                json={
+                    "source_id": "home_assistant",
+                    "status": "interrupted",
+                    "reason": "heartbeat",
+                    "received_at": datetime.now(UTC).isoformat(),
+                },
+            ).raise_for_status()
+            assert session.reconcile()
+            assert api.get("/api/coverage").json()["state"] == "collecting"
+            snapshots = api.get("/api/baselines?entity_id=ha:plug").json()["baselines"]
+            [recovery] = [value for value in snapshots if value["kind"] == "recovery"]
+            assert recovery["device_kind"] == "switch"
+            assert recovery["coverage_gap_ids"]
+            # The REST state carries brightness; a switch reading never keeps it.
+            assert "brightness" not in recovery
+        finally:
+            session.close()
+
+
 def test_obsolete_revision_does_not_close_gap_and_revalidates_new_selection(tmp_path: Path) -> None:
     accepted: Accepted = []
     selected = {"revision": 1, "entity_ids": ["ha:a"]}
@@ -521,18 +575,15 @@ def test_initial_missing_baseline_stays_selected_then_recovers(
     secret.write_text("review-ha-secret")
     install_socket(monkeypatch, FakeSocket([registry_entry()]))
     adapter = HomeAssistantConnector("http://ha.example:8123", secret)
-    adapter.discover()
-    adapter.approve({"ha:registry1": 1})
     status = [404]
-    adapter._http.close()  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
-    adapter._http = httpx.Client(  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
-        base_url=adapter.origin,
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(
-                status[0], json={"entity_id": "light.bulb", "state": "off", "attributes": {}}
-            )
+    use_transport(
+        adapter,
+        lambda _request: httpx.Response(
+            status[0], json={"entity_id": "light.bulb", "state": "off", "attributes": {}}
         ),
     )
+    adapter.discover()
+    adapter.approve({"ha:registry1": 1})
 
     def connect(*_args: object, **_kwargs: object) -> LiveSocket:
         return LiveSocket([registry_entry()])

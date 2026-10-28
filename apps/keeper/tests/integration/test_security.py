@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from support.api import AUTH, BROWSER, CATALOG, NOW, TOKEN, app_for, observation, select
 
 from home_keeper.api import create_app
+from home_keeper_light_command import ForwardedCommand
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong-credential"}])
@@ -85,6 +86,7 @@ def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
                 "/internal/services/light/turn_on",
                 "/internal/command",
                 "/api/lights/bulb-a/turn_on",
+                "/api/devices/bulb-a/turn_on",
             ):
                 assert client.post(
                     path, json={"entity_id": "bulb-a"}, headers={**AUTH, **BROWSER}
@@ -180,8 +182,8 @@ class RecordingController:
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    def send(self, source_entity_id: str, command: object) -> Literal["ok", "refused"]:
-        self.sent.append(source_entity_id)
+    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+        self.sent.append(forwarded.source_entity_id)
         return "ok"
 
 
@@ -240,12 +242,12 @@ def test_light_command_needs_the_mutation_header_and_a_same_site_origin(tmp_path
             {**BROWSER, "Sec-Fetch-Site": "cross-site"},
             {**BROWSER, "Host": "evil.example"},
         ):
-            denied = client.post("/api/lights/bulb-a/command", json=body, headers=headers)
+            denied = client.post("/api/devices/bulb-a/command", json=body, headers=headers)
             assert denied.status_code in (400, 403), denied.text
         assert controller.sent == []
         assert client.get("/api/commands").json()["commands"] == []
         allowed = client.post(
-            "/api/lights/bulb-a/command",
+            "/api/devices/bulb-a/command",
             json=body,
             headers={**BROWSER, "Origin": "http://127.0.0.1:8000"},
         )

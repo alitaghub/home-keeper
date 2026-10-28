@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
@@ -39,9 +39,11 @@ from home_keeper.models import (
     Coverage,
     CoverageGap,
     CoverageReport,
+    CurrentReading,
+    DeviceKind,
+    DeviceObservation,
     DiscoveryRefresh,
     Entity,
-    EventReading,
     EventRecord,
     EventsPage,
     Freshness,
@@ -54,24 +56,30 @@ from home_keeper.models import (
     LightReading,
     MonitoredEntities,
     MonitoredEntity,
-    Observation,
+    Reading,
     SelectionChange,
     SelectionSnapshot,
     UsageReport,
     to_utc,
 )
 from home_keeper.recorder import Recorder, Rejected, update_current
-from home_keeper.store import Store, current_reading
-from home_keeper.usage import light_usage
-from home_keeper_light_command import LightOff, matches_brightness
+from home_keeper.store import Store, baseline_record, current_reading, stored_json
+from home_keeper.usage import device_usage
+from home_keeper_light_command import (
+    ForwardedCommand,
+    LightOff,
+    forwarded_command,
+    matches_brightness,
+)
 
 UTC_ZONE = ZoneInfo("UTC")
+command_record: TypeAdapter[CommandRecord] = TypeAdapter(CommandRecord)
 COMMAND_POLL_SECONDS = 0.1
 # Controller sends can block for seconds, so they get their own few threads and never
 # take every worker of the shared pool that ingestion needs.
 CONCURRENT_SENDS = 4
 # A command that waits longer than this for a send slot is refused, so it never switches a
-# light after its caller gave up (the agent's request times out after 10 seconds).
+# device after its caller gave up (the agent's request times out after 10 seconds).
 SEND_QUEUE_SECONDS = 3
 
 
@@ -80,7 +88,7 @@ class Accepted:
     """A command that passed every check, with what sending and observing it need."""
 
     controller: Controller
-    source_entity_id: str
+    forwarded: ForwardedCommand
 
 
 @dataclass(frozen=True)
@@ -90,8 +98,8 @@ class Observed:
     event_id: str | None
 
 
-def shows(reading: LightReading | None, command: LightCommand) -> bool:
-    """Whether a reading shows the state a command asks for."""
+def shows(reading: Reading | None, command: LightCommand) -> bool:
+    """Whether a light, plug or switch reading shows the state a command asks for."""
     if reading is None:
         return False
     if isinstance(command, LightOff):
@@ -100,7 +108,24 @@ def shows(reading: LightReading | None, command: LightCommand) -> bool:
         return False
     if command.brightness_pct is None:
         return True
-    return matches_brightness(reading.brightness, command.brightness_pct)
+    # Only a light has a brightness to match.
+    return isinstance(reading, LightReading) and matches_brightness(
+        reading.brightness, command.brightness_pct
+    )
+
+
+def forward(
+    device_kind: DeviceKind, source_entity_id: str, command: LightCommand
+) -> ForwardedCommand:
+    """The controller's body for a command. Raises ValidationError for an entity ID outside
+    the device's own domain, or for a brightness on a plug or switch."""
+    return forwarded_command.validate_python(
+        {
+            "device_kind": device_kind,
+            "source_entity_id": source_entity_id,
+            "command": command.model_dump(exclude_none=True),
+        }
+    )
 
 
 def received_after(reading: BaselineRecord | EventRecord, sent_at: datetime) -> bool:
@@ -110,7 +135,7 @@ def received_after(reading: BaselineRecord | EventRecord, sent_at: datetime) -> 
 def find_observation(
     db: sqlite3.Connection, entity_id: str, command: LightCommand, sent_at: datetime
 ) -> Observed | None:
-    """A reading of the light received after the send that shows the command's state."""
+    """A reading of the device received after the send that shows the command's state."""
     # The recorder rejects receipts later than persistence, so a reading received after the
     # send was also stored after it; that narrows each query to the newest rows.
     after = sent_at.isoformat()
@@ -125,7 +150,7 @@ def find_observation(
         "SELECT data FROM baselines WHERE entity_id=? AND persisted_at>? ORDER BY persisted_at",
         (entity_id, after),
     ):
-        baseline = BaselineRecord.model_validate_json(row[0])
+        baseline = baseline_record.validate_json(row[0])
         if received_after(baseline, sent_at) and shows(baseline, command):
             return Observed(None)
     return None
@@ -185,7 +210,7 @@ def create_app(
                 "SELECT 1 FROM current_state WHERE entity_id=?", (row["entity_id"],)
             ).fetchone():
                 continue
-            value = BaselineRecord.model_validate_json(row["data"])
+            value = baseline_record.validate_json(row["data"])
             source_time = value.last_updated or value.received_at
             update_current(db, row["entity_id"], source_time, value)
         if store.last_confirmed(db):
@@ -286,10 +311,7 @@ def create_app(
                     and get_health(db).status not in ("failed", "stale")
                     else "stale"
                 ),
-                entities=[
-                    Entity.model_validate_json(row[0])
-                    for row in db.execute("SELECT data FROM catalog ORDER BY id")
-                ],
+                entities=store.entities(db),
             )
 
     @app.get("/api/selection", response_model=SelectionSnapshot)
@@ -330,11 +352,14 @@ def create_app(
             if change.selected != (entity_id in current.entity_ids):
                 if change.selected:
                     db.execute("INSERT INTO selection VALUES(?)", (entity_id,))
+                    if entity is not None and entity.device_kind == "switch":
+                        db.execute("INSERT OR IGNORE INTO selected_switch VALUES(?)", (entity_id,))
                     # A fresh selection awaits a new confirmation, even if history exists.
                     db.execute("DELETE FROM confirmed WHERE entity_id=?", (entity_id,))
                     db.execute("DELETE FROM current_state WHERE entity_id=?", (entity_id,))
                 else:
                     db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
+                    db.execute("DELETE FROM selected_switch WHERE id=?", (entity_id,))
                 db.execute(
                     "UPDATE metadata SET value=? WHERE key='revision'",
                     (str(current.revision + 1),),
@@ -350,15 +375,20 @@ def create_app(
                 "INSERT OR REPLACE INTO metadata VALUES('catalog_at', ?)", (now().isoformat(),)
             )
             db.execute("DELETE FROM catalog")
+            db.execute("DELETE FROM catalog_kind")
             db.executemany(
                 "INSERT INTO catalog VALUES(?, ?)",
-                [(e.id, e.model_dump_json()) for e in payload.entities],
+                [(e.id, e.model_dump_json(exclude={"device_kind"})) for e in payload.entities],
+            )
+            db.executemany(
+                "INSERT INTO catalog_kind VALUES(?, ?)",
+                [(e.id, e.device_kind) for e in payload.entities if e.device_kind],
             )
             # Discovery describes support; it never changes the user's approval.
         return {"accepted": True}
 
     @app.post("/internal/baselines", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_observation(payload: Observation):
+    def ingest_observation(payload: DeviceObservation):
         baseline = recorder.observe(payload)
         if isinstance(baseline, Rejected):
             raise rejection(baseline)
@@ -385,7 +415,7 @@ def create_app(
                 ),
             ).fetchall()
             return BaselinesPage(
-                baselines=[BaselineRecord.model_validate_json(row["data"]) for row in rows[:limit]],
+                baselines=[baseline_record.validate_json(row["data"]) for row in rows[:limit]],
                 next_cursor=rows[limit - 1]["rowid"] if len(rows) > limit else None,
             )
 
@@ -411,8 +441,8 @@ def create_app(
         cursor: Annotated[str | None, Query(max_length=200)] = None,
     ):
         try:
-            start = Observation.utc_timestamp(start)
-            end = Observation.utc_timestamp(end)
+            start = to_utc(start) if start else None
+            end = to_utc(end) if end else None
             if start and end and start > end:
                 raise ValueError("Reversed range")
             position = None
@@ -602,38 +632,45 @@ def create_app(
         # computing happen after it closes. The store runs in WAL mode, so writers continue.
         with store.transaction("DEFERRED") as db:
             selected = store.selection(db).entity_ids
+            switches = {
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM catalog_kind WHERE device_kind='switch' "
+                    "UNION SELECT id FROM selected_switch"
+                )
+            }
             # Unselected IDs are left out rather than reported as missing.
-            lights = sorted(set(entity_id or selected) & set(selected))
-            scope = ",".join("?" * len(lights))
-            # Evidence inside the window, plus each light's latest evidence before it.
+            devices = sorted(set(entity_id or selected) & set(selected))
+            scope = ",".join("?" * len(devices))
+            # Evidence inside the window, plus each device's latest evidence before it.
             snapshot_rows: list[sqlite3.Row] = db.execute(
                 # Only placeholders are interpolated; values are bound parameters.
                 "SELECT entity_id, data FROM baselines WHERE persisted_at>=? "  # noqa: S608 -- placeholders only
                 "AND julianday(json_extract(data, '$.received_at')) <= julianday(?) "
                 f"AND entity_id IN ({scope})",
-                (max(cutoff, start.isoformat()), end.isoformat(), *lights),
+                (max(cutoff, start.isoformat()), end.isoformat(), *devices),
             ).fetchall()
             event_rows: list[sqlite3.Row] = db.execute(
                 "SELECT entity_id, data FROM events WHERE persisted_at>=? AND event_time>=? "  # noqa: S608 -- placeholders only
                 f"AND event_time<=? AND entity_id IN ({scope})",
-                (cutoff, start.isoformat(), end.isoformat(), *lights),
+                (cutoff, start.isoformat(), end.isoformat(), *devices),
             ).fetchall()
             current_rows: list[sqlite3.Row] = []
-            for light in lights:
+            for device in devices:
                 # Snapshots are stored in receipt order, so the newest persisted is the latest read.
                 snapshot_rows += db.execute(
                     "SELECT entity_id, data FROM baselines WHERE entity_id=? AND persisted_at>=? "
                     "AND persisted_at<? ORDER BY persisted_at DESC, rowid DESC LIMIT 1",
-                    (light, cutoff, start.isoformat()),
+                    (device, cutoff, start.isoformat()),
                 ).fetchall()
                 event_rows += db.execute(
                     "SELECT entity_id, data FROM events WHERE entity_id=? AND persisted_at>=? "
                     "AND event_time<? ORDER BY event_time DESC, id DESC LIMIT 1",
-                    (light, cutoff, start.isoformat()),
+                    (device, cutoff, start.isoformat()),
                 ).fetchall()
-                # The cache keeps a steady light's state after its only snapshot expires.
+                # The cache keeps a steady device's state after its only snapshot expires.
                 current_rows += db.execute(
-                    "SELECT entity_id, data FROM current_state WHERE entity_id=?", (light,)
+                    "SELECT entity_id, data FROM current_state WHERE entity_id=?", (device,)
                 ).fetchall()
             # Every retained gap: one that recovered before the window still leaves the light
             # unknown until new evidence arrives. Gaps are few, bounded by retention.
@@ -645,14 +682,21 @@ def create_app(
                 "WHERE latest.scope=coverage.scope)",
                 (cutoff,),
             ).fetchall()
-        readings: dict[str, list[BaselineRecord | EventReading]] = {light: [] for light in lights}
-        for row in snapshot_rows:
-            readings[row[0]].append(BaselineRecord.model_validate_json(row[1]))
-        for row in current_rows:
-            readings[row[0]].append(current_reading.validate_json(row[1]))
-        events: dict[str, list[EventRecord]] = {light: [] for light in lights}
-        for row in event_rows:
-            events[row[0]].append(EventRecord.model_validate_json(row[1]))
+        snapshots = [(row[0], current_reading.validate_json(row[1])) for row in snapshot_rows]
+        snapshots += [(row[0], current_reading.validate_json(row[1])) for row in current_rows]
+        changes = [(row[0], EventRecord.model_validate_json(row[1])) for row in event_rows]
+        # A selected switch that has left discovery is still known by its readings.
+        switches |= {
+            entity for entity, value in [*snapshots, *changes] if value.device_kind == "switch"
+        }
+        readings: dict[str, list[CurrentReading]] = {device: [] for device in devices}
+        for entity, reading in snapshots:
+            if entity in readings:
+                readings[entity].append(reading)
+        events: dict[str, list[EventRecord]] = {device: [] for device in devices}
+        for entity, event in changes:
+            if entity in events:
+                events[entity].append(event)
         gaps = [CoverageGap.model_validate_json(row[0]) for row in gap_rows]
         retained_since = datetime.fromisoformat(cutoff)
         return UsageReport(
@@ -660,19 +704,20 @@ def create_app(
             end=end.isoformat(),
             timezone=timezone.key,
             retained_since=cutoff,
-            lights=[
-                light_usage(
-                    light,
+            devices=[
+                device_usage(
+                    device,
+                    "switch" if device in switches else "light",
                     start=start,
                     end=end,
                     now=now().astimezone(UTC),
                     timezone=timezone,
                     retained_since=retained_since,
-                    readings=readings[light],
-                    events=events[light],
+                    readings=readings[device],
+                    events=events[device],
                     gaps=gaps,
                 )
-                for light in lights
+                for device in devices
             ],
         )
 
@@ -690,11 +735,18 @@ def create_app(
                 entity = store.entity(db, entity_id)
                 missing = entity is None
                 if entity is None:
+                    current = store.current(db, entity_id)
                     entity = Entity(
                         id=entity_id,
                         name=entity_id,
                         device_id=None,
                         device_name=None,
+                        # Readings, or the kind it was selected as, tell light from switch.
+                        device_kind=current.device_kind
+                        if current
+                        else "switch"
+                        if store.selected_switch(db, entity_id)
+                        else None,
                         supported=False,
                         reason="Entity missing from latest discovery",
                     )
@@ -761,22 +813,36 @@ def create_app(
                 raise HTTPException(404, "Unknown entity")
             if not entity.supported:
                 raise HTTPException(422, "Entity is unsupported")
+            # Refusal messages call a plug or switch a device.
+            noun = "device" if entity.device_kind == "switch" else "light"
             if controller is None or control_status(db).state == "off":
                 raise refused("control_off", "Light control is off")
             if entity_id not in store.selection(db).entity_ids:
-                raise refused("not_monitored", "Monitor this light before switching it")
+                raise refused("not_monitored", f"Monitor this {noun} before switching it")
             reading = store.current(db, entity_id)
             if reading is None or reading.state not in ("on", "off", "unavailable"):
-                raise refused("state_unknown", "The light's current state is unknown")
+                raise refused("state_unknown", f"The {noun}'s current state is unknown")
+            # The reading names the kind even when the catalog entry has none.
+            if (
+                reading.device_kind == "switch"
+                and not isinstance(command, LightOff)
+                and command.brightness_pct is not None
+            ):
+                raise refused("not_supported", "A plug or switch has no brightness")
             if reading.state == "unavailable":
-                raise refused("unavailable", "The light is unavailable")
+                raise refused("unavailable", f"The {noun} is unavailable")
             # Home Assistant fires no change for these, so the outcome could never be observed.
             if shows(reading, command):
-                raise refused("already_in_state", "The light is already in that state")
+                raise refused("already_in_state", f"The {noun} is already in that state")
             source_entity_id = reading.source_entity_id or store.source_entity_id(db, entity_id)
             if source_entity_id is None:
-                raise refused("state_unknown", "The light's current state is unknown")
-            return Accepted(controller, source_entity_id)
+                raise refused("state_unknown", f"The {noun}'s current state is unknown")
+            try:
+                forwarded = forward(reading.device_kind, source_entity_id, command)
+            except ValidationError:
+                # Not an entity ID the controller takes for this kind of device.
+                raise HTTPException(422, "Entity is unsupported") from None
+            return Accepted(controller, forwarded)
 
     def save_command(record: CommandRecord) -> None:
         with store.transaction() as db:
@@ -786,7 +852,7 @@ def create_app(
                     record.id,
                     record.entity_id,
                     record.sent_at,
-                    record.model_dump_json(exclude_unset=True),
+                    stored_json(record),
                 ),
             )
 
@@ -799,12 +865,12 @@ def create_app(
     send_threads = CapacityLimiter(CONCURRENT_SENDS)
 
     @app.post(
-        "/api/lights/{entity_id}/command",
+        "/api/devices/{entity_id}/command",
         response_model=CommandRecord,
         response_model_exclude_unset=True,
         responses={409: {"model": CommandRefused}},
     )
-    async def command_light(entity_id: str, request: CommandRequest):
+    async def command_device(entity_id: str, request: CommandRequest):
         # Async, with each database read and the send in the thread pool only briefly, so
         # waiting commands cannot hold the workers that ingest the readings they wait for.
         await run_in_threadpool(accept, entity_id, request.command)
@@ -813,27 +879,28 @@ def create_app(
         if queue.cancelled_caught:
             raise refused("busy", "Too many light commands are waiting. Try again")
         try:
-            # Checked again with the slot held: while the command waited, the light may
+            # Checked again with the slot held: while the command waited, the device may
             # have stopped being monitored, or control may have turned off.
             accepted = await run_in_threadpool(accept, entity_id, request.command)
             sent_at = now().astimezone(UTC)
-            record = CommandRecord(
-                id=str(uuid4()),
-                entity_id=entity_id,
-                command=request.command,
-                sender=request.sender,
-                sent_at=sent_at.isoformat(),
-                outcome="pending",
-                event_id=None,
+            # From the forwarded command, so a switch's record holds a switch command.
+            record = command_record.validate_python(
+                {
+                    "id": str(uuid4()),
+                    "entity_id": entity_id,
+                    "device_kind": accepted.forwarded.device_kind,
+                    "command": accepted.forwarded.command,
+                    "sender": request.sender,
+                    "sent_at": sent_at.isoformat(),
+                    "outcome": "pending",
+                    "event_id": None,
+                }
             )
             # Stored before the send, so a crash during it still leaves the command on record.
             await run_in_threadpool(save_command, record)
             try:
                 result = await anyio.to_thread.run_sync(
-                    accepted.controller.send,
-                    accepted.source_entity_id,
-                    request.command,
-                    limiter=send_threads,
+                    accepted.controller.send, accepted.forwarded, limiter=send_threads
                 )
             except ControllerUnreachable:
                 result = None
@@ -872,8 +939,8 @@ def create_app(
         cursor: Annotated[str | None, Query(max_length=200)] = None,
     ):
         try:
-            start = Observation.utc_timestamp(start)
-            end = Observation.utc_timestamp(end)
+            start = to_utc(start) if start else None
+            end = to_utc(end) if end else None
             if start and end and start > end:
                 raise ValueError("Reversed range")
             position = None
@@ -902,7 +969,7 @@ def create_app(
                 + " ORDER BY sent_at DESC, id DESC LIMIT ?",
                 (*parameters, limit + 1),
             ).fetchall()
-        values = [CommandRecord.model_validate_json(row[0]) for row in rows[:limit]]
+        values = [command_record.validate_json(row[0]) for row in rows[:limit]]
         return CommandsPage(
             commands=values,
             next_cursor=f"{values[-1].sent_at}|{values[-1].id}" if len(rows) > limit else None,

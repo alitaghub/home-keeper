@@ -16,6 +16,7 @@ from agent_support import (
     control_response,
     lights_response,
     snapshot,
+    switch_response,
 )
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
@@ -31,7 +32,7 @@ from pydantic import Field
 from home_keeper_agent.graph import build_agent
 
 THREAD: RunnableConfig = {"configurable": {"thread_id": "selection"}}
-CONTROL_TOOLS = {"turn_on_light", "turn_off_light"}
+CONTROL_TOOLS = {"turn_on", "turn_off"}
 
 
 def test_agent_registers_the_keeper_tools_and_no_shell_or_subagent() -> None:
@@ -57,7 +58,7 @@ def test_scripted_tool_calls_reach_the_keeper_and_the_final_messages() -> None:
             AIMessage(
                 "",
                 tool_calls=[
-                    {"name": "list_lights", "args": {}, "id": "call-lights"},
+                    {"name": "list_monitored", "args": {}, "id": "call-lights"},
                     {"name": "get_health", "args": {}, "id": "call-health"},
                     {
                         "name": "get_usage",
@@ -75,7 +76,7 @@ def test_scripted_tool_calls_reach_the_keeper_and_the_final_messages() -> None:
     # langgraph's invoke signature leaves Command's type parameter unparameterized.
     state = agent.invoke({"messages": [question]})  # pyright: ignore[reportUnknownMemberType]
 
-    # list_lights also reads the control state, so the model can tell whether it may propose one.
+    # list_monitored also reads the control state, so the model can tell whether it may propose one.
     assert sorted(keeper.paths()) == ["/api/control", "/api/health", "/api/monitored", "/api/usage"]
     results = {
         message.tool_call_id: message.text
@@ -98,9 +99,7 @@ def agent_after_one_call(keeper: FakeKeeper, tool_call: ToolCall):
     return agent
 
 
-@pytest.mark.parametrize(
-    ("name", "selected"), [("monitor_light", True), ("stop_monitoring", False)]
-)
+@pytest.mark.parametrize(("name", "selected"), [("monitor", True), ("stop_monitoring", False)])
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 def test_selection_change_waits_for_approval_and_reject_changes_nothing(
     name: str, selected: bool, decision: str
@@ -186,7 +185,7 @@ def light_keeper(
         {
             "/api/monitored": lights_response(state, brightness),
             "/api/control": control_response(control),
-            "/api/lights/bulb-a/command": command or command_response("observed"),
+            "/api/devices/bulb-a/command": command or command_response("observed"),
         }
     )
 
@@ -209,24 +208,24 @@ def tool_result(state: StateSnapshot) -> str:
 
 
 def off_call() -> ToolCall:
-    return {"name": "turn_off_light", "args": {"entity_id": "bulb-a"}, "id": "call-light"}
+    return {"name": "turn_off", "args": {"entity_id": "bulb-a"}, "id": "call-light"}
 
 
 def on_call(brightness_percent: int | None = None) -> ToolCall:
     args: dict[str, object] = {"entity_id": "bulb-a"}
     if brightness_percent is not None:
         args["brightness_percent"] = brightness_percent
-    return {"name": "turn_on_light", "args": args, "id": "call-light"}
+    return {"name": "turn_on", "args": args, "id": "call-light"}
 
 
 @pytest.mark.parametrize(
     "call",
     [off_call(), on_call(), on_call(30)],
-    ids=["turn_off_light", "turn_on_light", "turn_on_light-30"],
+    ids=["turn_off", "turn_on", "turn_on-30"],
 )
 def test_light_command_on_a_light_that_can_change_waits_for_one_approval(call: ToolCall) -> None:
     # An "off" light gets "on" commands and an "on" light gets "off" commands.
-    keeper = light_keeper("on" if call["name"] == "turn_off_light" else "off")
+    keeper = light_keeper("on" if call["name"] == "turn_off" else "off")
 
     agent, config = agent_after_light_call(keeper, call)
 
@@ -338,7 +337,7 @@ def test_refused_light_command_shows_no_card_sends_nothing_and_says_why(  # noqa
 
 def test_command_on_a_light_that_is_not_monitored_is_refused_with_an_offer_to_monitor() -> None:
     keeper = light_keeper()
-    call: ToolCall = {"name": "turn_off_light", "args": {"entity_id": "bulb-z"}, "id": "call-z"}
+    call: ToolCall = {"name": "turn_off", "args": {"entity_id": "bulb-z"}, "id": "call-z"}
 
     agent, config = agent_after_light_call(keeper, call)
 
@@ -381,7 +380,7 @@ def test_a_pre_checked_call_does_not_stop_read_tools_from_running() -> None:
     keeper = light_keeper()
     calls: list[ToolCall] = [
         {"name": "get_health", "args": {}, "id": "call-health"},
-        {"name": "turn_off_light", "args": {"entity_id": "bulb-z"}, "id": "call-z"},
+        {"name": "turn_off", "args": {"entity_id": "bulb-z"}, "id": "call-z"},
     ]
     model = ScriptedChatModel(responses=[AIMessage("", tool_calls=calls), AIMessage("Done.")])
     agent = build_agent(model, keeper.client(), checkpointer=InMemorySaver())
@@ -401,7 +400,7 @@ def test_two_light_commands_in_one_response_ask_only_for_the_one_that_can_work()
     keeper = light_keeper("on")
     calls: list[ToolCall] = [
         off_call(),
-        {"name": "turn_off_light", "args": {"entity_id": "bulb-z"}, "id": "call-z"},
+        {"name": "turn_off", "args": {"entity_id": "bulb-z"}, "id": "call-z"},
     ]
     model = ScriptedChatModel(responses=[AIMessage("", tool_calls=calls), AIMessage("Done.")])
     agent = build_agent(model, keeper.client(), checkpointer=InMemorySaver())
@@ -431,7 +430,7 @@ def resume(agent: Resumable, config: RunnableConfig, decision: str) -> None:
 
 @pytest.mark.parametrize("call", [off_call(), on_call(30)], ids=["off", "on-30"])
 def test_rejected_light_command_sends_nothing(call: ToolCall) -> None:
-    keeper = light_keeper("on" if call["name"] == "turn_off_light" else "off")
+    keeper = light_keeper("on" if call["name"] == "turn_off" else "off")
     agent, config = agent_after_light_call(keeper, call)
 
     resume(agent, config, "reject")
@@ -457,7 +456,7 @@ def test_approved_light_command_sends_exactly_that_command_as_the_browser_chat(
     resume(agent, config, "approve")
 
     [post] = command_requests(keeper)
-    assert (post.method, post.url.path) == ("POST", "/api/lights/bulb-a/command")
+    assert (post.method, post.url.path) == ("POST", "/api/devices/bulb-a/command")
     assert post.headers["X-Home-Keeper"] == "1"
     assert json.loads(post.content) == {"command": body, "sender": {"kind": "browser_chat"}}
 
@@ -479,16 +478,16 @@ def test_light_id_is_sent_as_one_path_segment() -> None:
         {
             "/api/monitored": lights_response("on", entity_id=entity_id),
             "/api/control": control_response("on"),
-            f"/api/lights/{entity_id}/command": command_response("observed"),
+            f"/api/devices/{entity_id}/command": command_response("observed"),
         }
     )
-    call: ToolCall = {"name": "turn_off_light", "args": {"entity_id": entity_id}, "id": "call-id"}
+    call: ToolCall = {"name": "turn_off", "args": {"entity_id": entity_id}, "id": "call-id"}
     agent, config = agent_after_light_call(keeper, call)
 
     resume(agent, config, "approve")
 
     [post] = command_requests(keeper)
-    assert post.url.raw_path == b"/api/lights/a%2Fb%20c/command"
+    assert post.url.raw_path == b"/api/devices/a%2Fb%20c/command"
 
 
 @pytest.mark.parametrize(
@@ -571,7 +570,7 @@ def test_approved_light_command_the_keeper_turns_down_relays_its_reason(
     assert result.text.startswith(f"Keeper error: HTTP 409: {message}")
 
 
-def test_prompt_lets_the_model_propose_light_commands_only_after_the_user_asks() -> None:
+def test_prompt_lets_the_model_propose_device_commands_only_after_the_user_asks() -> None:
     model = RecordingChatModel(responses=[AIMessage("Hello.")])
     agent = build_agent(model, FakeKeeper().client())
 
@@ -579,8 +578,11 @@ def test_prompt_lets_the_model_propose_light_commands_only_after_the_user_asks()
 
     [system] = model.seen
     assert "cannot control devices" not in system
-    assert "turn_on_light" in system
-    assert "turn_off_light" in system
+    # The prompt names only the tools the model has.
+    for name in ("turn_on", "turn_off", "list_monitored", "monitor"):
+        assert re.search(rf"\b{name}\b", system), name
+    assert not re.search(r"\b(turn_on_light|turn_off_light|list_lights|monitor_light)\b", system)
+    assert "lights, plugs and switches" in system
     assert "Control: on" in system
     # The consent rule: a command follows the user's request or agreement, never a hunch.
     assert "only after the user asks for that change or agrees to your suggestion" in system
@@ -614,4 +616,149 @@ def test_permission_is_checked_again_when_an_approval_resumes() -> None:
     resume(agent, resumed, "approve")
 
     assert tool_result(agent.get_state(resumed)) == NOT_ALLOWED
+    assert command_requests(keeper) == []
+
+
+def plug_keeper(
+    state: str | None = "off", *, control: str = "on", command: tuple[int, object] | None = None
+) -> FakeKeeper:
+    """A keeper with one monitored plug (plug-a) and a command answer for it."""
+    return FakeKeeper(
+        {
+            "/api/monitored": switch_response(state),
+            "/api/control": control_response(control),
+            "/api/devices/plug-a/command": command or command_response("observed", "on"),
+        }
+    )
+
+
+def plug_call(name: str, **args: object) -> ToolCall:
+    return {"name": name, "args": {"entity_id": "plug-a", **args}, "id": "call-plug"}
+
+
+@pytest.mark.parametrize(("name", "state"), [("turn_on", "off"), ("turn_off", "on")])
+def test_plug_command_shows_one_approval_card_and_sends_nothing_before_approval(
+    name: str, state: str
+) -> None:
+    keeper = plug_keeper(state)
+
+    agent, config = agent_after_light_call(keeper, plug_call(name))
+
+    [pause] = agent.get_state(config).interrupts
+    approval: HITLRequest = pause.value
+    [request] = approval["action_requests"]
+    assert request["name"] == name
+    assert request["args"] == {"entity_id": "plug-a"}
+    assert [review["allowed_decisions"] for review in approval["review_configs"]] == [
+        ["approve", "reject"]
+    ]
+    assert command_requests(keeper) == []
+
+
+@pytest.mark.parametrize(("name", "state"), [("turn_on", "off"), ("turn_off", "on")])
+def test_rejected_plug_command_sends_nothing(name: str, state: str) -> None:
+    keeper = plug_keeper(state)
+    agent, config = agent_after_light_call(keeper, plug_call(name))
+
+    resume(agent, config, "reject")
+
+    assert agent.get_state(config).interrupts == ()
+    assert command_requests(keeper) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "state", "action"), [("turn_on", "off", "on"), ("turn_off", "on", "off")]
+)
+def test_approved_plug_command_sends_exactly_one_command_without_brightness(
+    name: str, state: str, action: str
+) -> None:
+    keeper = plug_keeper(state, command=command_response("observed", action))
+    agent, config = agent_after_light_call(keeper, plug_call(name))
+
+    resume(agent, config, "approve")
+
+    [post] = command_requests(keeper)
+    assert (post.method, post.url.path) == ("POST", "/api/devices/plug-a/command")
+    assert post.headers["X-Home-Keeper"] == "1"
+    assert json.loads(post.content) == {
+        "command": {"action": action},
+        "sender": {"kind": "browser_chat"},
+    }
+    result = tool_result(agent.get_state(config))
+    assert "plug-a" in result
+    assert "observed" in result
+
+
+def test_turn_on_with_a_brightness_on_a_plug_is_refused_before_any_card() -> None:
+    keeper = plug_keeper("off")
+
+    agent, config = agent_after_light_call(keeper, plug_call("turn_on", brightness_percent=50))
+
+    assert agent.get_state(config).interrupts == ()
+    result = tool_result(agent.get_state(config))
+    assert result.startswith("Not sent:"), result
+    assert "brightness" in result
+    assert command_requests(keeper) == []
+
+
+@pytest.mark.parametrize(
+    ("call", "state", "control", "configurable", "expected"),
+    [
+        pytest.param(
+            plug_call("turn_on"),
+            "unavailable",
+            "on",
+            {},
+            "Not sent: plug-a is unavailable.",
+            id="unavailable",
+        ),
+        pytest.param(
+            plug_call("turn_off"),
+            "unknown",
+            "on",
+            {},
+            "Not sent: plug-a has no known on/off state.",
+            id="unknown-state",
+        ),
+        pytest.param(
+            plug_call("turn_on"), "on", "on", {}, "Not sent: plug-a is already on.", id="already-on"
+        ),
+        pytest.param(
+            plug_call("turn_off"),
+            "off",
+            "on",
+            {},
+            "Not sent: plug-a is already off.",
+            id="already-off",
+        ),
+        pytest.param(
+            plug_call("turn_on"),
+            "off",
+            "on",
+            {"may_control": False},
+            NOT_ALLOWED,
+            id="may_control-false",
+        ),
+    ],
+)
+def test_refused_plug_command_shows_no_card_sends_nothing_and_says_why(
+    call: ToolCall, state: str, control: str, configurable: dict[str, object], expected: str
+) -> None:
+    keeper = plug_keeper(state, control=control)
+
+    agent, config = agent_after_light_call(keeper, call, configurable)
+
+    assert agent.get_state(config).interrupts == ()
+    assert tool_result(agent.get_state(config)) == expected
+    assert command_requests(keeper) == []
+
+
+def test_plug_command_is_refused_when_control_is_off() -> None:
+    keeper = plug_keeper("off", control="off")
+
+    agent, config = agent_after_light_call(keeper, plug_call("turn_on"))
+
+    assert agent.get_state(config).interrupts == ()
+    assert tool_result(agent.get_state(config)).startswith("Not sent:")
+    assert "control is off" in tool_result(agent.get_state(config))
     assert command_requests(keeper) == []

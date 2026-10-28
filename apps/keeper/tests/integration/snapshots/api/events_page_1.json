@@ -4,16 +4,19 @@
     "coverage": "unknown",
     "events": [
       {
+        "device_kind": "light",
         "entity_id": "bulb-a",
         "event_time": "2026-10-12T09:59:50Z",
         "id": "change-3",
         "new": {
           "availability": "available",
           "brightness": 150,
+          "device_kind": "light",
           "state": "on"
         },
         "old": {
           "availability": "available",
+          "device_kind": "light",
           "state": "off"
         },
         "persisted_at": "2026-10-12T10:00:00+00:00",
@@ -23,15 +26,18 @@
         "source_id": "demo"
       },
       {
+        "device_kind": "light",
         "entity_id": "bulb-a",
         "event_time": "2026-10-12T09:59:40Z",
         "id": "change-2",
         "new": {
           "availability": "available",
+          "device_kind": "light",
           "state": "off"
         },
         "old": {
           "availability": "available",
+          "device_kind": "light",
           "state": "on"
         },
         "persisted_at": "2026-10-12T10:00:00+00:00",

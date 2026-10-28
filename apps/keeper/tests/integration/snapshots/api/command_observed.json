@@ -5,6 +5,7 @@
       "action": "on",
       "brightness_pct": 30
     },
+    "device_kind": "light",
     "entity_id": "bulb-a",
     "event_id": "after-send",
     "id": "<uuid-1>",

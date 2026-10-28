@@ -12,6 +12,7 @@
           "coverage_gap_ids": [
             "<uuid-1>"
           ],
+          "device_kind": "light",
           "entity_id": "bulb-a",
           "hs_color": null,
           "id": "<uuid-2>",
@@ -32,6 +33,7 @@
         },
         "confirmed_at": "2026-10-12T10:00:06+00:00",
         "device_id": "device-a",
+        "device_kind": null,
         "device_name": "Hue bulb",
         "freshness": "stale",
         "id": "bulb-a",
@@ -43,6 +45,7 @@
         "baseline": null,
         "confirmed_at": null,
         "device_id": null,
+        "device_kind": null,
         "device_name": null,
         "freshness": "pending",
         "id": "bulb-b",

@@ -25,6 +25,7 @@ from support.control import (
     FakeController,
     beat,
     command,
+    forwarded,
     on,
 )
 
@@ -258,9 +259,9 @@ def test_refusals_return_their_fixed_detail_in_order_and_nothing_is_sent_or_stor
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/lights/..%2Fselection%2Fbulb-a/command",
-        "/api/lights/bulb-a%2F..%2Fbulb-b/command",
-        "/api/lights//command",
+        "/api/devices/..%2Fselection%2Fbulb-a/command",
+        "/api/devices/bulb-a%2F..%2Fbulb-b/command",
+        "/api/devices//command",
     ],
 )
 def test_path_shaped_entity_ids_reach_no_light(tmp_path: Path, path: str) -> None:
@@ -271,6 +272,18 @@ def test_path_shaped_entity_ids_reach_no_light(tmp_path: Path, path: str) -> Non
             headers={"X-Home-Keeper": "1"},
         )
         assert response.status_code in (404, 405), response.text
+        assert house.controller.sent == []
+        assert house.commands() == []
+
+
+def test_retired_light_command_route_is_not_found_and_reaches_nothing(tmp_path: Path) -> None:
+    with home(tmp_path) as house:
+        response = house.client.post(
+            "/api/lights/bulb-a/command",
+            json={"command": ON, "sender": DASHBOARD},
+            headers={"X-Home-Keeper": "1"},
+        )
+        assert response.status_code == 404, response.text
         assert house.controller.sent == []
         assert house.commands() == []
 
@@ -301,7 +314,7 @@ def test_malformed_command_is_an_invalid_request_and_reaches_nothing(
 ) -> None:
     with home(tmp_path) as house:
         response = house.client.post(
-            "/api/lights/bulb-a/command", json=body, headers={"X-Home-Keeper": "1"}
+            "/api/devices/bulb-a/command", json=body, headers={"X-Home-Keeper": "1"}
         )
         assert response.status_code == 422, response.text
         assert response.json() == {"detail": "Invalid request"}
@@ -328,7 +341,8 @@ def test_change_is_forwarded_with_the_source_entity_id_of_the_current_reading(
     with home(tmp_path, reading=reading) as house:
         response = command(house.client, action)
         assert response.status_code == 200, response.text
-        assert house.controller.sent == [(DESK, action)]
+        assert house.controller.sent == [forwarded(action)]
+        assert response.json()["device_kind"] == "light"
 
 
 def test_forwarding_follows_the_source_entity_id_of_the_newest_reading(tmp_path: Path) -> None:
@@ -336,7 +350,7 @@ def test_forwarding_follows_the_source_entity_id_of_the_newest_reading(tmp_path:
         # The latest event attributes bulb-a to a renamed Home Assistant entity.
         house.report("renamed", NOW, {"state": "off"}, old=LIGHT_ON, source="light.desk_2")
         assert command(house.client, on(55)).status_code == 200
-        assert house.controller.sent == [("light.desk_2", on(55))]
+        assert house.controller.sent == [forwarded(on(55), "light.desk_2")]
 
 
 def test_command_is_observed_when_a_matching_event_arrives_after_the_send(
@@ -352,6 +366,7 @@ def test_command_is_observed_when_a_matching_event_arrives_after_the_send(
         assert set(record) == {
             "id",
             "entity_id",
+            "device_kind",
             "command",
             "sender",
             "sent_at",
@@ -361,11 +376,12 @@ def test_command_is_observed_when_a_matching_event_arrives_after_the_send(
         assert record["outcome"] == "observed"
         assert record["event_id"] == "after-send"
         assert record["entity_id"] == "bulb-a"
+        assert record["device_kind"] == "light"
         assert record["command"] == on(30)
         assert record["sender"] == TELEGRAM
         # The send time is taken before the controller is called.
         assert datetime.fromisoformat(record["sent_at"]) == house.controller.sent_at[0] == NOW
-        assert house.controller.sent == [(DESK, on(30))]
+        assert house.controller.sent == [forwarded(on(30))]
         house.controller.join()
         assert house.commands() == [record]
         events = house.client.get("/api/events", params={"entity_id": "bulb-a"}).json()
@@ -406,7 +422,7 @@ def test_brightness_within_two_steps_of_the_requested_percent_counts_as_observed
         record = command(house.client, on(30)).json()
         assert record["outcome"] == outcome
         assert record["event_id"] == ("dimmed" if outcome == "observed" else None)
-        assert house.controller.sent == [(DESK, on(30))]
+        assert house.controller.sent == [forwarded(on(30))]
 
 
 def test_waiting_continues_past_a_non_matching_reading(tmp_path: Path) -> None:
@@ -547,7 +563,7 @@ def test_home_assistant_rejecting_the_call_is_refused_without_waiting(tmp_path: 
         record = command(house.client, ON).json()
         assert time.monotonic() - started < 4
         assert (record["outcome"], record["event_id"]) == ("refused", None)
-        assert house.controller.sent == [(DESK, ON)]
+        assert house.controller.sent == [forwarded(ON)]
         assert house.commands() == [record]
 
 
@@ -637,7 +653,7 @@ def test_collector_ingestion_is_not_held_up_by_a_burst_of_command_waits(tmp_path
 
                 async def send_command() -> None:
                     response = await api.post(
-                        "/api/lights/bulb-a/command",
+                        "/api/devices/bulb-a/command",
                         json={"command": ON, "sender": DASHBOARD},
                         headers={"X-Home-Keeper": "1"},
                         timeout=30,
@@ -687,7 +703,7 @@ def test_collector_ingestion_is_not_held_up_by_stalled_controller_sends(tmp_path
 
                 async def send_command() -> None:
                     response = await api.post(
-                        "/api/lights/bulb-a/command",
+                        "/api/devices/bulb-a/command",
                         json={"command": ON, "sender": DASHBOARD},
                         headers={"X-Home-Keeper": "1"},
                         timeout=30,

@@ -1,4 +1,4 @@
-"""How long selected lights were on, from stored evidence only.
+"""How long selected lights, plugs and switches were on, from stored evidence only.
 
 Time the evidence cannot vouch for is unknown, never on or off.
 """
@@ -11,13 +11,16 @@ from itertools import accumulate, pairwise
 from zoneinfo import ZoneInfo
 
 from home_keeper.models import (
-    BaselineRecord,
     CoverageGap,
+    CurrentReading,
     DayUsage,
-    EventReading,
+    DeviceKind,
+    DeviceUsage,
     EventRecord,
+    LightReading,
     LightStateValue,
     LightUsage,
+    SwitchUsage,
     UnknownInterval,
     UnknownReason,
 )
@@ -26,7 +29,7 @@ from home_keeper.recorder import SnapshotRead, event_outranks_snapshot
 
 @dataclass(frozen=True)
 class Evidence:
-    """A state the light had from `at` until the next evidence."""
+    """A state the device had from `at` until the next evidence."""
 
     at: datetime
     # At equal times a recorded change wins over a snapshot.
@@ -48,18 +51,17 @@ def instant(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(UTC)
 
 
-def reading_evidence(reading: BaselineRecord | EventReading) -> Evidence:
+def reading_evidence(reading: CurrentReading) -> Evidence:
     received = instant(reading.received_at)
-    if isinstance(reading, EventReading):
-        return Evidence(
-            instant(reading.event_time), 1, reading.state, reading.brightness, received, None
-        )
+    brightness = reading.brightness if isinstance(reading, LightReading) else None
+    if reading.kind == "event":
+        return Evidence(instant(reading.event_time), 1, reading.state, brightness, received, None)
     # A snapshot proves the state when it was read, so a later snapshot never rewrites an
     # earlier window, whatever source time Home Assistant gave it.
     started = instant(reading.collection_started_at) if reading.collection_started_at else received
     source = instant(reading.last_updated) if reading.last_updated else received
     read = (source, SnapshotRead(started, received))
-    return Evidence(received, 0, reading.state, reading.brightness, received, read)
+    return Evidence(received, 0, reading.state, brightness, received, read)
 
 
 def event_evidence(event: EventRecord) -> Evidence:
@@ -68,7 +70,7 @@ def event_evidence(event: EventRecord) -> Evidence:
         instant(event.event_time),
         1,
         event.new.state if event.new else "unknown",
-        event.new.brightness if event.new else None,
+        event.new.brightness if isinstance(event.new, LightReading) else None,
         instant(event.received_at),
         None,
     )
@@ -90,10 +92,10 @@ def timeline(evidence: Sequence[Evidence]) -> list[Evidence]:
     return kept
 
 
-def light_gaps(
+def device_gaps(
     entity_id: str, gaps: Sequence[CoverageGap], end: datetime
 ) -> list[tuple[datetime, datetime]]:
-    """Gap windows for one light, from last confirmation to recovery (or `end` while open)."""
+    """Gap windows for one device, from last confirmation to recovery (or `end` while open)."""
     windows = (
         (
             instant(gap.last_confirmed_at or gap.detected_at),
@@ -158,25 +160,28 @@ def local_dates(start: datetime, end: datetime, timezone: ZoneInfo) -> list[date
     return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
 
 
-def light_usage(
+def device_usage(
     entity_id: str,
+    device_kind: DeviceKind,
     *,
     start: datetime,
     end: datetime,
     now: datetime,
     timezone: ZoneInfo,
     retained_since: datetime,
-    readings: Sequence[BaselineRecord | EventReading],
+    readings: Sequence[CurrentReading],
     events: Sequence[EventRecord],
     gaps: Sequence[CoverageGap],
-) -> LightUsage:
-    """Usage of one light from its own readings and events; gaps are filtered by their scope."""
+) -> DeviceUsage:
+    """Usage of one device from its own readings and events; gaps are filtered by their scope.
+
+    Plugs and switches get the same numbers as lights, without brightness."""
     evidence = timeline(
         [reading_evidence(reading) for reading in readings]
         + [event_evidence(event) for event in events]
     )
     keys = [(item.at, item.rank) for item in evidence]
-    own_gaps = light_gaps(entity_id, gaps, end)
+    own_gaps = device_gaps(entity_id, gaps, end)
     windows = merged(own_gaps)
     gap_starts = [gap_start for gap_start, _ in windows]
     # Each gap needs evidence placed after its own start, so a recovery that resolved one gap
@@ -195,7 +200,7 @@ def light_usage(
         ended = bisect_right(gap_ends, moment) - 1
         resumed = latest_starts[ended] if ended >= 0 else None
         index = bisect_right(keys, (moment, 1)) - 1
-        # After a gap, only evidence placed after it began says what the light did.
+        # After a gap, only evidence placed after it began says what the device did.
         if index < 0 or (resumed is not None and evidence[index].at <= resumed):
             return "no_evidence" if resumed is None else "gap"
         item = evidence[index]
@@ -248,25 +253,39 @@ def light_usage(
                 )
             )
 
+    # Only observed off-to-on changes count; none are inferred at the range start or a gap.
+    switch_ons = sum(
+        1
+        for event in events
+        if start <= instant(event.event_time) < end
+        and event.old is not None
+        and event.new is not None
+        and event.old.state == "off"
+        and event.new.state == "on"
+    )
+    day_usage = [
+        DayUsage(date=day.isoformat(), on_seconds=on, unknown_seconds=unknown)
+        for day, (on, unknown) in days.items()
+    ]
+    if device_kind == "switch":
+        return SwitchUsage(
+            device_kind="switch",
+            entity_id=entity_id,
+            on_seconds=on_seconds,
+            unknown_seconds=unknown_seconds,
+            switch_ons=switch_ons,
+            days=day_usage,
+            hours=hours,
+            unknown_intervals=unknown_intervals,
+        )
     return LightUsage(
+        device_kind="light",
         entity_id=entity_id,
         on_seconds=on_seconds,
         unknown_seconds=unknown_seconds,
-        # Only observed off-to-on changes count; none are inferred at the range start or a gap.
-        switch_ons=sum(
-            1
-            for event in events
-            if start <= instant(event.event_time) < end
-            and event.old is not None
-            and event.new is not None
-            and event.old.state == "off"
-            and event.new.state == "on"
-        ),
+        switch_ons=switch_ons,
         average_brightness=weighted_brightness / brightness_seconds if brightness_seconds else None,
-        days=[
-            DayUsage(date=day.isoformat(), on_seconds=on, unknown_seconds=unknown)
-            for day, (on, unknown) in days.items()
-        ],
+        days=day_usage,
         hours=hours,
         unknown_intervals=unknown_intervals,
     )

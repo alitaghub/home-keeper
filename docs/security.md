@@ -26,14 +26,18 @@
   under a restrictive Content Security Policy. Schema validation limits fields
   and restricts source identity. Error status and logs omit submitted secrets
   and raw connector responses.
-- The collector's Home Assistant operations are fixed registry reads, approved
-  entity-state reads and a state-change subscription filtered inside the
-  connector. It makes no service call and no device write. The collector image
+- The collector's Home Assistant operations are fixed registry reads, one state
+  read for each new light or switch candidate at discovery, approved entity-state
+  reads and a state-change subscription filtered inside the connector. Discovery
+  reads a candidate's state only to detect a group and keeps only that answer. It makes no service call and no device write. The collector image
   contains no controller code.
-- The controller makes exactly two Home Assistant service calls:
+- The controller makes exactly four Home Assistant service calls:
   `light.turn_on`, with an optional `brightness_pct` from 1 to 100, and
-  `light.turn_off`, on `light.*` entity IDs. It rejects any other domain,
-  service, entity ID or field before it contacts Home Assistant. There is no
+  `light.turn_off`, on `light.*` entity IDs, and `switch.turn_on` and
+  `switch.turn_off`, with no data, on `switch.*` entity IDs. Each command names
+  its device kind, and each kind accepts only its own entity IDs and commands.
+  It rejects any other domain, service, entity ID or field, and a brightness for
+  a switch, before it contacts Home Assistant. There is no
   arbitrary HTTP passthrough, service-call passthrough, shell tool or router
   administration endpoint. A Home Assistant token cannot be limited to some
   entities, so these fixed calls and the API's checks are the only limits on the

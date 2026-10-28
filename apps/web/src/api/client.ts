@@ -7,6 +7,9 @@ export type Schemas = {
   [Name in keyof components["schemas"]]: Readable<components["schemas"][Name]>;
 };
 
+// A light's or a switch's command record. The union has no schema name of its own.
+export type CommandRecord = Schemas["CommandsPage"]["commands"][number];
+
 // Resolve `fetch` at call time so tests can replace `globalThis.fetch`.
 // Node's `Request` (used under jsdom) rejects relative URLs, so requests are
 // built against the page origin, which is the same as a relative URL in a browser.

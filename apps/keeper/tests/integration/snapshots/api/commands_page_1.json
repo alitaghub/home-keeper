@@ -6,6 +6,7 @@
         "command": {
           "action": "off"
         },
+        "device_kind": "light",
         "entity_id": "bulb-a",
         "event_id": null,
         "id": "<uuid-1>",
@@ -19,6 +20,7 @@
         "command": {
           "action": "off"
         },
+        "device_kind": "light",
         "entity_id": "bulb-a",
         "event_id": null,
         "id": "<uuid-2>",

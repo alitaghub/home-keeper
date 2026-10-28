@@ -11,6 +11,7 @@
         "coverage_gap_ids": [
           "<uuid-1>"
         ],
+        "device_kind": "light",
         "entity_id": "bulb-a",
         "hs_color": null,
         "id": "<uuid-2>",

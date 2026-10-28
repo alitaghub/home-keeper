@@ -4,8 +4,8 @@ import { brightnessPercent, date } from "../format";
 import { lightName } from "./Catalog";
 
 type Baseline = NonNullable<Schemas["MonitoredEntity"]["baseline"]>;
-export type LightCommand = Schemas["CommandRequest"]["command"];
-export type LightAction = LightCommand["action"];
+export type DeviceCommand = Schemas["CommandRequest"]["command"];
+export type DeviceAction = DeviceCommand["action"];
 
 // A slider sends one command once it stops moving, not one per step.
 const DIMMER_SETTLE_MS = 400;
@@ -23,23 +23,29 @@ const freshnessLabels: Record<Schemas["MonitoredEntity"]["freshness"], string> =
   pending: "waiting",
 };
 
+/** A light's recorded brightness; plugs and switches have none. */
+const brightnessOf = (baseline: Baseline | null) =>
+  baseline?.device_kind === "light" ? (baseline.brightness ?? null) : null;
+
 function stateText(baseline: Baseline | null) {
   if (!baseline) return "Waiting for a first reading";
   if (baseline.availability !== "available") {
     return baseline.availability === "unavailable" ? "Unavailable" : "Unknown";
   }
   if (baseline.state === "on") {
-    return baseline.brightness == null ? "On" : `On · ${brightnessPercent(baseline.brightness)}%`;
+    const brightness = brightnessOf(baseline);
+    return brightness == null ? "On" : `On · ${brightnessPercent(brightness)}%`;
   }
   return baseline.state === "off" ? "Off" : "Unknown";
 }
 
 function Evidence({ baseline, confirmedAt }: { baseline: Baseline; confirmedAt: string | null }) {
   const gapIds = baseline.kind === "event" ? null : baseline.coverage_gap_ids;
+  const brightness = brightnessOf(baseline);
   return (
     <>
       <small>{kindLabels[baseline.kind]}</small>
-      {baseline.brightness != null && <small>{`Brightness ${baseline.brightness} / 255`}</small>}
+      {brightness != null && <small>{`Brightness ${brightness} / 255`}</small>}
       {gapIds?.length ? (
         <small>{`Related gap evidence: ${gapIds.join(", ")}. Changes during this gap have unknown timing.`}</small>
       ) : null}
@@ -52,7 +58,7 @@ function Evidence({ baseline, confirmedAt }: { baseline: Baseline; confirmedAt: 
 }
 
 // Shows the recorded state's opposite, never the requested one: the label changes
-// only once the reload after the command records the light's new state.
+// only once the reload after the command records the device's new state.
 function SwitchButton({
   name,
   action,
@@ -60,9 +66,9 @@ function SwitchButton({
   onClick,
 }: {
   name: string;
-  action: LightAction;
+  action: DeviceAction;
   sending: boolean;
-  onClick: (action: LightAction) => void;
+  onClick: (action: DeviceAction) => void;
 }) {
   const label = `Turn ${action}`;
   return (
@@ -105,7 +111,7 @@ function Dimmer({
   );
 }
 
-type Switch = (entity: Schemas["MonitoredEntity"], command: LightCommand) => void;
+type Switch = (entity: Schemas["MonitoredEntity"], command: DeviceCommand) => void;
 
 function Tile({
   entity,
@@ -120,13 +126,13 @@ function Tile({
 }) {
   const name = lightName(entity);
   const { baseline } = entity;
-  // Only an available light with a known on/off state can be switched.
+  // Only an available device with a known on/off state can be switched.
   const recorded = baseline?.availability === "available" ? baseline.state : null;
   const switchable = onSwitch !== null && (recorded === "on" || recorded === "off");
-  const percent =
-    recorded === "on" && baseline?.brightness != null
-      ? brightnessPercent(baseline.brightness)
-      : 100;
+  // Plugs and switches are on or off, with no brightness.
+  const dimmable = entity.device_kind !== "switch";
+  const brightness = brightnessOf(baseline);
+  const percent = recorded === "on" && brightness != null ? brightnessPercent(brightness) : 100;
   // The slider's value while it moves; null shows the recorded brightness.
   const [draft, setDraft] = useState<number | null>(null);
   const settle = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -162,19 +168,21 @@ function Tile({
               onSwitch(entity, { action });
             }}
           />
-          <Dimmer
-            name={name}
-            value={draft ?? percent}
-            disabled={busy}
-            onChange={(brightness_pct) => {
-              setDraft(brightness_pct);
-              clearTimeout(settle.current);
-              settle.current = setTimeout(() => {
-                setDraft(null);
-                onSwitch(entity, { action: "on", brightness_pct });
-              }, DIMMER_SETTLE_MS);
-            }}
-          />
+          {dimmable && (
+            <Dimmer
+              name={name}
+              value={draft ?? percent}
+              disabled={busy}
+              onChange={(brightness_pct) => {
+                setDraft(brightness_pct);
+                clearTimeout(settle.current);
+                settle.current = setTimeout(() => {
+                  setDraft(null);
+                  onSwitch(entity, { action: "on", brightness_pct });
+                }, DIMMER_SETTLE_MS);
+              }}
+            />
+          )}
         </div>
       )}
       <details className="details">
@@ -206,31 +214,51 @@ export function Monitored({
 }: {
   entities: Schemas["MonitoredEntity"][] | null;
   onStop: (id: string) => void;
-  /** Null while control is off: no light gets a switch. */
+  /** Null while control is off: no light, plug or switch gets a switch. */
   onSwitch: Switch | null;
   onChooseLights: () => void;
-  /** IDs of lights whose command is still running. */
+  /** IDs of devices whose command is still running. */
   sending: ReadonlySet<string>;
 }) {
+  const switches = entities?.filter((entity) => entity.device_kind === "switch") ?? [];
+  const lights = entities?.filter((entity) => entity.device_kind !== "switch") ?? [];
   return (
-    <div id="monitored" className="tiles">
-      {entities && !entities.length && (
-        <div className="empty">
-          <p>No lights monitored yet. Choose the lights Home Keeper should look after.</p>
-          <button type="button" className="primary" onClick={onChooseLights}>
-            Choose lights
-          </button>
-        </div>
+    <>
+      <div id="monitored" className="tiles">
+        {entities && !entities.length && (
+          <div className="empty">
+            <p>No lights monitored yet. Choose the lights Home Keeper should look after.</p>
+            <button type="button" className="primary" onClick={onChooseLights}>
+              Choose lights
+            </button>
+          </div>
+        )}
+        {lights.map((entity) => (
+          <Tile
+            key={entity.id}
+            entity={entity}
+            onStop={onStop}
+            onSwitch={onSwitch}
+            busy={sending.has(entity.id)}
+          />
+        ))}
+      </div>
+      {switches.length > 0 && (
+        <section className="switches" aria-labelledby="switches-heading">
+          <h2 id="switches-heading">Plugs and switches</h2>
+          <div id="monitored-switches" className="tiles">
+            {switches.map((entity) => (
+              <Tile
+                key={entity.id}
+                entity={entity}
+                onStop={onStop}
+                onSwitch={onSwitch}
+                busy={sending.has(entity.id)}
+              />
+            ))}
+          </div>
+        </section>
       )}
-      {entities?.map((entity) => (
-        <Tile
-          key={entity.id}
-          entity={entity}
-          onStop={onStop}
-          onSwitch={onSwitch}
-          busy={sending.has(entity.id)}
-        />
-      ))}
-    </div>
+    </>
   );
 }

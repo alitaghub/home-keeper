@@ -298,6 +298,12 @@ footer {
   grid-column: 1 / -1;
 }
 
+.switches {
+  display: grid;
+  gap: 14px;
+  margin-top: 28px;
+}
+
 .tile {
   display: flex;
   flex-direction: column;

@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/devices/{entity_id}/command": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Command Device */
+        post: operations["command_device_api_devices__entity_id__command_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/discovery/refresh": {
         parameters: {
             query?: never;
@@ -134,23 +151,6 @@ export interface paths {
         get: operations["health_api_health_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/lights/{entity_id}/command": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Command Light */
-        post: operations["command_light_api_lights__entity_id__command_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -229,98 +229,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** BaselineRecord */
-        BaselineRecord: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Brightness */
-            brightness?: number | null;
-            /** Collection Started At */
-            collection_started_at: string | null;
-            /** Color Mode */
-            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
-            /** Color Temp Kelvin */
-            color_temp_kelvin?: number | null;
-            /** Coverage Gap Ids */
-            coverage_gap_ids?: string[] | null;
-            /** Entity Id */
-            entity_id: string;
-            /** Hs Color */
-            hs_color?: [
-                number,
-                number
-            ] | null;
-            /** Id */
-            id: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            kind: "baseline" | "reconciliation" | "recovery";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Rgb Color */
-            rgb_color?: [
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbw Color */
-            rgbw_color?: [
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbww Color */
-            rgbww_color?: [
-                number,
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Transition Time */
-            transition_time?: "unknown" | null;
-            /** Xy Color */
-            xy_color?: [
-                number,
-                number
-            ] | null;
-        };
         /** BaselinesPage */
         BaselinesPage: {
             /** Baselines */
-            baselines: components["schemas"]["BaselineRecord"][];
+            baselines: (components["schemas"]["LightBaseline"] | components["schemas"]["SwitchBaseline"])[];
             /** Next Cursor */
             next_cursor: number | null;
         };
@@ -351,36 +263,13 @@ export interface components {
              */
             source_id: "demo" | "home_assistant";
         };
-        /** CommandRecord */
-        CommandRecord: {
-            /** Command */
-            command: components["schemas"]["LightOn"] | components["schemas"]["LightOff"];
-            /** Entity Id */
-            entity_id: string;
-            /** Event Id */
-            event_id: string | null;
-            /** Id */
-            id: string;
-            /**
-             * Outcome
-             * @enum {string}
-             */
-            outcome: "pending" | "observed" | "not_observed" | "refused" | "unreachable" | "interrupted";
-            /** Sender */
-            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
-            /**
-             * Sent At
-             * Format: date-time
-             */
-            sent_at: string;
-        };
         /** CommandRefusal */
         CommandRefusal: {
             /**
              * Code
              * @enum {string}
              */
-            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state" | "busy";
+            code: "control_off" | "not_monitored" | "state_unknown" | "unavailable" | "already_in_state" | "busy" | "not_supported";
             /** Message */
             message: string;
         };
@@ -401,7 +290,7 @@ export interface components {
         /** CommandsPage */
         CommandsPage: {
             /** Commands */
-            commands: components["schemas"]["CommandRecord"][];
+            commands: (components["schemas"]["LightCommandRecord"] | components["schemas"]["SwitchCommandRecord"])[];
             /** Next Cursor */
             next_cursor: string | null;
             /**
@@ -501,6 +390,8 @@ export interface components {
         Entity: {
             /** Device Id */
             device_id?: string | null;
+            /** Device Kind */
+            device_kind?: ("light" | "switch") | null;
             /** Device Name */
             device_name?: string | null;
             /** Id */
@@ -512,98 +403,13 @@ export interface components {
             /** Supported */
             supported: boolean;
         };
-        /**
-         * EventReading
-         * @description The latest state taken from a recorded change event.
-         */
-        EventReading: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Brightness */
-            brightness?: number | null;
-            /** Color Mode */
-            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
-            /** Color Temp Kelvin */
-            color_temp_kelvin?: number | null;
-            /** Entity Id */
-            entity_id: string;
-            /**
-             * Event Time
-             * Format: date-time
-             */
-            event_time: string;
-            /** Hs Color */
-            hs_color?: [
-                number,
-                number
-            ] | null;
-            /** Id */
-            id: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            kind: "event";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Rgb Color */
-            rgb_color?: [
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbw Color */
-            rgbw_color?: [
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbww Color */
-            rgbww_color?: [
-                number,
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Xy Color */
-            xy_color?: [
-                number,
-                number
-            ] | null;
-        };
         /** EventRecord */
         EventRecord: {
+            /**
+             * Device Kind
+             * @enum {string}
+             */
+            device_kind: "light" | "switch";
             /** Entity Id */
             entity_id: string;
             /**
@@ -613,8 +419,10 @@ export interface components {
             event_time: string;
             /** Id */
             id: string;
-            new: components["schemas"]["LightReading"] | null;
-            old: components["schemas"]["LightReading"] | null;
+            /** New */
+            new: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
+            /** Old */
+            old: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
             /**
              * Persisted At
              * Format: date-time
@@ -695,6 +503,219 @@ export interface components {
              */
             status: "failed" | "healthy" | "stale";
         };
+        /** LightBaseline */
+        LightBaseline: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /** Brightness */
+            brightness?: number | null;
+            /** Collection Started At */
+            collection_started_at: string | null;
+            /** Color Mode */
+            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
+            /** Color Temp Kelvin */
+            color_temp_kelvin?: number | null;
+            /** Coverage Gap Ids */
+            coverage_gap_ids?: string[] | null;
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "light";
+            /** Entity Id */
+            entity_id: string;
+            /** Hs Color */
+            hs_color?: [
+                number,
+                number
+            ] | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "baseline" | "reconciliation" | "recovery";
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /**
+             * Persisted At
+             * Format: date-time
+             */
+            persisted_at: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /** Rgb Color */
+            rgb_color?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Rgbw Color */
+            rgbw_color?: [
+                number,
+                number,
+                number,
+                number
+            ] | null;
+            /** Rgbww Color */
+            rgbww_color?: [
+                number,
+                number,
+                number,
+                number,
+                number
+            ] | null;
+            /** Source Entity Id */
+            source_entity_id: string | null;
+            /**
+             * Source Id
+             * @enum {string}
+             */
+            source_id: "demo" | "home_assistant";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off" | "unavailable" | "unknown";
+            /** Transition Time */
+            transition_time?: "unknown" | null;
+            /** Xy Color */
+            xy_color?: [
+                number,
+                number
+            ] | null;
+        };
+        /** LightCommandRecord */
+        LightCommandRecord: {
+            /** Command */
+            command: components["schemas"]["LightOn"] | components["schemas"]["LightOff"];
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "light";
+            /** Entity Id */
+            entity_id: string;
+            /** Event Id */
+            event_id: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "pending" | "observed" | "not_observed" | "refused" | "unreachable" | "interrupted";
+            /** Sender */
+            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
+            /**
+             * Sent At
+             * Format: date-time
+             */
+            sent_at: string;
+        };
+        /** LightEventReading */
+        LightEventReading: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /** Brightness */
+            brightness?: number | null;
+            /** Color Mode */
+            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
+            /** Color Temp Kelvin */
+            color_temp_kelvin?: number | null;
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "light";
+            /** Entity Id */
+            entity_id: string;
+            /**
+             * Event Time
+             * Format: date-time
+             */
+            event_time: string;
+            /** Hs Color */
+            hs_color?: [
+                number,
+                number
+            ] | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "event";
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /**
+             * Persisted At
+             * Format: date-time
+             */
+            persisted_at: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /** Rgb Color */
+            rgb_color?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Rgbw Color */
+            rgbw_color?: [
+                number,
+                number,
+                number,
+                number
+            ] | null;
+            /** Rgbww Color */
+            rgbww_color?: [
+                number,
+                number,
+                number,
+                number,
+                number
+            ] | null;
+            /** Source Entity Id */
+            source_entity_id: string | null;
+            /**
+             * Source Id
+             * @enum {string}
+             */
+            source_id: "demo" | "home_assistant";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off" | "unavailable" | "unknown";
+            /** Xy Color */
+            xy_color?: [
+                number,
+                number
+            ] | null;
+        };
         /** LightOff */
         LightOff: {
             /**
@@ -730,6 +751,11 @@ export interface components {
             color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
             /** Color Temp Kelvin */
             color_temp_kelvin?: number | null;
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "light";
             /** Hs Color */
             hs_color?: [
                 number,
@@ -779,6 +805,11 @@ export interface components {
             average_brightness: number | null;
             /** Days */
             days: components["schemas"]["DayUsage"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            device_kind: "light";
             /** Entity Id */
             entity_id: string;
             /** Hours */
@@ -800,11 +831,13 @@ export interface components {
         /** MonitoredEntity */
         MonitoredEntity: {
             /** Baseline */
-            baseline: (components["schemas"]["BaselineRecord"] | components["schemas"]["EventReading"]) | null;
+            baseline: ((components["schemas"]["LightBaseline"] | components["schemas"]["SwitchBaseline"]) | (components["schemas"]["LightEventReading"] | components["schemas"]["SwitchEventReading"])) | null;
             /** Confirmed At */
             confirmed_at: string | null;
             /** Device Id */
             device_id?: string | null;
+            /** Device Kind */
+            device_kind?: ("light" | "switch") | null;
             /** Device Name */
             device_name?: string | null;
             /**
@@ -838,6 +871,216 @@ export interface components {
             /** Revision */
             revision: number;
         };
+        /** SwitchBaseline */
+        SwitchBaseline: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /** Collection Started At */
+            collection_started_at: string | null;
+            /** Coverage Gap Ids */
+            coverage_gap_ids?: string[] | null;
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "switch";
+            /** Entity Id */
+            entity_id: string;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "baseline" | "reconciliation" | "recovery";
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /**
+             * Persisted At
+             * Format: date-time
+             */
+            persisted_at: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /** Source Entity Id */
+            source_entity_id: string | null;
+            /**
+             * Source Id
+             * @enum {string}
+             */
+            source_id: "demo" | "home_assistant";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off" | "unavailable" | "unknown";
+            /** Transition Time */
+            transition_time?: "unknown" | null;
+        };
+        /** SwitchCommandRecord */
+        SwitchCommandRecord: {
+            /** Command */
+            command: components["schemas"]["SwitchOn"] | components["schemas"]["SwitchOff"];
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "switch";
+            /** Entity Id */
+            entity_id: string;
+            /** Event Id */
+            event_id: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "pending" | "observed" | "not_observed" | "refused" | "unreachable" | "interrupted";
+            /** Sender */
+            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
+            /**
+             * Sent At
+             * Format: date-time
+             */
+            sent_at: string;
+        };
+        /** SwitchEventReading */
+        SwitchEventReading: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "switch";
+            /** Entity Id */
+            entity_id: string;
+            /**
+             * Event Time
+             * Format: date-time
+             */
+            event_time: string;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "event";
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /**
+             * Persisted At
+             * Format: date-time
+             */
+            persisted_at: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /** Source Entity Id */
+            source_entity_id: string | null;
+            /**
+             * Source Id
+             * @enum {string}
+             */
+            source_id: "demo" | "home_assistant";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off" | "unavailable" | "unknown";
+        };
+        /** SwitchOff */
+        SwitchOff: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "off";
+        };
+        /**
+         * SwitchOn
+         * @description A plug or switch has no brightness.
+         */
+        SwitchOn: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "on";
+        };
+        /**
+         * SwitchReading
+         * @description A plug or switch state as stored: no light attributes.
+         */
+        SwitchReading: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "switch";
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off" | "unavailable" | "unknown";
+        };
+        /**
+         * SwitchUsage
+         * @description A plug or switch: the same numbers as a light, with no brightness.
+         */
+        SwitchUsage: {
+            /** Days */
+            days: components["schemas"]["DayUsage"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            device_kind: "switch";
+            /** Entity Id */
+            entity_id: string;
+            /** Hours */
+            hours: number[];
+            /** On Seconds */
+            on_seconds: number;
+            /** Switch Ons */
+            switch_ons: number;
+            /** Unknown Intervals */
+            unknown_intervals: components["schemas"]["UnknownInterval"][];
+            /** Unknown Seconds */
+            unknown_seconds: number;
+        };
         /** TelegramSender */
         TelegramSender: {
             /** Id */
@@ -870,13 +1113,13 @@ export interface components {
         };
         /** UsageReport */
         UsageReport: {
+            /** Devices */
+            devices: (components["schemas"]["LightUsage"] | components["schemas"]["SwitchUsage"])[];
             /**
              * End
              * Format: date-time
              */
             end: string;
-            /** Lights */
-            lights: components["schemas"]["LightUsage"][];
             /**
              * Retained Since
              * Format: date-time
@@ -1050,6 +1293,50 @@ export interface operations {
             };
         };
     };
+    command_device_api_devices__entity_id__command_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LightCommandRecord"] | components["schemas"]["SwitchCommandRecord"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandRefused"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     refresh_discovery_api_discovery_refresh_post: {
         parameters: {
             query?: never;
@@ -1122,50 +1409,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthPending"] | components["schemas"]["HealthReport"];
-                };
-            };
-        };
-    };
-    command_light_api_lights__entity_id__command_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                entity_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CommandRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CommandRecord"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CommandRefused"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

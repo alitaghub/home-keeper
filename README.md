@@ -10,8 +10,8 @@ actually do on your machine, and shows honest gaps where collection stopped.
 
 An agent can only act well on a home it can see, so Home Keeper starts with
 seeing. By default it does not control devices. With the opt-in `control`
-profile, it can switch a light on or off, but only a light it monitors, so every
-command leaves evidence.
+profile, it can switch a light, plug or switch on or off, but only one it
+monitors, so every command leaves evidence.
 
 ![The Home Keeper Home tab with two monitored lamps, one on at 39%](docs/images/dashboard.png)
 
@@ -48,7 +48,7 @@ flowchart LR
     end
 
     ha -- "read-only collection" --> collector
-    controller -- "light.turn_on, light.turn_off" --> ha
+    controller -- "light.turn_on/off, switch.turn_on/off" --> ha
     telegram["Telegram<br/>private chats"] <-->|"outbound polling"| bot
     agent <-->|"model calls"| model["Your model provider"]
 
@@ -64,8 +64,8 @@ flowchart LR
 
 The dashboard works on its own. The optional [agent](docs/agent.md) uses the
 same API to answer questions in Agent Chat UI or [Telegram](docs/telegram.md).
-It asks for approval before changing which lights are monitored, and before it
-switches a light with the `control` profile. Neither the agent nor the collector
+It asks for approval before changing which devices are monitored, and before it
+switches a light, plug or switch with the `control` profile. Neither the agent nor the collector
 talks to Home Assistant to control a device; only the optional controller does,
 when the API asks it to. The SQLite database remains local.
 Questions and tool results go to your model provider; Telegram also receives
@@ -73,14 +73,17 @@ your questions and replies.
 
 1. The **collector** discovers devices in Home Assistant and lists them in the
    dashboard.
-2. You pick the lights to monitor. Nothing is recorded before you do.
-3. The collector takes a baseline snapshot of each selected light, then streams
-   its state changes: on/off, brightness, color, availability.
+2. You pick the lights, plugs and switches to monitor. Nothing is recorded
+   before you do.
+3. The collector takes a baseline snapshot of each selected device, then streams
+   its state changes: on/off and availability, plus brightness and color for a
+   light.
 4. The **API** validates every record and stores it in SQLite. If collection
    stops, it records a gap instead of guessing what happened.
 5. The **dashboard** has three tabs. **Home** shows each monitored light and
-   switches it. **History** lists commands, changes and gaps in plain words, with
-   the evidence behind **Details**. **Setup** chooses which lights to monitor.
+   switches it, then each monitored plug or switch under **Plugs and switches**.
+   **History** lists commands, changes and gaps in plain words, with the evidence
+   behind **Details**. **Setup** chooses which devices to monitor.
 
 [docs/architecture.md](docs/architecture.md) has the full picture, the selection
 flow and the terms the code uses.
@@ -89,11 +92,12 @@ flow and the terms the code uses.
 
 - **Read-only by default; control is opt-in.** The collector makes fixed reads
   and one event subscription. It has no code path that changes a device.
-  Switching lights needs the `control` profile, which adds a separate controller
-  with its own non-admin Home Assistant user. It knows two commands, light on
-  (with an optional brightness) and light off, and the API sends them only for
-  monitored lights. Without the profile, nothing can switch a light.
-- **Opt-in.** Discovery is not permission. Each light is recorded only after you
+  Switching devices needs the `control` profile, which adds a separate controller
+  with its own non-admin Home Assistant user. It knows four commands, light on
+  (with an optional brightness), light off, switch on and switch off, and the API
+  sends them only for monitored devices. Without the profile, nothing can switch
+  a device.
+- **Opt-in.** Discovery is not permission. Each device is recorded only after you
   select it, and a removal takes effect even if a slow read is still in flight.
 - **Evidence, not guesses.** Every event keeps three timestamps: when Home
   Assistant fired it, when the collector received it, and when the API stored it.
@@ -124,7 +128,10 @@ token for the collector. Then:
 
 2. Open Home Assistant at <http://127.0.0.1:8123>, log in, and add your devices
    under **Settings → Devices & services → Add integration**. Home Assistant owns
-   every device connection. Pairing a Hue Bridge needs one press of its button.
+   every device connection. Home Keeper can record any single light, smart plug
+   or switch that Home Assistant shows, from any brand. It does not record
+   groups or rooms.
+   Pairing a Hue Bridge, for example, needs one press of its button.
 3. Open the dashboard at <http://localhost:8000>. On the **Setup** tab, click
    **Refresh discovery**, then **Monitor** on a lamp.
 
@@ -160,7 +167,8 @@ docker compose --profile control up --build --wait
 
 The demo works too: add `--profile control` to its command. The dashboard then
 shows `CONTROL ON`, and each monitored light with a known on or off state gets a
-**Turn on** or **Turn off** button and a brightness slider. One click sends the
+**Turn on** or **Turn off** button and a brightness slider. Each monitored plug
+or switch gets the button only. One click sends the
 command. The dashboard
 then shows what Home Keeper observed: the change, no change within 5 seconds, a
 refusal from Home Assistant, or an unreachable controller. Every command is
@@ -173,7 +181,7 @@ dashboard, the API, the refusals and the limits.
 An optional agent answers questions about your lights in plain words: how long
 a lamp was on this week, at which hours, and whether collection was healthy.
 It uses only the recorded evidence and says how much time is unknown. With the
-`control` profile, it can also switch a monitored light after you approve it. Put your model settings in `.env` (see
+`control` profile, it can also switch a monitored light, plug or switch after you approve it. Put your model settings in `.env` (see
 [.env.example](.env.example)), then:
 
 ```sh
@@ -203,13 +211,13 @@ user IDs, setup, limits, and what goes through Telegram.
 
 ## Documentation
 
-| Guide                                            | Read it to                                                         |
-| ------------------------------------------------ | ------------------------------------------------------------------ |
-| [Architecture](docs/architecture.md)             | Understand the parts, the data flow, and the domain terms          |
-| [Demo](docs/demo.md)                             | See what the synthetic home does and how to reset it               |
-| [Home Assistant and Hue](docs/home-assistant.md) | Run the bundled Home Assistant or your own, and check a real light |
-| [Collection and gaps](docs/collection.md)        | Learn what each record proves, how gaps work, and retention        |
-| [Light control](docs/control.md)                 | Turn on the `control` profile and switch monitored lights          |
+| Guide                                     | Read it to                                                         |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| [Architecture](docs/architecture.md)      | Understand the parts, the data flow, and the domain terms          |
+| [Demo](docs/demo.md)                      | See what the synthetic home does and how to reset it               |
+| [Home Assistant](docs/home-assistant.md)  | Run the bundled Home Assistant or your own, and check a real light |
+| [Collection and gaps](docs/collection.md) | Learn what each record proves, how gaps work, and retention        |
+| [Light control](docs/control.md)          | Turn on the `control` profile and switch monitored lights and plugs |
 | [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
 | [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
 | [Telegram](docs/telegram.md)                   | Talk to the agent through a private family bot                     |

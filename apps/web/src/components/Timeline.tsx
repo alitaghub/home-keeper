@@ -2,6 +2,7 @@ import type { Schemas } from "../api/client";
 import { brightnessPercent, date, time } from "../format";
 
 type LightReading = Schemas["LightReading"];
+type Reading = Schemas["EventRecord"]["new"];
 
 const changeFields = [
   "state",
@@ -31,6 +32,12 @@ const sourceTimeFields = ["last_changed", "last_updated", "last_reported"] as co
 type Field = (typeof changeFields)[number];
 type Value = LightReading[Field];
 
+/** A field of an event's state. A plug or switch has no light attributes to show. */
+function fieldValue(reading: Reading | undefined, field: Field): Value {
+  if (reading?.device_kind === "light") return reading[field];
+  return field === "state" || field === "availability" ? reading?.[field] : undefined;
+}
+
 const valueText = (value: Value) =>
   value == null ? "Not captured" : Array.isArray(value) ? value.join(", ") : String(value);
 
@@ -39,15 +46,16 @@ const label = (field: string) => field.replaceAll("_", " ");
 function changedFields(event: Schemas["EventRecord"]): Field[] {
   return changeFields.filter(
     (field) =>
-      JSON.stringify(event.old?.[field] ?? null) !== JSON.stringify(event.new?.[field] ?? null),
+      JSON.stringify(fieldValue(event.old, field) ?? null) !==
+      JSON.stringify(fieldValue(event.new, field) ?? null),
   );
 }
 
 /** One plain sentence for the change, such as "turned on at 40%". */
 function summary(event: Schemas["EventRecord"], fields: Field[]) {
   const reading = event.new;
-  const percent =
-    reading?.brightness == null ? "" : ` at ${brightnessPercent(reading.brightness)}%`;
+  const brightness = fieldValue(reading, "brightness");
+  const percent = typeof brightness === "number" ? ` at ${brightnessPercent(brightness)}%` : "";
   if (fields.includes("availability") && reading?.availability !== "available") {
     return reading?.availability === "unavailable" ? "became unavailable" : "state unknown";
   }
@@ -55,8 +63,8 @@ function summary(event: Schemas["EventRecord"], fields: Field[]) {
     return reading.state === "on" ? `turned on${percent}` : `turned ${reading.state}`;
   }
   if (fields.includes("availability")) return "became available";
-  if (fields.includes("brightness") && reading?.brightness != null) {
-    return `brightness set to ${brightnessPercent(reading.brightness)}%`;
+  if (fields.includes("brightness") && typeof brightness === "number") {
+    return `brightness set to ${brightnessPercent(brightness)}%`;
   }
   if (fields.some((field) => colorFields.has(field))) return "color changed";
   return "no changed field captured";
@@ -67,7 +75,7 @@ export function Timeline({
   names,
 }: {
   events: Schemas["EventRecord"][] | null;
-  /** Light names by entity ID; an unknown light shows its Home Assistant entity ID. */
+  /** Device names by entity ID; an unknown device shows its Home Assistant entity ID. */
   names: ReadonlyMap<string, string>;
 }) {
   return (
@@ -96,7 +104,7 @@ export function Timeline({
                 {fields.length ? (
                   fields.map((field) => (
                     <li key={field}>
-                      {`${label(field)}: ${valueText(event.old?.[field])} → ${valueText(event.new?.[field])}`}
+                      {`${label(field)}: ${valueText(fieldValue(event.old, field))} → ${valueText(fieldValue(event.new, field))}`}
                     </li>
                   ))
                 ) : (

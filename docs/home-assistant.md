@@ -25,7 +25,7 @@ This starts four services:
 - `collector`: the live collector that reads Home Assistant.
 
 With `--profile control`, a fifth service, `controller`, switches monitored
-lights. See [Switch lights](#switch-lights).
+lights, plugs and switches. See [Switch lights](#switch-lights).
 
 ### What setup does
 
@@ -95,8 +95,8 @@ times out. Check it with `docker compose logs ha-setup`.
 4. Open <http://127.0.0.1:8000> and click **Refresh discovery**.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
-supports. Home Keeper records only individual Hue lights today; other
-entities appear under **Show other entities**. When no supported device exists
+supports. Home Keeper records any single light, smart plug or switch from any
+brand. Groups, rooms and other entities appear under **Show other entities**. When no supported device exists
 yet, the dashboard links to the Home Assistant integrations page.
 
 ### Limits
@@ -212,15 +212,41 @@ Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discove
 shows supported lamps by default, using their device names. Room groups, scenes,
 sensors and other entities stay in the collapsed **Show other entities** section
 on the **Setup** tab.
-Discovery retains minimal device/entity metadata exposed by Home Assistant. Only enabled
-individual Hue V2 lights with recognized registry metadata can be monitored.
-Hue groups, other integrations, disabled entities and unknown metadata remain
-unsupported. This classification uses the released Home Assistant
-[2026.10.1 individual-light contract](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/components/hue/v2/light.py)
-and [group-light contract](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/components/hue/v2/group.py).
-Changed or legacy metadata is rejected rather than guessed.
+Discovery retains minimal device/entity metadata exposed by Home Assistant. Any
+enabled `light.*` entity that is not a group can be monitored, whatever
+integration provides it. Smart plugs and switches are `switch.*` entities. One
+can be monitored when it is enabled, belongs to a device, has no entity category
+and is not a group. Integrations also expose settings as switches, such as a
+plug's child lock or LED indicator. Home Assistant gives those an entity
+category of `config` or `diagnostic`, so they are left out.
 
-Select a light to record its first state. Add more devices to Home Assistant and
+Discovery reads the state of each new light or switch candidate once, to detect
+groups, and keeps only that answer. It never reads the states of the whole home.
+A light or switch is a group when it comes from the
+[`group` integration](https://www.home-assistant.io/integrations/group/), when its
+state lists member entities in an `entity_id` attribute, or when an attribute such
+as `is_hue_group` or `is_deconz_group` is true. A Hue room is one example. The
+catalog marks each light and switch with its `device_kind`: `light` or `switch`.
+The dashboard gives the reason for each entity it cannot record:
+
+- **Groups and rooms are not recorded**: a group or room light or switch.
+- **Disabled in Home Assistant**: the entity is disabled there.
+- **Settings and diagnostic switches are not recorded**: a switch with an
+  entity category.
+- **Switches without a device are not recorded**: a switch that belongs to no
+  device, such as a helper.
+- **Only lights, plugs and switches are supported**: any other entity, such as a
+  sensor.
+
+A plug or switch records its on/off state and availability only. Home Keeper
+keeps no light attributes for it. With the `control` profile it can switch it
+on or off.
+
+A candidate with no state yet is not a group. If a candidate's state read fails
+or returns malformed data, discovery fails rather than guessing, and the next
+pass reads it again.
+
+Select a light, plug or switch to record its first state. Add more devices to Home Assistant and
 click **Refresh discovery** to find them without changing configuration or
 restarting. Stable entity registry identity keeps selection and history across
 an entity name change. A new registry entry reusing an old entity ID does not
@@ -236,7 +262,7 @@ the same localhost port.
 
 ## Check it with a real light
 
-Test one individual Hue light end to end:
+Test one single light end to end. The steps use a Hue light as the example:
 
 1. Confirm the bulb appears and responds in Home Assistant.
 2. Open Home Keeper, check the **HOME ASSISTANT** label, and select the bulb.

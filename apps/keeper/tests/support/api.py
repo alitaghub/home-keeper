@@ -39,7 +39,7 @@ CATALOG_ENTITIES: list[Payload] = [
         "device_name": None,
         "name": "Living room",
         "supported": False,
-        "reason": "Room aggregate",
+        "reason": "Groups and rooms are not recorded",
     },
     {
         "id": "plug",
@@ -47,7 +47,7 @@ CATALOG_ENTITIES: list[Payload] = [
         "device_name": "Plug",
         "name": "Plug state",
         "supported": False,
-        "reason": "Not an individual Hue light",
+        "reason": "Only lights, plugs and switches are supported",
     },
 ]
 CATALOG: Payload = {"source_id": "demo", "entities": CATALOG_ENTITIES}

@@ -56,7 +56,7 @@ class SettingsError(ValueError):
 class Settings(BaseModel):
     bot_token: SecretStr
     allowed_user_ids: frozenset[int] = Field(min_length=1)
-    # Who may approve light commands; empty means nobody may switch lights from Telegram.
+    # Who may approve device commands; empty means nobody may switch devices from Telegram.
     control_user_ids: frozenset[int] = frozenset()
     agent_url: str = "http://agent:2026"
     state_path: str = "/state/telegram.sqlite3"
@@ -191,31 +191,32 @@ class TurnOnArguments(EntityArguments):
     brightness_percent: int | None = None
 
 
+# Only tools the agent has now, so an approval can never run a tool it no longer offers.
 class EntityAction(Wire):
-    name: Literal["monitor_light", "stop_monitoring", "turn_off_light"]
+    name: Literal["monitor", "stop_monitoring", "turn_off"]
     args: EntityArguments
     description: str = ""
 
 
 class TurnOnAction(Wire):
-    name: Literal["turn_on_light"]
+    name: Literal["turn_on"]
     args: TurnOnArguments
     description: str = ""
 
 
 type Action = Annotated[EntityAction | TurnOnAction, Field(discriminator="name")]
-LIGHT_ACTIONS = frozenset({"turn_on_light", "turn_off_light"})
+COMMAND_ACTIONS = frozenset({"turn_on", "turn_off"})
 
 
 def proposal_text(action: Action) -> str:
     match action.name:
-        case "monitor_light":
+        case "monitor":
             return f"Start monitoring {action.args.entity_id}?"
         case "stop_monitoring":
             return f"Stop monitoring {action.args.entity_id}?"
-        case "turn_off_light":
+        case "turn_off":
             return f"Turn off {action.args.entity_id}"
-        case "turn_on_light":
+        case "turn_on":
             brightness = action.args.brightness_percent
             suffix = "" if brightness is None else f" at {brightness}%"
             return f"Turn on {action.args.entity_id}{suffix}"
@@ -321,8 +322,8 @@ class PollError(TransportError):
 
 
 HELP = (
-    "Ask a text question about your home. Monitoring and light changes need Approve or Reject. "
-    "Only people on the control list can approve light changes. "
+    "Ask a text question about your home. Monitoring and switching lights, plugs and switches "
+    "need Approve or Reject. Only people on the control list can approve switching. "
     "Use /new to start a fresh conversation; old history is kept."
 )
 UNCERTAIN = (
@@ -683,7 +684,7 @@ class TelegramBot:
         conversation = SubmittingConversation(thread_id=conversation.thread_id)
         # Persist intent before either a new run or an approval can reach the agent.
         self._save(user.id, conversation)
-        # The agent's tools read who asks and whether they may switch lights from here.
+        # The agent's tools read who asks and whether they may switch devices from here.
         configurable: dict[str, JsonValue] = {
             "sender": {"kind": "telegram", "id": user.id, "name": user.display_name},
             "may_control": user.id in self.settings.control_user_ids,
@@ -768,7 +769,7 @@ class TelegramBot:
         pending = conversation.pending
         refused = (
             decision == "approve"
-            and pending.approval.action_requests[index].name in LIGHT_ACTIONS
+            and pending.approval.action_requests[index].name in COMMAND_ACTIONS
             and callback.sender.id not in self.settings.control_user_ids
         )
         if refused:
