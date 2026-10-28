@@ -137,12 +137,6 @@ class Store:
         )
 
     @staticmethod
-    def selected_kind(db: sqlite3.Connection, entity_id: str) -> DeviceKind | None:
-        """The kind a selected device had in the catalog when it was selected."""
-        row = db.execute("SELECT device_kind FROM selection WHERE id=?", (entity_id,)).fetchone()
-        return stored_kind.validate_python(row[0]) if row else None
-
-    @staticmethod
     def entities(db: sqlite3.Connection, entity_id: str | None = None) -> list[Entity]:
         rows = db.execute(
             "SELECT data FROM catalog WHERE ? IS NULL OR id = ? ORDER BY id",

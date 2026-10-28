@@ -48,15 +48,23 @@ class Home:
         assert not isinstance(result, UnknownEntity | UnsupportedEntity), result
         return result.revision
 
-    def snapshot(self, entity_id: str, kind: str = "light", state: str = "off") -> None:
-        """Record a snapshot as the collector would, received now."""
+    def snapshot(
+        self,
+        entity_id: str,
+        kind: str = "light",
+        state: str = "off",
+        *,
+        received_at: datetime | None = None,
+    ) -> None:
+        """Record a snapshot as the collector would, received at `received_at` (default: now)
+        and stored now."""
         payload = observation_of.validate_python(
             {
                 "entity_id": entity_id,
                 "source_entity_id": f"{kind}.{entity_id.replace('-', '_')}",
                 "selection_revision": self.monitoring.selection().revision,
                 "source_id": "demo",
-                "received_at": self.clock.now,
+                "received_at": received_at or self.clock.now,
                 "last_changed": "2020-01-01T00:00:00Z",
                 "last_updated": "2020-01-01T00:00:00Z",
                 "availability": "available",
@@ -148,6 +156,15 @@ def test_only_the_current_revision_of_a_monitored_supported_device_is_admitted(
         assert not Monitoring.admits(db, "bulb-a", revision)
 
 
+def test_a_monitored_device_that_discovery_marks_unsupported_is_not_admitted(home: Home) -> None:
+    revision = home.select("bulb-a")
+    unsupported = Entity(id="bulb-a", name="Desk", supported=False, reason="Now a group")
+    with home.store.transaction() as db:
+        db.execute("UPDATE catalog SET data=? WHERE id='bulb-a'", (unsupported.model_dump_json(),))
+    with home.store.transaction("DEFERRED") as db:
+        assert Monitoring.admits(db, "bulb-a", revision) is False
+
+
 # Device kind
 
 
@@ -215,6 +232,17 @@ def test_a_confirmation_stays_fresh_for_two_reconciliation_intervals(
     home.snapshot("bulb-a")
     home.clock.now = NOW + age
     assert home.monitored()["bulb-a"].freshness == freshness
+
+
+def test_a_confirmation_stored_after_now_is_stale_even_when_received_before(
+    home: Home,
+) -> None:
+    home.select("bulb-a")
+    # Received at +5 s but stored at +10 s; the clock then reads +7 s.
+    home.clock.now = NOW + timedelta(seconds=10)
+    home.snapshot("bulb-a", received_at=NOW + timedelta(seconds=5))
+    home.clock.now = NOW + timedelta(seconds=7)
+    assert home.monitored()["bulb-a"].freshness == "stale"
 
 
 def test_a_confirmation_from_the_future_is_stale(home: Home) -> None:

@@ -19,7 +19,7 @@ from home_keeper.models import (
     MonitoredEntity,
     SelectionSnapshot,
 )
-from home_keeper.store import Store
+from home_keeper.store import Store, stored_kind
 
 
 @dataclass(frozen=True)
@@ -133,17 +133,20 @@ class Monitoring:
     def device(db: sqlite3.Connection, entity_id: str) -> Device:
         entity = Store.entity(db, entity_id)
         reading = Store.current(db, entity_id)
+        selected = db.execute(
+            "SELECT device_kind FROM selection WHERE id=?", (entity_id,)
+        ).fetchone()
         # Discovery names the kind of every supported device; a catalog entry without one
         # falls back to the newest reading, then to the kind the device was selected as.
         kind = (
             (entity.device_kind if entity else None)
             or (reading.device_kind if reading else None)
-            or Store.selected_kind(db, entity_id)
+            or (stored_kind.validate_python(selected[0]) if selected else None)
         )
         return Device(
             entity_id=entity_id,
             entity=entity,
-            monitored=entity_id in Store.selection(db).entity_ids,
+            monitored=selected is not None,
             kind=kind,
             reading=reading,
         )

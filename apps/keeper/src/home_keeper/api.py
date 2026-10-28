@@ -511,8 +511,8 @@ def create_app(
             selected = store.selection(db).entity_ids
             # Unselected IDs are left out rather than reported as missing.
             devices = sorted(set(entity_id or selected) & set(selected))
-            kinds: dict[str, DeviceKind] = {
-                device: Monitoring.device(db, device).kind or "light" for device in devices
+            stored_kinds: dict[str, DeviceKind | None] = {
+                device: Monitoring.device(db, device).kind for device in devices
             }
             scope = ",".join("?" * len(devices))
             # Evidence inside the window, plus each device's latest evidence before it.
@@ -566,6 +566,14 @@ def create_app(
         for entity, event in changes:
             if entity in events:
                 events[entity].append(event)
+
+        def kind_of(device: str) -> DeviceKind:
+            # A device no stored kind names is still known by the readings in the window.
+            if stored := stored_kinds[device]:
+                return stored
+            evidence = [*readings[device], *events[device]]
+            return "switch" if any(value.device_kind == "switch" for value in evidence) else "light"
+
         gaps = [CoverageGap.model_validate_json(row[0]) for row in gap_rows]
         retained_since = datetime.fromisoformat(cutoff)
         return UsageReport(
@@ -576,7 +584,7 @@ def create_app(
             devices=[
                 device_usage(
                     device,
-                    kinds[device],
+                    kind_of(device),
                     start=start,
                     end=end,
                     now=now().astimezone(UTC),

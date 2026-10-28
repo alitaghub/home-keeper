@@ -314,8 +314,9 @@ class Commands:
             reading = device.reading
             if reading is None or reading.state not in ("on", "off", "unavailable"):
                 return Refusal("state_unknown", f"The {noun}'s current state is unknown")
+            # The reading's kind decides what can be forwarded, so it decides this check too.
             if (
-                device.kind == "switch"
+                reading.device_kind == "switch"
                 and not isinstance(command, LightOff)
                 and command.brightness_pct is not None
             ):

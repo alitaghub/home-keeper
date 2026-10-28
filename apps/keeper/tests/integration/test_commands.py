@@ -476,6 +476,27 @@ async def test_refusals_come_in_a_fixed_order_and_nothing_is_sent_or_stored(
     assert house.audit() == []
 
 
+async def test_a_reselected_device_refuses_commands_until_a_new_reading_arrives(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT, IS_OFF)
+    house.select(LIGHT, selected=False)
+    house.select(LIGHT)
+    assert await switch(house, LIGHT, ON) == refused("state_unknown")
+    assert house.controller.sent == []
+
+
+async def test_brightness_is_refused_for_a_switch_reading_even_when_discovery_says_light(
+    tmp_path: Path,
+) -> None:
+    house = home(tmp_path)
+    # Discovery lists bulb-a as a light; Home Assistant now reports it as a switch.
+    house.snapshot(Device("bulb-a", "switch.desk", "switch", "device"), IS_OFF)
+    assert house.commands.heartbeat(NOW)
+    assert await switch(house, LIGHT, on(30)) == refused("not_supported")
+    assert house.controller.sent == []
+
+
 async def test_reading_from_outside_the_device_domain_makes_the_entity_unsupported(
     tmp_path: Path,
 ) -> None:
