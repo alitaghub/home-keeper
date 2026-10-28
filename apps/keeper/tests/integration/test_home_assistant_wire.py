@@ -5,8 +5,10 @@ import json
 import shutil
 import ssl
 import subprocess
+import time
+from datetime import UTC, datetime
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from typing import Any
 
 import pytest
@@ -20,6 +22,7 @@ from websockets.sync.server import ServerConnection, serve
 from home_keeper.api import create_app
 from home_keeper.home_assistant import ConnectorError, HomeAssistantConnector
 from home_keeper.live import CollectionSession
+from home_keeper.models import LightState
 
 
 def test_actual_websocket_and_selected_rest(tmp_path: Path) -> None:
@@ -213,7 +216,8 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                 assert not state_reads
                 catalog = api.get("/api/catalog").json()
                 assert len(catalog["entities"]) == 3
-                assert sum(entity["supported"] for entity in catalog["entities"]) == 1
+                # The bulb and the plug on device1; the room is a group.
+                assert sum(entity["supported"] for entity in catalog["entities"]) == 2
                 assert api.put(
                     "/api/selection/ha:registry1",
                     json={"selected": True},
@@ -321,7 +325,7 @@ def test_actual_selected_subscription_and_revoked_revision(tmp_path: Path) -> No
             received = stream.receive(1)
             assert received is not None
             assert received.entity_id == "ha:registry1"
-            assert received.new is not None
+            assert isinstance(received.new, LightState)
             assert received.new.brightness == 180
             assert "PRIVATE_SENTINEL" not in received.model_dump_json()
             assert "wire-stream-secret" not in received.model_dump_json()
@@ -340,3 +344,113 @@ def test_actual_selected_subscription_and_revoked_revision(tmp_path: Path) -> No
         "get_states",
         "subscribe_events",
     ]
+
+
+def test_selected_switch_records_a_baseline_and_a_change_without_light_attributes(
+    tmp_path: Path,
+) -> None:
+    token = tmp_path / "ha-token"
+    token.write_text("ha-token-sentinel")
+    plug = {"platform": "zha", "translation_key": None}
+    entities = [registry_entry("plug", "switch.plug", **plug)]
+    # Set once the baseline is stored, so the change is newer than the snapshot.
+    recorded = Event()
+
+    def process_request(_connection: ServerConnection, request: Request) -> Response | None:
+        if request.path.startswith("/api/states/"):
+            # A plug reporting light attributes: they must never be stored.
+            payload = {
+                "entity_id": "switch.plug",
+                "state": "on",
+                "last_changed": "2026-10-13T09:00:00Z",
+                "attributes": {"brightness": 200, "color_mode": "brightness"},
+            }
+            return Response(
+                200,
+                "OK",
+                Headers({"Content-Type": "application/json"}),
+                json.dumps(payload).encode(),
+            )
+        return None
+
+    def handler(socket: ServerConnection) -> None:
+        socket.send(json.dumps({"type": "auth_required"}))
+        socket.recv(timeout=5)
+        socket.send(json.dumps({"type": "auth_ok"}))
+        command = json.loads(socket.recv(timeout=5))
+        if command["type"] == "subscribe_events":
+            socket.send(json.dumps({"id": 1, "type": "result", "success": True}))
+            assert recorded.wait(5)
+            # state_changed carries brightness on both states; the plug turns off.
+            now = datetime.now(UTC).isoformat()
+            change = state_changed("switch.plug", state="off", last_updated=now)
+            change["event"]["time_fired"] = now
+            socket.send(json.dumps(change))
+            with contextlib.suppress(ConnectionClosed, TimeoutError):
+                socket.recv(timeout=10)
+            return
+        results: tuple[list[Frame], ...] = (
+            entities,
+            [{"id": "device1", "name": "Smart plug"}],
+            [light_state("switch.plug", brightness=200)],
+        )
+        for index, result in enumerate(results):
+            socket.send(
+                json.dumps(
+                    {"id": command["id"], "type": "result", "success": True, "result": result}
+                )
+            )
+            if index < len(results) - 1:
+                command = json.loads(socket.recv(timeout=5))
+
+    app = create_app(
+        db_path=tmp_path / "live.sqlite",
+        service_token="internal-token-sentinel",
+        source_id="home_assistant",
+    )
+    with serve(handler, "127.0.0.1", 0, process_request=process_request) as server:
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        connector = HomeAssistantConnector(
+            f"http://127.0.0.1:{server.socket.getsockname()[1]}", token
+        )
+        session: CollectionSession | None = None
+        try:
+            with TestClient(
+                app, headers={"Authorization": "Bearer internal-token-sentinel"}
+            ) as api:
+                session = CollectionSession(api, connector)
+                session.reconcile()
+                [entry] = api.get("/api/catalog").json()["entities"]
+                assert (entry["supported"], entry.get("device_kind")) == (True, "switch")
+                assert api.put(
+                    "/api/selection/ha:plug",
+                    json={"selected": True},
+                    headers={"X-Home-Keeper": "1"},
+                ).is_success
+                assert session.reconcile()
+                recorded.set()
+                deadline = time.monotonic() + 5
+                while not api.get("/api/events").json()["events"] and time.monotonic() < deadline:
+                    session.receive(0.05)
+
+                [baseline] = api.get("/api/baselines?entity_id=ha:plug").json()["baselines"]
+                assert baseline["device_kind"] == "switch"
+                assert baseline["state"] == "on"
+                [event] = api.get("/api/events").json()["events"]
+                assert event["device_kind"] == "switch"
+                assert (event["old"]["state"], event["new"]["state"]) == ("on", "off")
+                [monitored] = api.get("/api/monitored").json()["entities"]
+                assert monitored["device_kind"] == "switch"
+                assert monitored["baseline"]["device_kind"] == "switch"
+                assert monitored["baseline"]["state"] == "off"
+                light_fields = {"brightness", "color_mode"}
+                for reading in (baseline, event["old"], event["new"], monitored["baseline"]):
+                    assert not light_fields & reading.keys(), reading
+        finally:
+            if session is not None:
+                session.close()
+            connector.close()
+            server.shutdown()
+            thread.join(timeout=5)
+        assert not thread.is_alive()

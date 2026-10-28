@@ -19,8 +19,13 @@ class KeeperError(Exception):
     """The keeper could not be reached or did not answer as expected."""
 
 
+# What a device is; None for a domain the keeper does not record, such as a sensor.
+DeviceKind = Literal["light", "switch"] | None
+
+
 class Reading(Wire):
     state: str
+    # Plugs and switches have no brightness.
     brightness: int | None = None
 
 
@@ -28,6 +33,7 @@ class MonitoredLight(Wire):
     id: str
     name: str
     device_name: str | None = None
+    device_kind: DeviceKind = None
     supported: bool
     reason: str | None = None
     baseline: Reading | None
@@ -110,6 +116,7 @@ class Device(Wire):
     id: str
     name: str
     device_name: str | None = None
+    device_kind: DeviceKind = None
     supported: bool
     reason: str | None = None
 

@@ -11,6 +11,7 @@ from home_keeper.home_assistant import (
     HomeAssistantConnector,
     SelectedSubscription,
 )
+from home_keeper.models import LightState
 
 
 def test_subscription_is_selected_only_and_projects_brightness_changes(
@@ -49,8 +50,8 @@ def test_subscription_is_selected_only_and_projects_brightness_changes(
         change = stream.receive(1)
         assert change is not None
         assert change.entity_id == "ha:registry1"
-        assert change.old is not None
-        assert change.new is not None
+        assert isinstance(change.old, LightState)
+        assert isinstance(change.new, LightState)
         assert change.old.brightness == 120
         assert change.new.brightness == 180
         assert "PRIVATE_SENTINEL" not in change.model_dump_json()
@@ -90,7 +91,7 @@ def test_malformed_selected_event_is_safe_and_unselected_payload_is_dropped(
         assert "stream-error-secret" not in str(error.value)
         change = stream.receive(1)
         assert change is not None
-        assert change.new is not None
+        assert isinstance(change.new, LightState)
         assert change.new.brightness == 180
         connector.approve({"ha:registry1": 2})
         assert stream.receive(1) is None

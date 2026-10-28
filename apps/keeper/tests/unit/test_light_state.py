@@ -1,10 +1,11 @@
 """Normalizing raw Home Assistant light state into the keeper's light model."""
 
-from home_keeper.events import light_state
+from home_keeper.events import device_state
+from home_keeper.models import LightState
 
 
 def test_raw_fields_never_leave_normalizer() -> None:
-    state = light_state(
+    state = device_state(
         {
             "entity_id": "light.bulb",
             "state": "on",
@@ -21,7 +22,7 @@ def test_raw_fields_never_leave_normalizer() -> None:
         },
         "light.bulb",
     )
-    assert state is not None
+    assert isinstance(state, LightState)
     assert state.brightness == 42
     assert state.hs_color == (10, 20)
     encoded = state.model_dump_json()

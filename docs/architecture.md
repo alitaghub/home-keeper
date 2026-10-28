@@ -82,7 +82,7 @@ Python code lives in `apps/keeper/src/home_keeper`.
   rejects data from a collector that works from an older revision, so a slow
   read cannot bring back a light you just removed.
 - **The collector is read-only toward the home.** The connector makes fixed
-  registry reads, one state read at discovery to detect light groups,
+  registry reads, one state read at discovery to detect light and switch groups,
   selected-state reads and one filtered event subscription. It
   has no service calls and no device writes. The collector image contains no
   controller code.
@@ -130,10 +130,11 @@ streams events as Home Assistant sends them.
 | ----------- | --------------------------------------------------------------------------------------------- |
 | Source      | Where data comes from: `demo` or `home_assistant`. One database holds one source.             |
 | Catalog     | The devices and entities the collector discovered, with whether each one can be monitored.   |
-| Selection   | The lights you chose to monitor, plus a revision number the API owns.                        |
-| Baseline    | A snapshot of a light's state. Taken at selection, during polling, and after recovery.       |
+| Device kind | What a recorded entity is, from its Home Assistant domain: `light` or `switch` (plugs too). Every reading carries it; readings stored before plugs read as `light`. Separate from a record's `kind` (baseline, event, ...). |
+| Selection   | The lights, plugs and switches you chose to monitor, plus a revision number the API owns.    |
+| Baseline    | A snapshot of a device's state. Taken at selection, during polling, and after recovery.      |
 | Event       | One observed change, with old and new values and three timestamps (fired, received, saved).  |
-| Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the light's current state. |
+| Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the device's current state. |
 | Gap         | A period when collection was interrupted. Open until a recovery snapshot closes it.          |
 | Freshness   | How recently Home Assistant answered. It says nothing about whether the bulb itself answered. |
 | Command     | A request to switch a monitored light, with its sender and the outcome the API observed.     |

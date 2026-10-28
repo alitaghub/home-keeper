@@ -15,10 +15,12 @@ port when 8000 is taken, for example
 ## What the demo shows
 
 The collector discovers five synthetic entities: two single lights, a room
-group, a plug, and an ungrouped sensor. Only single lights can be selected. Click **Monitor** to establish a baseline. Nothing is monitored
+group, a smart plug, and an ungrouped sensor. The two lights and the plug can be
+selected. Click **Monitor** to establish a baseline. Nothing is monitored
 automatically. After selection, the demo emits a repeatable sequence of on/off,
 brightness, color-temperature, XY color, unavailability and recovery changes,
-one step per collection pass. The timeline shows only events recorded after
+one step per collection pass. The plug follows the same steps with on, off and
+unavailable only, and shows under **Plugs and switches** on the Home tab. The timeline shows only events recorded after
 selection. Restarting the collector starts the sequence again; it does not erase
 retained history.
 

@@ -39,9 +39,9 @@ from home_keeper.models import (
     Coverage,
     CoverageGap,
     CoverageReport,
+    DeviceObservation,
     DiscoveryRefresh,
     Entity,
-    EventReading,
     EventRecord,
     EventsPage,
     Freshness,
@@ -50,18 +50,20 @@ from home_keeper.models import (
     HealthReport,
     HealthStatus,
     Identity,
+    LightBaseline,
     LightCommand,
+    LightEventReading,
     LightReading,
     MonitoredEntities,
     MonitoredEntity,
-    Observation,
+    Reading,
     SelectionChange,
     SelectionSnapshot,
     UsageReport,
     to_utc,
 )
 from home_keeper.recorder import Recorder, Rejected, update_current
-from home_keeper.store import Store, current_reading
+from home_keeper.store import Store, baseline_record, current_reading
 from home_keeper.usage import light_usage
 from home_keeper_light_command import LightOff, matches_brightness
 
@@ -90,9 +92,9 @@ class Observed:
     event_id: str | None
 
 
-def shows(reading: LightReading | None, command: LightCommand) -> bool:
-    """Whether a reading shows the state a command asks for."""
-    if reading is None:
+def shows(reading: Reading | None, command: LightCommand) -> bool:
+    """Whether a light reading shows the state a command asks for."""
+    if not isinstance(reading, LightReading):
         return False
     if isinstance(command, LightOff):
         return reading.state == "off"
@@ -125,7 +127,7 @@ def find_observation(
         "SELECT data FROM baselines WHERE entity_id=? AND persisted_at>? ORDER BY persisted_at",
         (entity_id, after),
     ):
-        baseline = BaselineRecord.model_validate_json(row[0])
+        baseline = baseline_record.validate_json(row[0])
         if received_after(baseline, sent_at) and shows(baseline, command):
             return Observed(None)
     return None
@@ -185,7 +187,7 @@ def create_app(
                 "SELECT 1 FROM current_state WHERE entity_id=?", (row["entity_id"],)
             ).fetchone():
                 continue
-            value = BaselineRecord.model_validate_json(row["data"])
+            value = baseline_record.validate_json(row["data"])
             source_time = value.last_updated or value.received_at
             update_current(db, row["entity_id"], source_time, value)
         if store.last_confirmed(db):
@@ -358,7 +360,7 @@ def create_app(
         return {"accepted": True}
 
     @app.post("/internal/baselines", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_observation(payload: Observation):
+    def ingest_observation(payload: DeviceObservation):
         baseline = recorder.observe(payload)
         if isinstance(baseline, Rejected):
             raise rejection(baseline)
@@ -385,7 +387,7 @@ def create_app(
                 ),
             ).fetchall()
             return BaselinesPage(
-                baselines=[BaselineRecord.model_validate_json(row["data"]) for row in rows[:limit]],
+                baselines=[baseline_record.validate_json(row["data"]) for row in rows[:limit]],
                 next_cursor=rows[limit - 1]["rowid"] if len(rows) > limit else None,
             )
 
@@ -411,8 +413,8 @@ def create_app(
         cursor: Annotated[str | None, Query(max_length=200)] = None,
     ):
         try:
-            start = Observation.utc_timestamp(start)
-            end = Observation.utc_timestamp(end)
+            start = to_utc(start) if start else None
+            end = to_utc(end) if end else None
             if start and end and start > end:
                 raise ValueError("Reversed range")
             position = None
@@ -602,8 +604,15 @@ def create_app(
         # computing happen after it closes. The store runs in WAL mode, so writers continue.
         with store.transaction("DEFERRED") as db:
             selected = store.selection(db).entity_ids
+            # Plugs and switches have no usage report yet.
+            switches = {
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM catalog WHERE json_extract(data, '$.device_kind')='switch'"
+                )
+            }
             # Unselected IDs are left out rather than reported as missing.
-            lights = sorted(set(entity_id or selected) & set(selected))
+            lights = sorted((set(entity_id or selected) & set(selected)) - switches)
             scope = ",".join("?" * len(lights))
             # Evidence inside the window, plus each light's latest evidence before it.
             snapshot_rows: list[sqlite3.Row] = db.execute(
@@ -645,14 +654,24 @@ def create_app(
                 "WHERE latest.scope=coverage.scope)",
                 (cutoff,),
             ).fetchall()
-        readings: dict[str, list[BaselineRecord | EventReading]] = {light: [] for light in lights}
-        for row in snapshot_rows:
-            readings[row[0]].append(BaselineRecord.model_validate_json(row[1]))
-        for row in current_rows:
-            readings[row[0]].append(current_reading.validate_json(row[1]))
+        snapshots = [(row[0], current_reading.validate_json(row[1])) for row in snapshot_rows]
+        snapshots += [(row[0], current_reading.validate_json(row[1])) for row in current_rows]
+        changes = [(row[0], EventRecord.model_validate_json(row[1])) for row in event_rows]
+        # A selected switch that has left discovery is still known by its readings.
+        switches |= {
+            entity for entity, value in [*snapshots, *changes] if value.device_kind != "light"
+        }
+        lights = [light for light in lights if light not in switches]
+        readings: dict[str, list[LightBaseline | LightEventReading]] = {
+            light: [] for light in lights
+        }
+        for entity, reading in snapshots:
+            if entity in readings and isinstance(reading, LightReading):
+                readings[entity].append(reading)
         events: dict[str, list[EventRecord]] = {light: [] for light in lights}
-        for row in event_rows:
-            events[row[0]].append(EventRecord.model_validate_json(row[1]))
+        for entity, event in changes:
+            if entity in events:
+                events[entity].append(event)
         gaps = [CoverageGap.model_validate_json(row[0]) for row in gap_rows]
         retained_since = datetime.fromisoformat(cutoff)
         return UsageReport(
@@ -690,11 +709,14 @@ def create_app(
                 entity = store.entity(db, entity_id)
                 missing = entity is None
                 if entity is None:
+                    current = store.current(db, entity_id)
                     entity = Entity(
                         id=entity_id,
                         name=entity_id,
                         device_id=None,
                         device_name=None,
+                        # Its readings still tell a missing light from a missing switch.
+                        device_kind=current.device_kind if current else None,
                         supported=False,
                         reason="Entity missing from latest discovery",
                     )
@@ -759,7 +781,8 @@ def create_app(
             entity = store.entity(db, entity_id)
             if entity is None:
                 raise HTTPException(404, "Unknown entity")
-            if not entity.supported:
+            # Plugs and switches cannot be switched yet: only lights take light commands.
+            if not entity.supported or entity.device_kind == "switch":
                 raise HTTPException(422, "Entity is unsupported")
             if controller is None or control_status(db).state == "off":
                 raise refused("control_off", "Light control is off")
@@ -768,6 +791,9 @@ def create_app(
             reading = store.current(db, entity_id)
             if reading is None or reading.state not in ("on", "off", "unavailable"):
                 raise refused("state_unknown", "The light's current state is unknown")
+            # A reading tells a switch apart even when its catalog entry has no device kind.
+            if reading.device_kind != "light":
+                raise HTTPException(422, "Entity is unsupported")
             if reading.state == "unavailable":
                 raise refused("unavailable", "The light is unavailable")
             # Home Assistant fires no change for these, so the outcome could never be observed.
@@ -872,8 +898,8 @@ def create_app(
         cursor: Annotated[str | None, Query(max_length=200)] = None,
     ):
         try:
-            start = Observation.utc_timestamp(start)
-            end = Observation.utc_timestamp(end)
+            start = to_utc(start) if start else None
+            end = to_utc(end) if end else None
             if start and end and start > end:
                 raise ValueError("Reversed range")
             position = None

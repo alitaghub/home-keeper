@@ -17,13 +17,16 @@ from support.home_assistant import (
 )
 
 from home_keeper.home_assistant import MAX_PAYLOAD, ConnectorError, HomeAssistantConnector
+from home_keeper.models import Observation
 
 type Install = Callable[..., FakeSocket]
 type Handler = Callable[[httpx.Request], httpx.Response]
 
-GROUP = "Light groups and rooms are not recorded"
+GROUP = "Groups and rooms are not recorded"
 DISABLED = "Disabled in Home Assistant"
-NOT_A_LIGHT = "Only single lights are supported"
+NOT_SUPPORTED = "Only lights, plugs and switches are supported"
+SETTING = "Settings and diagnostic switches are not recorded"
+NO_DEVICE = "Switches without a device are not recorded"
 
 
 def use_transport(client: HomeAssistantConnector, handler: Handler) -> None:
@@ -125,8 +128,8 @@ def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_n
             registry_entry("deconz", "light.deconz_group", platform="deconz", **no_translation),
             registry_entry("disabled", "light.disabled", platform="zha", disabled_by="user"),
             registry_entry("sensor", "sensor.x", platform="zha", **no_translation),
-            registry_entry("switch", "switch.plug", platform="zha", **no_translation),
         ],
+        [{"id": "device1", "name": "Bulb"}],
         states=[
             light_state("light.bulb"),
             light_state("light.zha_bulb", color_mode="brightness"),
@@ -136,26 +139,116 @@ def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_n
             light_state("light.zha_group", entity_id=["light.zha_bulb", "light.stateless"]),
             light_state("light.deconz_group", is_deconz_group=True),
             light_state("sensor.x"),
-            light_state("switch.plug"),
         ],
     )
     catalog = client.discover()
-    assert {entity.id: (entity.supported, entity.reason) for entity in catalog.entities} == {
-        "ha:hue": (True, None),
-        "ha:zha": (True, None),
-        "ha:stateless": (True, None),
-        "ha:not_group": (True, None),
-        "ha:helper": (False, GROUP),
-        "ha:room": (False, GROUP),
-        "ha:members": (False, GROUP),
-        "ha:deconz": (False, GROUP),
-        "ha:disabled": (False, DISABLED),
-        "ha:sensor": (False, NOT_A_LIGHT),
-        "ha:switch": (False, NOT_A_LIGHT),
+    assert {
+        entity.id: (entity.supported, entity.reason, entity.model_dump().get("device_kind"))
+        for entity in catalog.entities
+    } == {
+        "ha:hue": (True, None, "light"),
+        "ha:zha": (True, None, "light"),
+        "ha:stateless": (True, None, "light"),
+        "ha:not_group": (True, None, "light"),
+        "ha:helper": (False, GROUP, "light"),
+        "ha:room": (False, GROUP, "light"),
+        "ha:members": (False, GROUP, "light"),
+        "ha:deconz": (False, GROUP, "light"),
+        "ha:disabled": (False, DISABLED, "light"),
+        "ha:sensor": (False, NOT_SUPPORTED, None),
     }
     client.approve({"ha:zha": 1, "ha:stateless": 1})
     with pytest.raises(ConnectorError):
         client.approve({"ha:room": 1})
+
+
+def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose_ones_are_not(
+    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+) -> None:
+    client, install, _ = connector
+    zha = {"platform": "zha", "translation_key": None}
+    install(
+        [
+            registry_entry("plug", "switch.plug", **zha),
+            registry_entry("config", "switch.child_lock", entity_category="config", **zha),
+            registry_entry("diagnostic", "switch.identify", entity_category="diagnostic", **zha),
+            registry_entry("loose", "switch.template", device_id=None, **zha),
+            registry_entry("dangling", "switch.dangling", device_id="gone", **zha),
+            registry_entry("helper", "switch.helper_group", platform="group"),
+            registry_entry("members", "switch.all_plugs", **zha),
+            registry_entry("flagged", "switch.flagged_group", **zha),
+            registry_entry("disabled", "switch.disabled", disabled_by="user", **zha),
+            # Disabled is checked before the switch-only device rule.
+            registry_entry(
+                "disabled_loose", "switch.old", disabled_by="user", device_id=None, **zha
+            ),
+            # The group rule comes before the switch-only category rule.
+            registry_entry(
+                "group_setting", "switch.group_setting", entity_category="config", **zha
+            ),
+            registry_entry("sensor", "sensor.power", **zha),
+        ],
+        [{"id": "device1", "name": "Smart plug"}],
+        states=[
+            light_state("switch.plug", brightness=120),
+            light_state("switch.all_plugs", entity_id=["switch.plug", "switch.template"]),
+            light_state("switch.flagged_group", is_zha_group=True),
+            light_state("switch.group_setting", entity_id=["switch.plug"]),
+            light_state("sensor.power"),
+        ],
+    )
+    catalog = client.discover()
+    assert {
+        entity.id: (entity.supported, entity.reason, entity.model_dump().get("device_kind"))
+        for entity in catalog.entities
+    } == {
+        "ha:plug": (True, None, "switch"),
+        "ha:config": (False, SETTING, "switch"),
+        "ha:diagnostic": (False, SETTING, "switch"),
+        "ha:loose": (False, NO_DEVICE, "switch"),
+        "ha:dangling": (False, NO_DEVICE, "switch"),
+        "ha:helper": (False, GROUP, "switch"),
+        "ha:members": (False, GROUP, "switch"),
+        "ha:flagged": (False, GROUP, "switch"),
+        "ha:disabled": (False, DISABLED, "switch"),
+        "ha:disabled_loose": (False, DISABLED, "switch"),
+        "ha:group_setting": (False, GROUP, "switch"),
+        "ha:sensor": (False, NOT_SUPPORTED, None),
+    }
+    client.approve({"ha:plug": 1})
+    for unsupported in ("ha:config", "ha:loose", "ha:members", "ha:sensor"):
+        with pytest.raises(ConnectorError):
+            client.approve({unsupported: 1})
+
+
+def test_a_selected_switch_reads_its_state_without_light_attributes(
+    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+) -> None:
+    client, install, _ = connector
+    install(
+        [registry_entry("plug", "switch.plug", platform="zha", translation_key=None)],
+        [{"id": "device1", "name": "Smart plug"}],
+    )
+    client.discover()
+    client.approve({"ha:plug": 4})
+    use_transport(
+        client,
+        lambda request: httpx.Response(
+            200,
+            json={
+                "entity_id": "switch.plug",
+                "state": "on",
+                "last_changed": "2026-10-01T10:00:00Z",
+                "attributes": {"brightness": 120, "color_mode": "brightness"},
+            },
+        ),
+    )
+    reading = client.read_selected("ha:plug", 4).model_dump(exclude_none=True)
+    assert reading["device_kind"] == "switch"
+    assert reading["state"] == "on"
+    assert reading["availability"] == "available"
+    assert "brightness" not in reading
+    assert "color_mode" not in reading
 
 
 @pytest.mark.parametrize(
@@ -220,6 +313,7 @@ def test_selected_reads_and_rename_identity(
         client.read_selected("ha:registry1", 8)
     assert not calls
     observation = client.read_selected("ha:registry1", 7)
+    assert isinstance(observation, Observation)
     assert observation.entity_id == "ha:registry1"
     assert observation.brightness == 120
     assert "PRIVATE_SENTINEL" not in observation.model_dump_json()

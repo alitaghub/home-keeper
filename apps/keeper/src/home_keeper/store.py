@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter
 
 from home_keeper.models import (
+    BaselineRecord,
     CoverageGap,
     CurrentReading,
     Entity,
@@ -17,6 +18,7 @@ from home_keeper.models import (
 )
 
 current_reading: TypeAdapter[CurrentReading] = TypeAdapter(CurrentReading)
+baseline_record: TypeAdapter[BaselineRecord] = TypeAdapter(BaselineRecord)
 
 
 class Store:
@@ -130,7 +132,7 @@ class Store:
 
     @staticmethod
     def source_entity_id(db: sqlite3.Connection, entity_id: str) -> str | None:
-        """The light's newest recorded Home Assistant entity ID, from any stored reading."""
+        """The device's newest recorded Home Assistant entity ID, from any stored reading."""
         for table in ("events", "baselines"):
             row = db.execute(
                 # Only fixed table names are interpolated; values are bound parameters.

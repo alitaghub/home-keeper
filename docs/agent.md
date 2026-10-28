@@ -12,12 +12,13 @@ nothing below runs.
 The agent reaches Home Keeper only through the public API, the same one the
 dashboard uses. It can:
 
-- list the lights you monitor and their current state
+- list the lights, plugs and switches you monitor, with each one's kind
+  (`kind=light` or `kind=switch`) and current state
 - report usage over a time range: on-time per day and per hour, switch-ons,
   average brightness, and unknown time
 - show recorded changes, collection gaps and collector health
-- list discovered devices and refresh discovery
-- start or stop monitoring a light, after you approve it in the chat. You can
+- list discovered devices, with their kind, and refresh discovery
+- start or stop monitoring a light, plug or switch, after you approve it in the chat. You can
   approve or reject the proposed change; a rejection changes nothing
 - turn a monitored light on, optionally at a brightness from 1 to 100 percent,
   or off, after you approve it in the chat. This needs the `control` profile

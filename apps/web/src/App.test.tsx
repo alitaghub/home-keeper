@@ -179,6 +179,7 @@ describe("dashboard behavior", () => {
     let selected: string[] = [];
     const recoveryBaseline = {
       kind: "recovery",
+      device_kind: "light",
       id: "baseline-1",
       entity_id: fixtures.desk.id,
       source_entity_id: null,
@@ -190,7 +191,7 @@ describe("dashboard behavior", () => {
       transition_time: "unknown",
       received_at: "2026-10-12T10:00:06Z",
       persisted_at: "2026-10-12T10:00:06+00:00",
-    } satisfies Schemas["BaselineRecord"];
+    } satisfies Schemas["LightBaseline"];
     const { api, user } = renderDashboard({
       "GET /api/selection": () => ({ ...fixtures.emptySelection, entity_ids: selected }),
       "GET /api/monitored": () => ({
@@ -298,7 +299,7 @@ describe("dashboard behavior", () => {
 
     await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
     expect(byId("source-notice")).toHaveTextContent(
-      "Home Assistant discovery. Only selected single lights are recorded. Light control is off: Home Keeper only records.",
+      "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is off: Home Keeper only records.",
     );
     expect(byId("catalog-status")).toHaveTextContent(
       `Discovery is stale. Showing the last validated catalog from ${localTime(fixtures.catalog.refreshed_at)}.`,
@@ -324,9 +325,11 @@ describe("dashboard behavior", () => {
     expect(link).toHaveTextContent("Connect your devices in Home Assistant");
     expect(link).toHaveAttribute("href", "http://127.0.0.1:8123/config/integrations/dashboard");
     expect(byId("catalog")).toHaveTextContent(
-      "then refresh discovery. Home Keeper records single lights, not groups or rooms.",
+      "then refresh discovery. Home Keeper records single lights, plugs and switches, not groups or rooms.",
     );
-    expect(byId("count").parentElement).toHaveTextContent("Single lights, without groups or rooms");
+    expect(byId("count").parentElement).toHaveTextContent(
+      "Single lights, plugs and switches, without groups or rooms",
+    );
   });
 
   it("pages through older timeline history, dedupes by id, and refreshes back to the newest page", async () => {
@@ -551,7 +554,7 @@ describe("light control from the dashboard", () => {
   function renderControl(
     options: {
       control?: Schemas["ControlStatus"];
-      state?: Schemas["BaselineRecord"]["state"];
+      state?: Schemas["LightBaseline"]["state"];
       availability?: "available" | "unavailable" | "unknown";
       light?: Schemas["Entity"];
       outcome?: Schemas["CommandRecord"]["outcome"];
@@ -624,9 +627,8 @@ describe("light control from the dashboard", () => {
     await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
     await monitored().findByRole("button", { name: "Turn on Desk lamp" });
 
-    const notice = byId("source-notice").textContent ?? "";
-    expect(notice).toMatch(
-      /^Home Assistant discovery\. Only selected single lights are recorded\. /,
+    expect(byId("source-notice")).toHaveTextContent(
+      "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights.",
     );
     expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
     expect(notice).not.toContain("Light control is off");
@@ -1311,7 +1313,7 @@ describe("tabs, brightness and plain history", () => {
 
   /** The desk lamp, monitored and recorded `state`, with control on unless told otherwise. */
   function renderLamp(
-    state: Schemas["BaselineRecord"]["state"] = "on",
+    state: Schemas["LightBaseline"]["state"] = "on",
     control: Schemas["ControlStatus"] = fixtures.controlOn,
   ) {
     return renderDashboard({
@@ -1457,5 +1459,84 @@ describe("tabs, brightness and plain history", () => {
     expect(timeline.getByText("turned off")).toBeInTheDocument();
     expect(timeline.getByText("color changed")).toBeInTheDocument();
     expect(timeline.getAllByText("Desk lamp")).toHaveLength(3);
+  });
+});
+
+describe("plugs and switches on Home", () => {
+  const plugsHeading = () => screen.queryByRole("heading", { name: "Plugs and switches" });
+
+  /** Monitors the desk lamp and the smart plug in the given states, with control on. */
+  function renderHome(plug: Schemas["MonitoredEntity"][] = []) {
+    return renderDashboard({
+      "GET /api/control": fixtures.controlOn,
+      "GET /api/catalog": {
+        ...fixtures.catalog,
+        entities: [fixtures.desk, fixtures.smartPlug, fixtures.ungroupedSensor],
+      },
+      "GET /api/selection": {
+        ...fixtures.emptySelection,
+        entity_ids: [fixtures.desk.id, ...plug.map((entity) => entity.id)],
+      },
+      "GET /api/monitored": {
+        entities: [fixtures.monitoredLight(fixtures.desk, "on"), ...plug],
+      },
+    });
+  }
+
+  /** The plug's card: the element around its name heading. */
+  async function plugCard() {
+    const name = await screen.findByRole("heading", { name: "Smart plug" });
+    const card = name.closest("article");
+    if (!card) throw new Error("The plug's name is not inside a card");
+    return card;
+  }
+
+  it("shows a monitored plug's state under the lights, without controls or brightness", async () => {
+    renderHome([fixtures.monitoredSwitch(fixtures.smartPlug, "on")]);
+    await screen.findByRole("button", { name: "Turn off Desk lamp" });
+
+    const card = await plugCard();
+    const lamp = screen.getByRole("heading", { name: "Desk lamp" });
+    const heading = screen.getByRole("heading", { name: "Plugs and switches" });
+    // Lamp, then the section heading, then the plug card.
+    expect(lamp.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(heading.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(card).getByText("On")).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /^Turn (on|off) / })).toBeNull();
+    expect(within(card).queryByRole("slider")).toBeNull();
+    expect(card).not.toHaveTextContent("Brightness");
+    expect(card).not.toHaveTextContent("%");
+  });
+
+  it("shows a plug recorded off with no switch", async () => {
+    renderHome([fixtures.monitoredSwitch(fixtures.smartPlug, "off")]);
+
+    const card = await plugCard();
+    expect(within(card).getByText("Off")).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /^Turn (on|off) / })).toBeNull();
+  });
+
+  it("has no plugs section when no switch is monitored", async () => {
+    renderHome();
+    await screen.findByRole("button", { name: "Turn off Desk lamp" });
+
+    expect(plugsHeading()).toBeNull();
+  });
+
+  it("names a plug's change in the timeline among light changes", async () => {
+    startOn("history");
+    renderHome([fixtures.monitoredSwitch(fixtures.smartPlug, "on")]);
+    api.reply("GET /api/events", {
+      ...fixtures.eventsPage2,
+      events: [fixtures.plugChange, fixtures.change3],
+    });
+
+    const timeline = within(byId("timeline"));
+    const plug = (await timeline.findByText("Smart plug")).closest("article");
+    if (!plug) throw new Error("The plug's change is not a timeline row");
+    expect(plug).toHaveTextContent("turned on");
+    expect(plug).toHaveTextContent("off → on");
+    expect(plug).not.toHaveTextContent("%");
+    expect(timeline.getByText("turned on at 59%")).toBeInTheDocument();
   });
 });

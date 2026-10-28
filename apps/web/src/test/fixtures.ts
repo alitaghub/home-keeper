@@ -11,6 +11,7 @@ export const desk = {
   name: "Desk light",
   supported: true,
   reason: null,
+  device_kind: "light",
 } satisfies Schemas["Entity"];
 
 export const reading = {
@@ -20,6 +21,7 @@ export const reading = {
   name: "Reading light",
   supported: true,
   reason: null,
+  device_kind: "light",
 } satisfies Schemas["Entity"];
 
 export const roomGroup = {
@@ -28,7 +30,8 @@ export const roomGroup = {
   device_name: "Living room group",
   name: "All living room lights",
   supported: false,
-  reason: "Light groups and rooms are not recorded",
+  reason: "Groups and rooms are not recorded",
+  device_kind: "light",
 } satisfies Schemas["Entity"];
 
 export const ungroupedSensor = {
@@ -37,7 +40,17 @@ export const ungroupedSensor = {
   device_name: null,
   name: "Ungrouped sensor",
   supported: false,
-  reason: "Only single lights are supported",
+  reason: "Only lights, plugs and switches are supported",
+} satisfies Schemas["Entity"];
+
+export const smartPlug = {
+  id: "switch.smart_plug",
+  device_id: "smart-plug",
+  device_name: "Smart plug",
+  name: "Plug",
+  supported: true,
+  reason: null,
+  device_kind: "switch",
 } satisfies Schemas["Entity"];
 
 export const catalog = {
@@ -112,6 +125,7 @@ export const emptyCoverage = {
 } satisfies Schemas["CoverageReport"];
 
 const changeEvent = {
+  device_kind: "light",
   entity_id: "light.hue_desk",
   source_entity_id: null,
   source_id: "demo",
@@ -124,8 +138,8 @@ export const change3 = {
   id: "change-3",
   event_time: "2026-10-12T09:59:50Z",
   received_at: "2026-10-12T09:59:50Z",
-  old: { availability: "available", state: "off" },
-  new: { availability: "available", state: "on", brightness: 150 },
+  old: { device_kind: "light", availability: "available", state: "off" },
+  new: { device_kind: "light", availability: "available", state: "on", brightness: 150 },
 } satisfies Schemas["EventRecord"];
 
 export const change2 = {
@@ -133,8 +147,8 @@ export const change2 = {
   id: "change-2",
   event_time: "2026-10-12T09:59:40Z",
   received_at: "2026-10-12T09:59:40Z",
-  old: { availability: "available", state: "on" },
-  new: { availability: "available", state: "off" },
+  old: { device_kind: "light", availability: "available", state: "on" },
+  new: { device_kind: "light", availability: "available", state: "off" },
 } satisfies Schemas["EventRecord"];
 
 export const change1 = {
@@ -142,8 +156,8 @@ export const change1 = {
   id: "change-1",
   event_time: "2026-10-12T09:59:30Z",
   received_at: "2026-10-12T09:59:30Z",
-  old: { availability: "available", state: "off" },
-  new: { availability: "available", state: "on", brightness: 50 },
+  old: { device_kind: "light", availability: "available", state: "off" },
+  new: { device_kind: "light", availability: "available", state: "on", brightness: 50 },
 } satisfies Schemas["EventRecord"];
 
 // Distinct source, receipt, and storage times so a swapped label shows up.
@@ -153,8 +167,32 @@ export const colorChange = {
   event_time: "2026-10-12T09:59:55Z",
   received_at: "2026-10-12T09:59:57Z",
   persisted_at: "2026-10-12T10:00:01+00:00",
-  old: { availability: "available", state: "on", brightness: 150, xy_color: [0.3, 0.32] },
-  new: { availability: "available", state: "on", brightness: 150, xy_color: [0.45, 0.41] },
+  old: {
+    device_kind: "light",
+    availability: "available",
+    state: "on",
+    brightness: 150,
+    xy_color: [0.3, 0.32],
+  },
+  new: {
+    device_kind: "light",
+    availability: "available",
+    state: "on",
+    brightness: 150,
+    xy_color: [0.45, 0.41],
+  },
+} satisfies Schemas["EventRecord"];
+
+// The smart plug turning on: a switch reading has a state but no light attributes.
+export const plugChange = {
+  ...changeEvent,
+  device_kind: "switch",
+  entity_id: smartPlug.id,
+  id: "change-plug",
+  event_time: "2026-10-12T09:59:58Z",
+  received_at: "2026-10-12T09:59:58Z",
+  old: { device_kind: "switch", availability: "available", state: "off" },
+  new: { device_kind: "switch", availability: "available", state: "on" },
 } satisfies Schemas["EventRecord"];
 
 export const eventsPage1 = {
@@ -195,13 +233,40 @@ export const controlOn = {
 /** A monitored light whose recorded reading has the given state and availability. */
 export const monitoredLight = (
   entity: Schemas["Entity"],
-  state: Schemas["BaselineRecord"]["state"],
+  state: Schemas["LightBaseline"]["state"],
   availability: "available" | "unavailable" | "unknown" = "available",
 ) =>
   ({
     ...entity,
     baseline: {
       kind: "baseline",
+      device_kind: "light",
+      id: `baseline-${entity.id}`,
+      entity_id: entity.id,
+      source_entity_id: null,
+      source_id: "demo",
+      state,
+      availability,
+      collection_started_at: null,
+      coverage_gap_ids: [],
+      received_at: "2026-10-12T10:00:06Z",
+      persisted_at: "2026-10-12T10:00:06+00:00",
+    },
+    freshness: "fresh",
+    confirmed_at: "2026-10-12T10:00:06+00:00",
+  }) satisfies Schemas["MonitoredEntity"];
+
+/** A monitored plug or switch whose recorded reading has the given state and availability. */
+export const monitoredSwitch = (
+  entity: Schemas["Entity"],
+  state: Schemas["SwitchBaseline"]["state"],
+  availability: "available" | "unavailable" | "unknown" = "available",
+) =>
+  ({
+    ...entity,
+    baseline: {
+      kind: "baseline",
+      device_kind: "switch",
       id: `baseline-${entity.id}`,
       entity_id: entity.id,
       source_entity_id: null,

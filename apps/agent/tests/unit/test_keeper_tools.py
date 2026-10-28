@@ -98,6 +98,56 @@ def test_list_lights_reads_the_lights_and_the_control_state() -> None:
     assert {request.headers["X-Home-Keeper"] for request in keeper.requests} == {"1"}
 
 
+def test_device_list_shows_each_entity_device_kind() -> None:
+    status, recorded = snapshot("catalog")
+    body: dict[str, Any] = json.loads(json.dumps(recorded))
+    light, plug, room = body["entities"]
+    light |= {"device_kind": "light"}
+    plug |= {"supported": True, "reason": None, "device_kind": "switch"}
+    room |= {"device_kind": "light"}
+    sensor = room | {"id": "sensor", "device_kind": None}
+    body["entities"].append(sensor)
+    keeper = FakeKeeper({"/api/catalog": (status, body)})
+
+    lines = call(keeper.tools(), "list_devices", {}).splitlines()
+
+    [bulb_line] = [line for line in lines if line.startswith("- bulb-a ")]
+    [plug_line] = [line for line in lines if line.startswith("- plug ")]
+    [sensor_line] = [line for line in lines if line.startswith("- sensor ")]
+    assert "kind=light" in bulb_line
+    assert "kind=switch" in plug_line
+    assert "can be monitored" in plug_line
+    assert "kind=" not in sensor_line
+
+
+def test_monitored_list_shows_each_entity_device_kind() -> None:
+    status, recorded = lights_response("on", 128, extra_ids=["plug"])
+    body: dict[str, Any] = json.loads(json.dumps(recorded))
+    light, plug = body["entities"]
+    light |= {"device_kind": "light"}
+    light["baseline"] |= {"device_kind": "light"}
+    plug |= {
+        "device_kind": "switch",
+        "baseline": {
+            key: value
+            for key, value in light["baseline"].items()
+            if key not in {"brightness", "color_mode", "id", "entity_id"}
+        }
+        | {"id": "plug-baseline", "entity_id": "plug", "device_kind": "switch", "state": "off"},
+        "freshness": "fresh",
+    }
+    keeper = FakeKeeper({"/api/monitored": (status, body), "/api/control": control_response("on")})
+
+    lines = call(keeper.tools(), "list_lights", {}).splitlines()
+
+    [light_line] = [line for line in lines if line.startswith("- bulb-a ")]
+    [plug_line] = [line for line in lines if line.startswith("- plug ")]
+    assert "kind=light" in light_line
+    assert "kind=switch" in plug_line
+    assert "off" in plug_line
+    assert "brightness" not in plug_line
+
+
 def test_list_lights_names_each_light_by_its_device_when_the_entity_has_no_name() -> None:
     # Home Assistant gives a Hue light no entity name; the device carries it.
     status, body = lights_response()
@@ -185,7 +235,11 @@ def test_usage_average_brightness_is_a_rounded_percent(average: float, percent: 
         ("list_lights", "monitored", ["bulb-a", "off", "stale", "bulb-b", "pending"]),
         ("get_health", "health", ["healthy"]),
         ("get_coverage", "coverage", ["interrupted", "reconciliation"]),
-        ("list_devices", "catalog", ["bulb-a", "plug", "Only single lights are supported"]),
+        (
+            "list_devices",
+            "catalog",
+            ["bulb-a", "plug", "Only lights, plugs and switches are supported"],
+        ),
         ("get_events", "events_page_1", ["bulb-a", "09:59:50", "09:59:40"]),
     ],
 )

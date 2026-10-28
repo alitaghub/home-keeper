@@ -11,11 +11,12 @@ from itertools import accumulate, pairwise
 from zoneinfo import ZoneInfo
 
 from home_keeper.models import (
-    BaselineRecord,
     CoverageGap,
     DayUsage,
-    EventReading,
     EventRecord,
+    LightBaseline,
+    LightEventReading,
+    LightReading,
     LightStateValue,
     LightUsage,
     UnknownInterval,
@@ -48,9 +49,9 @@ def instant(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(UTC)
 
 
-def reading_evidence(reading: BaselineRecord | EventReading) -> Evidence:
+def reading_evidence(reading: LightBaseline | LightEventReading) -> Evidence:
     received = instant(reading.received_at)
-    if isinstance(reading, EventReading):
+    if reading.kind == "event":
         return Evidence(
             instant(reading.event_time), 1, reading.state, reading.brightness, received, None
         )
@@ -68,7 +69,7 @@ def event_evidence(event: EventRecord) -> Evidence:
         instant(event.event_time),
         1,
         event.new.state if event.new else "unknown",
-        event.new.brightness if event.new else None,
+        event.new.brightness if isinstance(event.new, LightReading) else None,
         instant(event.received_at),
         None,
     )
@@ -166,7 +167,7 @@ def light_usage(
     now: datetime,
     timezone: ZoneInfo,
     retained_since: datetime,
-    readings: Sequence[BaselineRecord | EventReading],
+    readings: Sequence[LightBaseline | LightEventReading],
     events: Sequence[EventRecord],
     gaps: Sequence[CoverageGap],
 ) -> LightUsage:

@@ -41,3 +41,40 @@ def test_demo_records_selected_repeatable_transitions_and_deduplicates(tmp_path:
             assert history[2]["new"]["color_temp_kelvin"] == 2700
             assert history[3]["new"]["xy_color"] == [0.4, 0.3]
         assert client.get("/api/events?entity_id=switch.smart_plug").json()["events"] == []
+
+
+def test_demo_offers_its_smart_plug_and_records_its_on_off_changes(tmp_path: Path) -> None:
+    replay = DemoReplay()
+    with TestClient(
+        create_app(tmp_path / "demo.sqlite", "service-token"),
+        headers={"Authorization": "Bearer service-token"},
+    ) as client:
+        reconcile(client, replay)
+        catalog = {entity["id"]: entity for entity in client.get("/api/catalog").json()["entities"]}
+        plug = catalog["switch.smart_plug"]
+        assert (plug["supported"], plug.get("device_kind")) == (True, "switch")
+        assert catalog["light.hue_room"]["reason"] == "Groups and rooms are not recorded"
+        assert catalog["sensor.ungrouped"]["reason"] == (
+            "Only lights, plugs and switches are supported"
+        )
+        assert catalog["sensor.ungrouped"].get("device_kind") is None
+        selected = client.put(
+            "/api/selection/switch.smart_plug",
+            json={"selected": True},
+            headers={"X-Home-Keeper": "1"},
+        )
+        assert selected.status_code == 200, selected.text
+        for _ in range(7):
+            reconcile(client, replay)
+        events = client.get("/api/events?entity_id=switch.smart_plug").json()["events"]
+        assert events
+        states = {"on", "off", "unavailable", "unknown"}
+        for event in events:
+            assert event["device_kind"] == "switch"
+            for reading in (event["old"], event["new"]):
+                if reading is not None:
+                    assert reading["state"] in states
+                    assert "brightness" not in reading
+        assert {event["new"]["state"] for event in events} >= {"on", "off"}
+        [monitored] = client.get("/api/monitored").json()["entities"]
+        assert monitored["baseline"]["device_kind"] == "switch"

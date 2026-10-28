@@ -1,11 +1,13 @@
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
     StringConstraints,
+    Tag,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -19,6 +21,34 @@ Identity = Annotated[
 ]
 Name = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 SourceId = Literal["demo", "home_assistant"]
+# What a device is, from its Home Assistant domain. Separate from a record's `kind`.
+DeviceKind = Literal["light", "switch"]
+
+
+def device_kind_of(source_entity_id: str) -> DeviceKind | None:
+    """The device kind a Home Assistant domain names, or None for every other domain."""
+    match source_entity_id.partition(".")[0]:
+        case "light":
+            return "light"
+        case "switch":
+            return "switch"
+        case _:
+            return None
+
+
+def light_by_default(data: object) -> object:
+    """Records stored before plugs carry no device kind; every one of them is a light's."""
+    if not isinstance(data, dict):
+        return data
+    record = cast(dict[str, object], data)
+    return record if "device_kind" in record else record | {"device_kind": "light"}
+
+
+def device_kind_tag(value: object) -> object:
+    """Pick a reading's variant from its device kind, a light when it has none."""
+    if isinstance(value, dict):
+        return cast(dict[str, object], value).get("device_kind", "light")
+    return getattr(value, "device_kind", "light")
 
 
 def to_utc(value: datetime) -> datetime:
@@ -36,6 +66,8 @@ class Entity(WireModel):
     device_id: Identity | None = None
     device_name: Name | None = None
     name: Name
+    # None for a domain Home Keeper does not record, such as a sensor.
+    device_kind: DeviceKind | None = None
     supported: bool
     reason: Name | None = None
 
@@ -108,7 +140,9 @@ class LightAttributes(WireModel):
         return value
 
 
-class LightState(LightAttributes):
+class StateHeader(WireModel):
+    """The on/off state and source times every device reports."""
+
     state: LightStateValue
     last_changed: datetime | None = None
     last_updated: datetime | None = None
@@ -134,10 +168,23 @@ class LightState(LightAttributes):
         )
 
 
-class Observation(LightState):
-    # Availability is explicit on the existing snapshot protocol. Pydantic allows a subclass
-    # to make an optional field required; the checker cannot model that narrowing.
-    availability: Literal["available", "unavailable", "unknown"]  # pyright: ignore[reportIncompatibleVariableOverride, reportGeneralTypeIssues]
+class LightState(LightAttributes, StateHeader):
+    device_kind: Literal["light"] = "light"
+
+
+class SwitchState(StateHeader):
+    """A plug or switch: on or off, with no light attributes."""
+
+    device_kind: Literal["switch"]
+
+
+DeviceState = Annotated[
+    Annotated[LightState, Tag("light")] | Annotated[SwitchState, Tag("switch")],
+    Discriminator(device_kind_tag),
+]
+
+
+class ObservationFields(WireModel):
     source_entity_id: Identity | None = None
     entity_id: Identity
     selection_revision: int = Field(ge=0)
@@ -149,7 +196,27 @@ class Observation(LightState):
     @field_validator("received_at", "collection_started_at")
     @classmethod
     def receipt_timestamp(cls, value: datetime | None) -> datetime | None:
-        return cls.utc_timestamp(value)
+        return None if value is None else to_utc(value)
+
+
+# Availability is explicit on the existing snapshot protocol. Pydantic allows a subclass
+# to make an optional field required; the checker cannot model that narrowing.
+class Observation(LightState, ObservationFields):
+    """A light snapshot."""
+
+    availability: Literal["available", "unavailable", "unknown"]  # pyright: ignore[reportIncompatibleVariableOverride, reportGeneralTypeIssues]
+
+
+class SwitchObservation(SwitchState, ObservationFields):
+    """A plug or switch snapshot."""
+
+    availability: Literal["available", "unavailable", "unknown"]  # pyright: ignore[reportIncompatibleVariableOverride, reportGeneralTypeIssues]
+
+
+DeviceObservation = Annotated[
+    Annotated[Observation, Tag("light")] | Annotated[SwitchObservation, Tag("switch")],
+    Discriminator(device_kind_tag),
+]
 
 
 class ChangeEvent(WireModel):
@@ -160,19 +227,27 @@ class ChangeEvent(WireModel):
     selection_revision: int = Field(ge=0)
     event_time: datetime
     received_at: datetime
-    old: LightState | None = None
-    new: LightState | None = None
+    old: DeviceState | None = None
+    new: DeviceState | None = None
 
     @field_validator("event_time", "received_at")
     @classmethod
     def utc_timestamp(cls, value: datetime | None) -> datetime | None:
-        return LightState.utc_timestamp(value)
+        return None if value is None else to_utc(value)
 
     @model_validator(mode="after")
     def has_state(self) -> Self:
         if self.old is None and self.new is None:
             raise ValueError("An event needs an old or new state")
+        if self.old and self.new and self.old.device_kind != self.new.device_kind:
+            raise ValueError("An event's states must be of one device kind")
         return self
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        state = self.new or self.old
+        # has_state guarantees one of them.
+        return state.device_kind if state is not None else "light"
 
 
 CollectorError = Literal[
@@ -196,7 +271,7 @@ class Health(WireModel):
     @field_validator("received_at")
     @classmethod
     def utc_timestamp(cls, value: datetime | None) -> datetime | None:
-        return Observation.utc_timestamp(value)
+        return None if value is None else to_utc(value)
 
 
 GapReason = Literal[
@@ -228,7 +303,7 @@ class Coverage(WireModel):
     @field_validator("received_at")
     @classmethod
     def utc_timestamp(cls, value: datetime | None) -> datetime | None:
-        return LightState.utc_timestamp(value)
+        return None if value is None else to_utc(value)
 
 
 # Public API responses. Records are stored as JSON and returned as stored, so timestamps
@@ -263,8 +338,29 @@ class LightReading(LightAttributes, ReadingHeader):
     """Light attributes as stored. Event states omit unset attributes, so routes returning
     readings exclude unset fields to keep absent keys absent."""
 
+    device_kind: Literal["light"]
 
-class BaselineRecord(LightReading):
+    @model_validator(mode="before")
+    @classmethod
+    def stored_before_plugs(cls, data: object) -> object:
+        # Setting the kind here, not as a default, keeps it in responses that exclude unset
+        # fields.
+        return light_by_default(data)
+
+
+class SwitchReading(ReadingHeader):
+    """A plug or switch state as stored: no light attributes."""
+
+    device_kind: Literal["switch"]
+
+
+Reading = Annotated[
+    Annotated[LightReading, Tag("light")] | Annotated[SwitchReading, Tag("switch")],
+    Discriminator(device_kind_tag),
+]
+
+
+class BaselineFields(WireModel):
     id: str
     kind: Literal["baseline", "reconciliation", "recovery"]
     entity_id: Identity
@@ -278,7 +374,21 @@ class BaselineRecord(LightReading):
     transition_time: Literal["unknown"] | None = None
 
 
-class EventReading(LightReading):
+class LightBaseline(BaselineFields, LightReading):
+    pass
+
+
+class SwitchBaseline(BaselineFields, SwitchReading):
+    pass
+
+
+BaselineRecord = Annotated[
+    Annotated[LightBaseline, Tag("light")] | Annotated[SwitchBaseline, Tag("switch")],
+    Discriminator(device_kind_tag),
+]
+
+
+class EventFields(WireModel):
     """The latest state taken from a recorded change event."""
 
     id: Identity
@@ -291,8 +401,35 @@ class EventReading(LightReading):
     persisted_at: Timestamp
 
 
-# The newest state of a monitored light: a snapshot or a recorded change event.
-CurrentReading = Annotated[BaselineRecord | EventReading, Field(discriminator="kind")]
+class LightEventReading(EventFields, LightReading):
+    pass
+
+
+class SwitchEventReading(EventFields, SwitchReading):
+    pass
+
+
+EventReading = Annotated[
+    Annotated[LightEventReading, Tag("light")] | Annotated[SwitchEventReading, Tag("switch")],
+    Discriminator(device_kind_tag),
+]
+
+
+def record_kind_tag(value: object) -> object:
+    """Pick a current reading's variant: a recorded change event or a snapshot."""
+    if isinstance(value, dict):
+        kind = cast(dict[str, object], value).get("kind")
+    else:
+        kind = getattr(value, "kind", None)
+    return "event" if kind == "event" else "baseline"
+
+
+# The newest state of a monitored device: a snapshot or a recorded change event. A callable
+# discriminator, because a `kind` tag would map to two device kinds, which OpenAPI forbids.
+CurrentReading = Annotated[
+    Annotated[BaselineRecord, Tag("baseline")] | Annotated[EventReading, Tag("event")],
+    Discriminator(record_kind_tag),
+]
 
 
 class BaselinesPage(WireModel):
@@ -309,8 +446,14 @@ class EventRecord(WireModel):
     event_time: Timestamp
     received_at: Timestamp
     persisted_at: Timestamp
-    old: LightReading | None
-    new: LightReading | None
+    device_kind: DeviceKind
+    old: Reading | None
+    new: Reading | None
+
+    @model_validator(mode="before")
+    @classmethod
+    def stored_before_plugs(cls, data: object) -> object:
+        return light_by_default(data)
 
 
 class EventsPage(WireModel):

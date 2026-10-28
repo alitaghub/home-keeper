@@ -1,11 +1,11 @@
-"""Minimal, attributed light changes shared by trusted collectors."""
+"""Minimal, attributed device changes shared by trusted collectors."""
 
 import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any, TypeIs
 
-from home_keeper.models import ChangeEvent, LightState
+from home_keeper.models import ChangeEvent, LightState, SwitchState, device_kind_of
 
 COLOR_FIELDS = (
     "brightness",
@@ -25,20 +25,23 @@ def is_json_object(value: object) -> TypeIs[dict[str, Any]]:
     return isinstance(value, dict)
 
 
-def light_state(payload: object, source_entity_id: str) -> LightState | None:
+def device_state(payload: object, source_entity_id: str) -> LightState | SwitchState | None:
+    """A light or switch state, by the entity's domain. A switch keeps no light attributes."""
     if payload is None:
         return None
     if not is_json_object(payload) or payload.get("entity_id") != source_entity_id:
         raise ValueError("Invalid state identity")
     attributes = payload.get("attributes", {})
     if not is_json_object(attributes):
-        raise ValueError("Invalid light attributes")
+        raise ValueError("Invalid device attributes")
+    state = {
+        "state": payload.get("state"),
+        **{key: payload[key] for key in SOURCE_TIMES if payload.get(key) is not None},
+    }
+    if device_kind_of(source_entity_id) == "switch":
+        return SwitchState.model_validate(state | {"device_kind": "switch"})
     return LightState.model_validate(
-        {
-            "state": payload.get("state"),
-            **{key: payload[key] for key in SOURCE_TIMES if payload.get(key) is not None},
-            **{key: attributes[key] for key in COLOR_FIELDS if attributes.get(key) is not None},
-        }
+        state | {key: attributes[key] for key in COLOR_FIELDS if attributes.get(key) is not None}
     )
 
 
@@ -49,8 +52,8 @@ def change_event(
     source_entity_id: str,
     revision: int,
     event_time: datetime,
-    old: LightState | None,
-    new: LightState | None,
+    old: LightState | SwitchState | None,
+    new: LightState | SwitchState | None,
     received_at: datetime | None = None,
 ) -> ChangeEvent:
     identity_data: dict[str, object] = {

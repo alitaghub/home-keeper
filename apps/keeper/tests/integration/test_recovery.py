@@ -64,6 +64,8 @@ def home(
     tmp_path: Path,
     race_count: int = 1,
     authentication_invalid: bool | Callable[[], bool] = False,
+    entity: Frame | None = None,
+    devices: list[Frame] | None = None,
 ) -> Generator[Home]:
     token = tmp_path / "ha-token"
     token.write_text("private-recovery-token")
@@ -71,7 +73,7 @@ def home(
     race_sent = Event()
     finish = Event()
     commands: list[str] = []
-    rows = [registry()]
+    rows = [entity or registry()]
 
     def request(_connection: ServerConnection, incoming: Request) -> Response | None:
         if incoming.path.startswith("/api/states/"):
@@ -111,7 +113,9 @@ def home(
             socket.send(json.dumps({"id": 1, "type": "result", "success": True, "result": rows}))
             command = json.loads(socket.recv(timeout=5))
             commands.append(command["type"])
-            socket.send(json.dumps({"id": 2, "type": "result", "success": True, "result": []}))
+            socket.send(
+                json.dumps({"id": 2, "type": "result", "success": True, "result": devices or []})
+            )
             command = json.loads(socket.recv(timeout=5))
             commands.append(command["type"])
             socket.send(json.dumps({"id": 3, "type": "result", "success": True, "result": []}))
@@ -377,6 +381,49 @@ def test_api_detected_gap_closes_after_next_full_pass_without_fabricated_events(
                 for value in snapshots
             )
             assert api.get("/api/events").json()["events"] == []
+        finally:
+            session.close()
+
+
+def test_switch_gap_closes_with_a_recovery_snapshot_of_the_switch(tmp_path: Path) -> None:
+    plug = registry("plug", "switch.plug") | {"device_id": "device1"}
+    with (
+        home(
+            tmp_path,
+            race_count=0,
+            entity=plug,
+            devices=[{"id": "device1", "name": "Smart plug"}],
+        ) as (connector, _, _),
+        TestClient(
+            create_app(tmp_path / "recorded.sqlite", "internal-secret", source_id="home_assistant"),
+            headers={"Authorization": "Bearer internal-secret"},
+        ) as api,
+    ):
+        session = CollectionSession(api, connector)
+        try:
+            assert session.reconcile()
+            selected = api.put(
+                "/api/selection/ha:plug", json={"selected": True}, headers={"X-Home-Keeper": "1"}
+            )
+            assert selected.status_code == 200, selected.text
+            assert session.reconcile()
+            api.post(
+                "/internal/coverage",
+                json={
+                    "source_id": "home_assistant",
+                    "status": "interrupted",
+                    "reason": "heartbeat",
+                    "received_at": datetime.now(UTC).isoformat(),
+                },
+            ).raise_for_status()
+            assert session.reconcile()
+            assert api.get("/api/coverage").json()["state"] == "collecting"
+            snapshots = api.get("/api/baselines?entity_id=ha:plug").json()["baselines"]
+            [recovery] = [value for value in snapshots if value["kind"] == "recovery"]
+            assert recovery["device_kind"] == "switch"
+            assert recovery["coverage_gap_ids"]
+            # The REST state carries brightness; a switch reading never keeps it.
+            assert "brightness" not in recovery
         finally:
             session.close()
 

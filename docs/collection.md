@@ -10,7 +10,7 @@ demo, add `-f compose.demo.yaml`. For your own Home Assistant, use
 
 The collector refreshes discovery and polls selected current states in each
 collection pass. Live mode also subscribes to Home Assistant state-change events
-while at least one light is selected. The trusted connector discards unselected
+while at least one light, plug or switch is selected. The trusted connector discards unselected
 events before forwarding them to the API. An empty selection opens no event
 subscription. It waits ten seconds between passes by default. Slow requests
 can lengthen the interval. Change the interval without storing a secret:
@@ -53,8 +53,11 @@ words, such as "Desk lamp turned on at 40%". Its **Details** include its evidenc
 stable registry identity, old and new values, Home Assistant's `time_fired`,
 connector receipt time and API persistence time. Recorded changes use the
 [Home Assistant WebSocket `state_changed` subscription](https://developers.home-assistant.io/docs/api/websocket/#subscribe-to-events).
-The connector keeps only approved light fields. It drops unrelated attributes,
-account identifiers and raw logs. Duplicate delivery creates one event. A late
+The connector keeps only approved light fields. For a plug or switch it keeps
+only the on/off state, availability and source times, so a plug that reports a
+brightness never stores one. It drops unrelated attributes, account identifiers
+and raw logs. Each reading carries its `device_kind`, `light` or `switch`;
+readings stored before plugs were supported have none and read as `light`. Duplicate delivery creates one event. A late
 event remains in history without replacing a newer current state.
 
 Allowed color fields are `color_mode`, `color_temp_kelvin`, `hs_color`, `xy_color`,
@@ -96,7 +99,8 @@ The read-only `GET /api/usage` endpoint reports, per selected light, how long it
 was on, how often it was switched on and its average brightness while on, split
 by local day and local hour of day. It needs timezone-aware `start` and `end`
 timestamps. Repeat `entity_id` to limit the report to some lights; without it,
-the report covers every selected light. Unselected IDs are left out.
+the report covers every selected light. Unselected IDs and plugs and switches
+are left out.
 
 Days and hours use the API's time zone, UTC by default. Set an IANA name on the
 API service; an unknown name stops the API at startup:

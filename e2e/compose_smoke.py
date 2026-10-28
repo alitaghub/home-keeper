@@ -100,7 +100,8 @@ def main() -> None:
         catalog = get("/api/catalog")["entities"]
         return (
             {entry["id"] for entry in catalog} == EXPECTED
-            and sum(entry["supported"] for entry in catalog) == 2
+            # Two single lights and the smart plug; the room group and the sensor are not.
+            and sum(entry["supported"] for entry in catalog) == 3
             and get("/api/health")["status"] == "healthy"
         )
 

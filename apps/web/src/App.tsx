@@ -389,8 +389,8 @@ export function App() {
               ? "Waiting for the configured collector."
               : live
                 ? controlOn
-                  ? "Home Assistant discovery. Only selected single lights are recorded. Light control is on for monitored lights."
-                  : "Home Assistant discovery. Only selected single lights are recorded. Light control is off: Home Keeper only records."
+                  ? "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights."
+                  : "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is off: Home Keeper only records."
                 : controlOn
                   ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
                   : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records."}
@@ -409,13 +409,13 @@ export function App() {
               </small>
             </section>
             <section>
-              <span>Supported lamps</span>
+              <span>Supported devices</span>
               <strong id="count">
                 {snapshot
                   ? String(snapshot.catalog.entities.filter((entity) => entity.supported).length)
                   : "—"}
               </strong>
-              <small>Single lights, without groups or rooms</small>
+              <small>Single lights, plugs and switches, without groups or rooms</small>
             </section>
             <section>
               <span>Monitoring</span>

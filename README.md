@@ -73,14 +73,17 @@ your questions and replies.
 
 1. The **collector** discovers devices in Home Assistant and lists them in the
    dashboard.
-2. You pick the lights to monitor. Nothing is recorded before you do.
-3. The collector takes a baseline snapshot of each selected light, then streams
-   its state changes: on/off, brightness, color, availability.
+2. You pick the lights, plugs and switches to monitor. Nothing is recorded
+   before you do.
+3. The collector takes a baseline snapshot of each selected device, then streams
+   its state changes: on/off and availability, plus brightness and color for a
+   light.
 4. The **API** validates every record and stores it in SQLite. If collection
    stops, it records a gap instead of guessing what happened.
 5. The **dashboard** has three tabs. **Home** shows each monitored light and
-   switches it. **History** lists commands, changes and gaps in plain words, with
-   the evidence behind **Details**. **Setup** chooses which lights to monitor.
+   switches it, then each monitored plug or switch under **Plugs and switches**.
+   **History** lists commands, changes and gaps in plain words, with the evidence
+   behind **Details**. **Setup** chooses which devices to monitor.
 
 [docs/architecture.md](docs/architecture.md) has the full picture, the selection
 flow and the terms the code uses.
@@ -93,7 +96,7 @@ flow and the terms the code uses.
   with its own non-admin Home Assistant user. It knows two commands, light on
   (with an optional brightness) and light off, and the API sends them only for
   monitored lights. Without the profile, nothing can switch a light.
-- **Opt-in.** Discovery is not permission. Each light is recorded only after you
+- **Opt-in.** Discovery is not permission. Each device is recorded only after you
   select it, and a removal takes effect even if a slow read is still in flight.
 - **Evidence, not guesses.** Every event keeps three timestamps: when Home
   Assistant fired it, when the collector received it, and when the API stored it.
@@ -124,8 +127,9 @@ token for the collector. Then:
 
 2. Open Home Assistant at <http://127.0.0.1:8123>, log in, and add your devices
    under **Settings → Devices & services → Add integration**. Home Assistant owns
-   every device connection. Home Keeper can record any single light that Home
-   Assistant shows, from any brand. It does not record light groups or rooms.
+   every device connection. Home Keeper can record any single light, smart plug
+   or switch that Home Assistant shows, from any brand. It does not record
+   groups or rooms. Plugs and switches are recorded, not switched.
    Pairing a Hue Bridge, for example, needs one press of its button.
 3. Open the dashboard at <http://localhost:8000>. On the **Setup** tab, click
    **Refresh discovery**, then **Monitor** on a lamp.

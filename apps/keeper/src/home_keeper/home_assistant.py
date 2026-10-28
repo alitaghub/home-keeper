@@ -17,12 +17,18 @@ from typing import Any, NoReturn, Protocol
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import ClientConnection, connect
 
-from home_keeper.events import change_event, is_json_object, light_state
-from home_keeper.models import Catalog, ChangeEvent, Entity, Observation
+from home_keeper.events import change_event, device_state, is_json_object
+from home_keeper.models import (
+    Catalog,
+    ChangeEvent,
+    DeviceObservation,
+    Entity,
+    device_kind_of,
+)
 
 MAX_PAYLOAD = 2 * 1024 * 1024
 MAX_REGISTRY_ROWS = 500
@@ -33,15 +39,18 @@ MAX_RECEIVE_TIMEOUT_SECONDS = 5
 # Visible ASCII only: no spaces, control characters or non-ASCII in origins and credentials.
 VISIBLE_ASCII = range(33, 127)
 _REGISTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,120}$")
-_LIGHT_ID = re.compile(r"^light\.[a-z0-9_]{1,120}$")
+_DEVICE_ID = re.compile(r"^(light|switch)\.[a-z0-9_]{1,120}$")
 # Integrations flag their group entities with attributes such as is_hue_group or is_deconz_group.
 _GROUP_FLAG = re.compile(r"^is_[a-z0-9_]+_group$")
 _DISCOVERY_COMMANDS = frozenset(
     {"config/entity_registry/list", "config/device_registry/list", "get_states"}
 )
-GROUP_REASON = "Light groups and rooms are not recorded"
+GROUP_REASON = "Groups and rooms are not recorded"
 DISABLED_REASON = "Disabled in Home Assistant"
-NOT_A_LIGHT_REASON = "Only single lights are supported"
+NOT_A_DEVICE_REASON = "Only lights, plugs and switches are supported"
+SWITCH_CATEGORY_REASON = "Settings and diagnostic switches are not recorded"
+SWITCH_DEVICE_REASON = "Switches without a device are not recorded"
+_observation: TypeAdapter[DeviceObservation] = TypeAdapter(DeviceObservation)
 _WS_LOGGER = logging.getLogger("home_keeper.transport.private")
 _WS_LOGGER.addHandler(logging.NullHandler())
 _WS_LOGGER.propagate = False
@@ -77,7 +86,7 @@ class Subscription(Protocol):
 class Connector(Protocol):
     def discover(self) -> Catalog: ...
     def approve(self, selected: dict[str, int]) -> None: ...
-    def read_selected(self, identity: str, revision: int) -> Observation: ...
+    def read_selected(self, identity: str, revision: int) -> DeviceObservation: ...
     @property
     def subscription_key(self) -> SubscriptionKey: ...
     def subscribe_selected(self) -> Subscription | None: ...
@@ -170,7 +179,7 @@ class HomeAssistantConnector:
                     raise ConnectorError("invalid_data")
                 entities = self._registry(socket, 1, "config/entity_registry/list")
                 devices = self._registry(socket, 2, "config/device_registry/list")
-                groups = _light_groups(self._registry(socket, 3, "get_states"))
+                groups = _groups(self._registry(socket, 3, "get_states"))
             catalog, mapping = self._project(entities, devices, groups)
         except ConnectorError:
             raise
@@ -209,7 +218,7 @@ class HomeAssistantConnector:
         result: object = response.get("result")
         if not isinstance(result, list):
             raise ConnectorError("invalid_data")
-        return result  # pyright: ignore[reportUnknownVariableType] -- raw rows; _project and _light_groups validate each
+        return result  # pyright: ignore[reportUnknownVariableType] -- raw rows; _project and _groups validate each
 
     def _name(self, value: object, fallback: str) -> str:
         name = value if isinstance(value, str) and value else fallback
@@ -250,12 +259,19 @@ class HomeAssistantConnector:
             if device_id is not None and device_id not in device_names:
                 # Dangling relationships retain the entity without inventing a device.
                 device_id = None
-            if not _LIGHT_ID.fullmatch(entity_id):
-                reason = NOT_A_LIGHT_REASON
+            kind = device_kind_of(entity_id)
+            if not _DEVICE_ID.fullmatch(entity_id):
+                reason = NOT_A_DEVICE_REASON
             elif entity.get("platform") == "group" or entity_id in groups:
                 reason = GROUP_REASON
             elif entity.get("disabled_by") is not None:
                 reason = DISABLED_REASON
+            # A switch outside a device, or one in a settings category, is a helper or an
+            # integration option, not a plug or switch someone uses.
+            elif kind == "switch" and entity.get("entity_category") is not None:
+                reason = SWITCH_CATEGORY_REASON
+            elif kind == "switch" and not device_id:
+                reason = SWITCH_DEVICE_REASON
             else:
                 reason = None
             supported = reason is None
@@ -267,6 +283,7 @@ class HomeAssistantConnector:
                     ),
                     device_id=f"ha:{device_id}" if device_id else None,
                     device_name=device_names.get(device_id) if device_id else None,
+                    device_kind=kind,
                     supported=supported,
                     reason=reason,
                 )
@@ -301,7 +318,7 @@ class HomeAssistantConnector:
             return None
         return SelectedSubscription(self)
 
-    def read_selected(self, identity: str, revision: int) -> Observation:
+    def read_selected(self, identity: str, revision: int) -> DeviceObservation:
         if (
             not self._validated
             or identity not in self._supported
@@ -327,17 +344,19 @@ class HomeAssistantConnector:
                     if len(payload) > MAX_PAYLOAD:
                         raise ConnectorError("invalid_data")
             data = json.loads(payload)
-            value = light_state(data, entity_id)
+            value = device_state(data, entity_id)
             if value is None:
                 raise ConnectorError("invalid_data")
-            return Observation(
-                **value.model_dump(exclude_none=True),
-                entity_id=identity,
-                source_entity_id=entity_id,
-                source_id="home_assistant",
-                selection_revision=revision,
-                received_at=datetime.now(UTC),
-                collection_started_at=started_at,
+            return _observation.validate_python(
+                value.model_dump(exclude_none=True)
+                | {
+                    "entity_id": identity,
+                    "source_entity_id": entity_id,
+                    "source_id": "home_assistant",
+                    "selection_revision": revision,
+                    "received_at": datetime.now(UTC),
+                    "collection_started_at": started_at,
+                }
             )
 
         except ConnectorError:
@@ -356,14 +375,15 @@ class HomeAssistantConnector:
             raise ConnectorError("invalid_data") from None
 
 
-def _light_groups(states: list[Any]) -> frozenset[str]:
-    """Return the light entity ids whose state marks them as a group. Keeps nothing else."""
+def _groups(states: list[Any]) -> frozenset[str]:
+    """Return the light and switch entity ids whose state marks them as a group. Keeps nothing
+    else."""
     groups: set[str] = set()
     for row in states:
         entity_id = row.get("entity_id") if is_json_object(row) else None
         if not isinstance(entity_id, str):
             raise ConnectorError("invalid_data")
-        if not _LIGHT_ID.fullmatch(entity_id):
+        if not _DEVICE_ID.fullmatch(entity_id):
             continue
         attributes = row.get("attributes")
         if not is_json_object(attributes):
@@ -459,8 +479,8 @@ class SelectedSubscription:
             if not isinstance(source_entity_id, str) or source_entity_id not in self._mapping:
                 return None
             identity, revision = self._mapping[source_entity_id]
-            old = light_state(data.get("old_state"), source_entity_id)
-            new = light_state(data.get("new_state"), source_entity_id)
+            old = device_state(data.get("old_state"), source_entity_id)
+            new = device_state(data.get("new_state"), source_entity_id)
             fired = datetime.fromisoformat(envelope["time_fired"])
             if fired.tzinfo is None or fired.utcoffset() is None:
                 raise ConnectorError("invalid_data")

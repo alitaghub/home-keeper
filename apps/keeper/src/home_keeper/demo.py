@@ -20,7 +20,13 @@ import httpx
 from pydantic import ValidationError
 
 from home_keeper.events import change_event
-from home_keeper.models import LightCommand, LightState, SelectionSnapshot
+from home_keeper.models import (
+    DeviceKind,
+    LightCommand,
+    LightState,
+    SelectionSnapshot,
+    SwitchState,
+)
 from home_keeper.tokens import load_token
 from home_keeper_light_command import (
     BRIGHTNESS_MAX,
@@ -44,6 +50,7 @@ class DemoEntity(TypedDict):
     device_id: str | None
     device_name: str | None
     name: str
+    device_kind: DeviceKind | None
     supported: bool
     reason: str | None
 
@@ -54,6 +61,7 @@ ENTITIES: list[DemoEntity] = [
         "device_id": "hue-desk",
         "device_name": "Desk lamp",
         "name": "Desk light",
+        "device_kind": "light",
         "supported": True,
         "reason": None,
     },
@@ -62,6 +70,7 @@ ENTITIES: list[DemoEntity] = [
         "device_id": "hue-reading",
         "device_name": "Reading lamp",
         "name": "Reading light <script>alert('untrusted')</script>",
+        "device_kind": "light",
         "supported": True,
         "reason": None,
     },
@@ -70,24 +79,27 @@ ENTITIES: list[DemoEntity] = [
         "device_id": "hue-room",
         "device_name": "Living room group",
         "name": "All living room lights",
+        "device_kind": "light",
         "supported": False,
-        "reason": "Light groups and rooms are not recorded",
+        "reason": "Groups and rooms are not recorded",
     },
     {
         "id": "switch.smart_plug",
         "device_id": "smart-plug",
         "device_name": "Smart plug",
         "name": "Plug",
-        "supported": False,
-        "reason": "Only single lights are supported",
+        "device_kind": "switch",
+        "supported": True,
+        "reason": None,
     },
     {
         "id": "sensor.ungrouped",
         "device_id": None,
         "device_name": None,
         "name": "Ungrouped sensor",
+        "device_kind": None,
         "supported": False,
-        "reason": "Only single lights are supported",
+        "reason": "Only lights, plugs and switches are supported",
     },
 ]
 CATALOG = {"source_id": "demo", "entities": ENTITIES}
@@ -119,20 +131,21 @@ class DemoReplay:
         self.held: dict[str, int] = {}
         # Each light's brightness from when it was last on, which an off state does not carry.
         self.last_brightness: dict[str, int] = {}
-        self.states = {
-            entity["id"]: LightState.model_validate(
-                {
-                    "state": "on",
-                    "brightness": 180 if entity["id"] == "light.hue_desk" else 100,
-                    "last_changed": "2025-01-01T12:00:00Z",
-                    "last_updated": "2025-01-01T12:00:00Z",
-                }
+        since = {"last_changed": "2025-01-01T12:00:00Z", "last_updated": "2025-01-01T12:00:00Z"}
+        self.states: dict[str, LightState | SwitchState] = {
+            entity["id"]: SwitchState.model_validate(
+                since | {"state": "on", "device_kind": "switch"}
+            )
+            if entity["device_kind"] == "switch"
+            else LightState.model_validate(
+                since
+                | {"state": "on", "brightness": 180 if entity["id"] == "light.hue_desk" else 100}
             )
             for entity in ENTITIES
             if entity["supported"]
         }
 
-    def advance(self, event_time: datetime) -> dict[str, LightState]:
+    def advance(self, event_time: datetime) -> dict[str, LightState | SwitchState]:
         sequence: tuple[dict[str, object], ...] = (
             {"state": "off"},
             {"state": "on", "brightness": 100},
@@ -148,7 +161,7 @@ class DemoReplay:
         self.last_brightness |= {
             identity: old.brightness
             for identity, old in previous.items()
-            if old.brightness is not None
+            if isinstance(old, LightState) and old.brightness is not None
         }
         self.states = {
             identity: old if identity in self.held else self._next(old, value, event_time)
@@ -158,22 +171,26 @@ class DemoReplay:
         return previous
 
     @staticmethod
-    def _next(old: LightState, value: dict[str, object], event_time: datetime) -> LightState:
-        return LightState.model_validate(
-            {
-                **value,
-                "last_changed": event_time if old.state != value["state"] else old.last_changed,
-                "last_updated": event_time,
-                "last_reported": event_time,
-            }
-        )
+    def _next[State: LightState | SwitchState](
+        old: State, value: dict[str, object], event_time: datetime
+    ) -> State:
+        times = {
+            "last_changed": event_time if old.state != value["state"] else old.last_changed,
+            "last_updated": event_time,
+            "last_reported": event_time,
+        }
+        if isinstance(old, SwitchState):
+            # A plug follows the lights' on, off and unavailable steps, without their attributes.
+            return old.model_validate({"state": value["state"], "device_kind": "switch"} | times)
+        return old.model_validate(value | times)
 
     def switch(
         self, identity: str, command: LightCommand, event_time: datetime
     ) -> tuple[LightState, LightState] | None:
         """Apply a command and hold the light; returns (old, new), or None if it cannot switch."""
         old = self.states.get(identity)
-        if old is None or old.state not in ("on", "off"):
+        # Plugs cannot be switched yet.
+        if not isinstance(old, LightState) or old.state not in ("on", "off"):
             return None
         if old.brightness is not None:
             self.last_brightness[identity] = old.brightness

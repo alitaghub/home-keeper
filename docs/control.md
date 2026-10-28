@@ -187,7 +187,9 @@ on a monitored demo light returns `observed`.
 
 ## Limits
 
-- Lights only. No color, color temperature, scenes, switches or plugs.
+- Lights only. No color, color temperature, scenes, switches or plugs. A
+  command for a monitored plug or switch is refused with `422` (`Entity is
+  unsupported`) before anything is sent.
 - A Home Assistant token cannot be limited to some entities. The controller's
   fixed command set and the API's checks are the only limits on what the control
   user does.

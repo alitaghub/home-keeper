@@ -97,12 +97,16 @@ def _guard[T](render: Callable[[], T]) -> T | str:
         return "Keeper error: unexpected response from Home Keeper."
 
 
+def _kind(device_kind: str | None) -> str:
+    return f" kind={device_kind}" if device_kind else ""
+
+
 def format_lights(monitored: Monitored) -> str:
     if not monitored.entities:
-        return "No lights are monitored."
-    lines = [f"{len(monitored.entities)} monitored light(s):"]
+        return "No lights, plugs or switches are monitored."
+    lines = [f"{len(monitored.entities)} monitored device(s):"]
     for light in monitored.entities:
-        line = f"- {light.id} name={_name(light.name)}"
+        line = f"- {light.id}{_kind(light.device_kind)} name={_name(light.name)}"
         if light.device_name:
             line += f" device={_name(light.device_name)}"
         line += f": {_reading(light.baseline)}"
@@ -190,7 +194,7 @@ def format_devices(catalog: Catalog) -> str:
         f"refreshed {catalog.refreshed_at or 'never'}:"
     ]
     for device in catalog.entities:
-        line = f"- {device.id} name={_name(device.name)}"
+        line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
         if device.device_name:
             line += f" device={_name(device.device_name)}"
         if device.supported:
@@ -280,6 +284,9 @@ def _light_refusal(
         light = next((light for light in monitored().entities if light.id == entity_id), None)
         if light is None:
             return f"Not sent: {entity_id} is not monitored. Offer to start monitoring it first."
+        # The keeper refuses these too: plugs and switches cannot be switched yet.
+        if light.device_kind == "switch":
+            return f"Not sent: {entity_id} is a plug or switch; only lights can be switched."
         return _state_refusal(entity_id, light.baseline, action, brightness)
 
     return _guard(check)
@@ -315,8 +322,8 @@ def format_outcome(entity_id: str, command: LightOn | LightOff, record: CommandR
 def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_lights() -> str:
-        """List the lights the keeper records, with their latest state and freshness. The first
-        line says whether light control is on."""
+        """List the lights, plugs and switches the keeper records, with each one's kind, latest
+        state and freshness. The first line says whether light control is on."""
 
         def render() -> str:
             monitored = client.request("GET", "/api/monitored", Monitored)
@@ -347,12 +354,13 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def get_events(start: str, end: str, entity_id: str | None = None) -> str:
-        """List recorded light changes in a time range, newest first, at most 100.
+        """List recorded changes of lights, plugs and switches in a time range, newest first, at
+        most 100.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset.
             end: Range end, ISO 8601 with a UTC offset.
-            entity_id: One light entity ID such as light.kitchen; omit for all lights.
+            entity_id: One entity ID such as light.kitchen; omit for every monitored device.
         """
         params: Params = {"start": start, "end": end, "limit": EVENT_LIMIT}
         if entity_id:
@@ -376,8 +384,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def list_devices() -> str:
-        """List the devices the keeper discovered in Home Assistant and whether each can be
-        monitored."""
+        """List the devices the keeper discovered in Home Assistant, with each one's kind (light
+        or switch, which covers plugs) and whether it can be monitored."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:
@@ -385,7 +393,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         path = f"/api/selection/{quote(entity_id, safe='')}"
         selection = client.request("PUT", path, Selection, body={"selected": selected})
         verb = "Now monitoring" if selected else "Stopped monitoring"
-        return f"{verb} {_name(entity_id)}. {len(selection.entity_ids)} light(s) monitored."
+        return f"{verb} {_name(entity_id)}. {len(selection.entity_ids)} device(s) monitored."
 
     @tool
     def refresh_discovery() -> str:
@@ -400,19 +408,22 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def monitor_light(entity_id: str) -> str:
-        """Start recording a light. The user must approve this; it never changes the light.
+        """Start recording a light, plug or switch. The user must approve this; it never
+        changes the device.
 
         Args:
-            entity_id: A light entity ID from list_devices, such as light.kitchen.
+            entity_id: An entity ID from list_devices that can be monitored, such as
+                light.kitchen.
         """
         return _guard(lambda: select(entity_id, selected=True))
 
     @tool
     def stop_monitoring(entity_id: str) -> str:
-        """Stop recording a light. The user must approve this; it never changes the light.
+        """Stop recording a light, plug or switch. The user must approve this; it never changes
+        the device.
 
         Args:
-            entity_id: A monitored light entity ID, such as light.kitchen.
+            entity_id: A monitored entity ID, such as light.kitchen.
         """
         return _guard(lambda: select(entity_id, selected=False))
 
