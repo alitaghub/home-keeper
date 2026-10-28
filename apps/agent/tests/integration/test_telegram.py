@@ -1138,7 +1138,7 @@ def light_keeper(state: str = "on") -> FakeKeeper:
         {
             "/api/monitored": lights_response(state),
             "/api/control": control_response("on"),
-            "/api/lights/bulb-a/command": command_response("observed"),
+            "/api/devices/bulb-a/command": command_response("observed"),
         }
     )
 
@@ -1241,6 +1241,7 @@ def test_control_user_approval_sends_one_command_attributed_to_them(
     bot.handle_update(clicked(2, 11, data, 101, first_name="Ali"))
 
     [command] = command_requests(keeper)
+    assert command.url.path == "/api/devices/bulb-a/command"
     assert json.loads(command.content) == {
         "command": {"action": "off"},
         "sender": {"kind": "telegram", "id": 11, "name": "Ali"},

@@ -68,7 +68,7 @@ def wait_until[T](description: str, predicate: Callable[[], T], timeout: float =
 
 def command(client: httpx.Client, action: dict[str, object]) -> httpx.Response:
     return client.post(
-        f"/api/lights/{LIGHT}/command",
+        f"/api/devices/{LIGHT}/command",
         json={"command": action, "sender": {"kind": "dashboard"}},
         headers=WRITE,
     )

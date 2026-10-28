@@ -799,7 +799,7 @@ def create_app(
     send_threads = CapacityLimiter(CONCURRENT_SENDS)
 
     @app.post(
-        "/api/lights/{entity_id}/command",
+        "/api/devices/{entity_id}/command",
         response_model=CommandRecord,
         response_model_exclude_unset=True,
         responses={409: {"model": CommandRefused}},

@@ -258,9 +258,9 @@ def test_refusals_return_their_fixed_detail_in_order_and_nothing_is_sent_or_stor
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/lights/..%2Fselection%2Fbulb-a/command",
-        "/api/lights/bulb-a%2F..%2Fbulb-b/command",
-        "/api/lights//command",
+        "/api/devices/..%2Fselection%2Fbulb-a/command",
+        "/api/devices/bulb-a%2F..%2Fbulb-b/command",
+        "/api/devices//command",
     ],
 )
 def test_path_shaped_entity_ids_reach_no_light(tmp_path: Path, path: str) -> None:
@@ -271,6 +271,18 @@ def test_path_shaped_entity_ids_reach_no_light(tmp_path: Path, path: str) -> Non
             headers={"X-Home-Keeper": "1"},
         )
         assert response.status_code in (404, 405), response.text
+        assert house.controller.sent == []
+        assert house.commands() == []
+
+
+def test_retired_light_command_route_is_not_found_and_reaches_nothing(tmp_path: Path) -> None:
+    with home(tmp_path) as house:
+        response = house.client.post(
+            "/api/lights/bulb-a/command",
+            json={"command": ON, "sender": DASHBOARD},
+            headers={"X-Home-Keeper": "1"},
+        )
+        assert response.status_code == 404, response.text
         assert house.controller.sent == []
         assert house.commands() == []
 
@@ -301,7 +313,7 @@ def test_malformed_command_is_an_invalid_request_and_reaches_nothing(
 ) -> None:
     with home(tmp_path) as house:
         response = house.client.post(
-            "/api/lights/bulb-a/command", json=body, headers={"X-Home-Keeper": "1"}
+            "/api/devices/bulb-a/command", json=body, headers={"X-Home-Keeper": "1"}
         )
         assert response.status_code == 422, response.text
         assert response.json() == {"detail": "Invalid request"}
@@ -637,7 +649,7 @@ def test_collector_ingestion_is_not_held_up_by_a_burst_of_command_waits(tmp_path
 
                 async def send_command() -> None:
                     response = await api.post(
-                        "/api/lights/bulb-a/command",
+                        "/api/devices/bulb-a/command",
                         json={"command": ON, "sender": DASHBOARD},
                         headers={"X-Home-Keeper": "1"},
                         timeout=30,
@@ -687,7 +699,7 @@ def test_collector_ingestion_is_not_held_up_by_stalled_controller_sends(tmp_path
 
                 async def send_command() -> None:
                     response = await api.post(
-                        "/api/lights/bulb-a/command",
+                        "/api/devices/bulb-a/command",
                         json={"command": ON, "sender": DASHBOARD},
                         headers={"X-Home-Keeper": "1"},
                         timeout=30,

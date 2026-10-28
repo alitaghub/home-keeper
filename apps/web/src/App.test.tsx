@@ -544,7 +544,7 @@ describe("dashboard behavior", () => {
 });
 
 describe("light control from the dashboard", () => {
-  const COMMAND = "POST /api/lights/{entity_id}/command";
+  const COMMAND = "POST /api/devices/{entity_id}/command";
   const CONTROL_NOTICE = "Light control is on for monitored lights.";
 
   /** Monitors the desk lamp (recorded state `state`); control is on unless told otherwise. */
@@ -689,7 +689,7 @@ describe("light control from the dashboard", () => {
     await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
     expect(api.callsTo(COMMAND)).toHaveLength(1);
     const [command] = api.callsTo(COMMAND);
-    expect(command?.url.pathname).toBe("/api/lights/light.hue_desk/command");
+    expect(command?.url.pathname).toBe("/api/devices/light.hue_desk/command");
     expect(command?.headers.get("X-Home-Keeper")).toBe("1");
     expect(command?.body).toEqual({ command: { action: "on" }, sender: { kind: "dashboard" } });
   });
@@ -899,8 +899,8 @@ describe("light control from the dashboard", () => {
 
     await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(2));
     expect(api.callsTo(COMMAND).map((call) => call.url.pathname)).toEqual([
-      "/api/lights/light.hue_desk/command",
-      "/api/lights/light.hue_reading/command",
+      "/api/devices/light.hue_desk/command",
+      "/api/devices/light.hue_reading/command",
     ]);
     release();
   });
@@ -1307,7 +1307,7 @@ describe("command history in the timeline", () => {
 });
 
 describe("tabs, brightness and plain history", () => {
-  const COMMAND = "POST /api/lights/{entity_id}/command";
+  const COMMAND = "POST /api/devices/{entity_id}/command";
 
   /** The desk lamp, monitored and recorded `state`, with control on unless told otherwise. */
   function renderLamp(

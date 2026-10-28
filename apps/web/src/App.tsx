@@ -65,7 +65,7 @@ async function sendLightCommand(
   command: LightCommand,
 ): Promise<CommandResult> {
   const name = lightName(entity);
-  const { data, error, response } = await api.POST("/api/lights/{entity_id}/command", {
+  const { data, error, response } = await api.POST("/api/devices/{entity_id}/command", {
     params: { path: { entity_id: entity.id } },
     body: { command, sender: { kind: "dashboard" } },
     headers: mutationHeaders,

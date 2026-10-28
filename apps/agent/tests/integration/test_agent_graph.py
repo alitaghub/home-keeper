@@ -186,7 +186,7 @@ def light_keeper(
         {
             "/api/monitored": lights_response(state, brightness),
             "/api/control": control_response(control),
-            "/api/lights/bulb-a/command": command or command_response("observed"),
+            "/api/devices/bulb-a/command": command or command_response("observed"),
         }
     )
 
@@ -457,7 +457,7 @@ def test_approved_light_command_sends_exactly_that_command_as_the_browser_chat(
     resume(agent, config, "approve")
 
     [post] = command_requests(keeper)
-    assert (post.method, post.url.path) == ("POST", "/api/lights/bulb-a/command")
+    assert (post.method, post.url.path) == ("POST", "/api/devices/bulb-a/command")
     assert post.headers["X-Home-Keeper"] == "1"
     assert json.loads(post.content) == {"command": body, "sender": {"kind": "browser_chat"}}
 
@@ -479,7 +479,7 @@ def test_light_id_is_sent_as_one_path_segment() -> None:
         {
             "/api/monitored": lights_response("on", entity_id=entity_id),
             "/api/control": control_response("on"),
-            f"/api/lights/{entity_id}/command": command_response("observed"),
+            f"/api/devices/{entity_id}/command": command_response("observed"),
         }
     )
     call: ToolCall = {"name": "turn_off_light", "args": {"entity_id": entity_id}, "id": "call-id"}
@@ -488,7 +488,7 @@ def test_light_id_is_sent_as_one_path_segment() -> None:
     resume(agent, config, "approve")
 
     [post] = command_requests(keeper)
-    assert post.url.raw_path == b"/api/lights/a%2Fb%20c/command"
+    assert post.url.raw_path == b"/api/devices/a%2Fb%20c/command"
 
 
 @pytest.mark.parametrize(

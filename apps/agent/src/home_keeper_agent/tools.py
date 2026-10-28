@@ -422,7 +422,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         if not context.may_control:
             return NOT_ALLOWED
         # The ID comes from the model, so it is encoded as one path segment.
-        path = f"/api/lights/{quote(entity_id, safe='')}/command"
+        path = f"/api/devices/{quote(entity_id, safe='')}/command"
         request = CommandRequest(command=command, sender=context.sender)
         record = client.request("POST", path, CommandRecord, body=request)
         return format_outcome(entity_id, command, record)

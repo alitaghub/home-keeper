@@ -79,7 +79,7 @@ Only a light you monitor can be switched, so every command leaves evidence.
 Use the light's ID from `/api/catalog`:
 
 ```sh
-curl -X POST http://127.0.0.1:8000/api/lights/light.hue_desk/command \
+curl -X POST http://127.0.0.1:8000/api/devices/light.hue_desk/command \
   -H 'X-Home-Keeper: 1' -H 'Content-Type: application/json' \
   -d '{"command": {"action": "on", "brightness_pct": 30}, "sender": {"kind": "dashboard"}}'
 ```

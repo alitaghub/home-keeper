@@ -35,7 +35,7 @@ def command(
     entity: str = "bulb-a",
 ) -> httpx.Response:
     return client.post(
-        f"/api/lights/{entity}/command",
+        f"/api/devices/{entity}/command",
         json={"command": action, "sender": sender},
         headers=BROWSER,
     )
