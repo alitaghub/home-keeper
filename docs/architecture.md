@@ -62,7 +62,7 @@ flowchart LR
 | Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the collector's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
 | Demo      | `demo.py`                              | Replaces the live collector with a synthetic home. Same API calls, no hardware. Applies demo light commands. |
 | API       | `api.py`, `models.py`, `control.py`    | Validates every record, owns the selection, and records collection gaps. Checks, forwards and records light commands. |
-| Controller | `apps/controller`                     | Optional (profile `control`). Sends the two fixed light calls to Home Assistant with its own token, or to the demo collector. Publishes no port. |
+| Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo collector. Publishes no port. |
 | Recorder  | `recorder.py`                          | Admits baselines and events, stores them, and decides which one is a light's current state. |
 | Store     | `store.py`                             | SQLite schema, transactions, retention.                                                     |
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |

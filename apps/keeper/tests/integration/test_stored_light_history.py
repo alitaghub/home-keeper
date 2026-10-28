@@ -168,6 +168,15 @@ def test_light_rows_written_now_are_readable_by_the_light_only_release(tmp_path:
             response = command(client, action, TELEGRAM, entity=entity)
             assert response.status_code == 200, response.text
         controller.join()
+        kinds = {
+            e["id"]: e.get("device_kind") for e in client.get("/api/catalog").json()["entities"]
+        }
+
+    assert kinds == {e["id"]: e.get("device_kind") for e in [*CATALOG_ENTITIES, PLUG]}
+    assert kinds["plug-a"] == "switch"
+    with closing(sqlite3.connect(path)) as db:
+        for (data,) in db.execute("SELECT data FROM catalog"):
+            previous_release.Entity.model_validate_json(data)
 
     rows = {
         "baselines": stored(path, "baselines"),

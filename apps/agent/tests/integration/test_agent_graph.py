@@ -578,7 +578,7 @@ def test_prompt_lets_the_model_propose_device_commands_only_after_the_user_asks(
 
     [system] = model.seen
     assert "cannot control devices" not in system
-    # The prompt names the tools the model has, not the light-only names they replaced.
+    # The prompt names only the tools the model has.
     for name in ("turn_on", "turn_off", "list_monitored", "monitor"):
         assert re.search(rf"\b{name}\b", system), name
     assert not re.search(r"\b(turn_on_light|turn_off_light|list_lights|monitor_light)\b", system)

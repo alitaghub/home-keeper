@@ -19,8 +19,21 @@ from pydantic import (
     model_validator,
 )
 
-# The command shape is shared with the controller and the demo collector.
-from home_keeper_light_command import LightCommand
+
+class _CommandWire(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LightOn(_CommandWire):
+    action: Literal["on"]
+    brightness_pct: int | None = Field(default=None, strict=True, ge=1, le=100)
+
+
+class LightOff(_CommandWire):
+    action: Literal["off"]
+
+
+LightCommand = Annotated[LightOn | LightOff, Field(discriminator="action")]
 
 Identity = Annotated[
     str, StringConstraints(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.:-]+$")

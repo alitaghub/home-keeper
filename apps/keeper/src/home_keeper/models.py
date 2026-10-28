@@ -168,15 +168,14 @@ class StateHeader(WireModel):
         )
 
 
-# Pydantic orders fields from the last base to the first. The attributes lead, as before
-# plugs, so a stored light event keeps its exact form.
+# Pydantic orders fields from the last base to the first; the attributes lead so a stored
+# light event keeps the byte form its ID is hashed from.
 class LightState(StateHeader, LightAttributes):
     device_kind: Literal["light"] = "light"
 
     def stored(self) -> dict[str, object]:
-        """The state as an event stores and hashes it. A light's leaves out its device kind,
-        as before plugs, so its event keeps the same ID and the release before still reads it.
-        """
+        """The state as an event stores and hashes it. A light's omits its device kind, which
+        keeps stored light rows and event IDs compatible with readers that forbid the field."""
         return self.model_dump(mode="json", exclude_none=True, exclude={"device_kind"})
 
 

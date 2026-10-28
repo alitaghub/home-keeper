@@ -311,10 +311,7 @@ def create_app(
                     and get_health(db).status not in ("failed", "stale")
                     else "stale"
                 ),
-                entities=[
-                    Entity.model_validate_json(row[0])
-                    for row in db.execute("SELECT data FROM catalog ORDER BY id")
-                ],
+                entities=store.entities(db),
             )
 
     @app.get("/api/selection", response_model=SelectionSnapshot)
@@ -378,9 +375,14 @@ def create_app(
                 "INSERT OR REPLACE INTO metadata VALUES('catalog_at', ?)", (now().isoformat(),)
             )
             db.execute("DELETE FROM catalog")
+            db.execute("DELETE FROM catalog_kind")
             db.executemany(
                 "INSERT INTO catalog VALUES(?, ?)",
-                [(e.id, e.model_dump_json()) for e in payload.entities],
+                [(e.id, e.model_dump_json(exclude={"device_kind"})) for e in payload.entities],
+            )
+            db.executemany(
+                "INSERT INTO catalog_kind VALUES(?, ?)",
+                [(e.id, e.device_kind) for e in payload.entities if e.device_kind],
             )
             # Discovery describes support; it never changes the user's approval.
         return {"accepted": True}
@@ -633,7 +635,7 @@ def create_app(
             switches = {
                 row[0]
                 for row in db.execute(
-                    "SELECT id FROM catalog WHERE json_extract(data, '$.device_kind')='switch' "
+                    "SELECT id FROM catalog_kind WHERE device_kind='switch' "
                     "UNION SELECT id FROM selected_switch"
                 )
             }

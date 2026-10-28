@@ -23,8 +23,8 @@ baseline_record: TypeAdapter[BaselineRecord] = TypeAdapter(BaselineRecord)
 
 
 def stored_json(record: CurrentReading | CommandRecord) -> str:
-    """A record's row. A light's leaves out its device kind, as before plugs, because the
-    release before forbids unknown fields. Readers take a missing kind as a light."""
+    """A record's row. A light's omits its device kind so readers that forbid the field still
+    parse it; readers here take a missing kind as a light."""
     exclude = {"device_kind"} if record.device_kind == "light" else None
     return record.model_dump_json(exclude_unset=True, exclude=exclude)
 
@@ -40,9 +40,13 @@ class Store:
         with self.transaction() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS catalog(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+                -- Kinds sit beside the catalog so its rows parse for readers that forbid the field.
+                CREATE TABLE IF NOT EXISTS catalog_kind(
+                    id TEXT PRIMARY KEY, device_kind TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS selection(id TEXT PRIMARY KEY);
-                -- A selected switch's kind outlives its catalog row. A separate table, so
-                -- the light-only release still reads and writes `selection` unchanged.
+                -- A selected switch's kind outlives its catalog row; a separate table keeps
+                -- `selection` one column for readers and writers that insert one value.
                 CREATE TABLE IF NOT EXISTS selected_switch(id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 INSERT OR IGNORE INTO metadata VALUES('revision', '0');
@@ -137,9 +141,22 @@ class Store:
         )
 
     @staticmethod
+    def entities(db: sqlite3.Connection, entity_id: str | None = None) -> list[Entity]:
+        rows = db.execute(
+            "SELECT c.data, k.device_kind FROM catalog c LEFT JOIN catalog_kind k ON k.id = c.id "
+            "WHERE ? IS NULL OR c.id = ? ORDER BY c.id",
+            (entity_id, entity_id),
+        )
+        return [
+            Entity.model_validate_json(data).model_copy(update={"device_kind": kind})
+            if kind
+            else Entity.model_validate_json(data)
+            for data, kind in rows
+        ]
+
+    @staticmethod
     def entity(db: sqlite3.Connection, entity_id: str) -> Entity | None:
-        row = db.execute("SELECT data FROM catalog WHERE id=?", (entity_id,)).fetchone()
-        return Entity.model_validate_json(row[0]) if row else None
+        return next(iter(Store.entities(db, entity_id)), None)
 
     @staticmethod
     def current(db: sqlite3.Connection, entity_id: str) -> CurrentReading | None:

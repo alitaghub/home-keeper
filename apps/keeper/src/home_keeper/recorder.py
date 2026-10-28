@@ -221,7 +221,7 @@ class Recorder:
             previous = db.execute(
                 "SELECT data FROM events WHERE source_id=? AND id=?", (self.source_id, payload.id)
             ).fetchone()
-            # A light's row leaves out its device kind, as before plugs; see stored_json.
+            # `stored()` omits a light's device kind, keeping the row and its ID compatible.
             data: dict[str, object] = {
                 **payload.model_dump(mode="json"),
                 "old": payload.old.stored() if payload.old else None,
