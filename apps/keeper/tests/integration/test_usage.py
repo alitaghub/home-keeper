@@ -758,3 +758,22 @@ def test_a_selected_plug_stays_a_switch_after_discovery_drops_it_before_any_read
     assert [e["device_kind"] for e in monitored if e["id"] == "plug-a"] == ["switch"]
     assert plug["device_kind"] == "switch"
     assert "average_brightness" not in plug
+
+
+def test_switch_readings_name_the_kind_after_a_kindless_entry_is_reselected(
+    tmp_path: Path,
+) -> None:
+    switch: Payload = {"device_kind": "switch"}
+    # bulb-b's catalog entry names no kind; only its readings say it is a switch.
+    with home(tmp_path, ("bulb-b",), clock=utc(13, 12)) as house:
+        house.snapshot("bulb-b", "on", **switch)
+        house.at(utc(13, 13))
+        # Reselecting clears the current state until the next reading arrives.
+        select(house.client, "bulb-b", selected=False)
+        house.revision = select(house.client, "bulb-b")
+        house.at(utc(13, 14))
+
+        device = house.devices(utc(13, 12), utc(13, 14))["bulb-b"]
+
+    assert device["device_kind"] == "switch"
+    assert "average_brightness" not in device
