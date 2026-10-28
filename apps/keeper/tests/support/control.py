@@ -29,15 +29,6 @@ def on(brightness_pct: int) -> Payload:
     return {"action": "on", "brightness_pct": brightness_pct}
 
 
-def forwarded(action: Payload, source: str = DESK) -> Payload:
-    """The body the controller receives for `action` on the light or switch `source`."""
-    return {
-        "device_kind": source.partition(".")[0],
-        "source_entity_id": source,
-        "command": action,
-    }
-
-
 def command(
     client: TestClient,
     action: Payload,
@@ -68,7 +59,6 @@ class FakeController:
     def __init__(self, clock: list[datetime]) -> None:
         self.clock = clock
         self.sent: list[object] = []
-        self.sent_at: list[datetime] = []
         self.reply: Literal["ok", "refused"] = "ok"
         self.unreachable = False
         self.deliver: Delivery | None = None
@@ -79,7 +69,6 @@ class FakeController:
 
     def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
         self.sent.append(to_jsonable_python(forwarded, exclude_none=True))
-        self.sent_at.append(self.clock[0])
         self.clock[0] += timedelta(seconds=1)
         if self.on_send is not None:
             self.on_send()
