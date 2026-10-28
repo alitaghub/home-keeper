@@ -1350,6 +1350,9 @@ describe("tabs, brightness and plain history", () => {
   });
 
   it("sends one brightness command only after the slider rests for 400 ms", async () => {
+    // The 399 ms check needs a clock that only the test moves; with
+    // shouldAdvanceTime, real time under a slow run pushes it past 400 ms.
+    vi.useFakeTimers();
     const { api } = renderLamp("on");
     await act(() => vi.advanceTimersByTimeAsync(100));
 
@@ -1362,12 +1365,14 @@ describe("tabs, brightness and plain history", () => {
     expect(api.callsTo(COMMAND)).toHaveLength(0);
     await act(() => vi.advanceTimersByTimeAsync(1));
 
-    await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(1));
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
     expect(api.callsTo(COMMAND)[0]?.body).toEqual({
       command: { action: "on", brightness_pct: 40 },
       sender: { kind: "dashboard" },
     });
-    await waitFor(() => expect(byId("message")).toHaveTextContent("Desk lamp is now on at 40%."));
+    // waitFor polls on the faked clock, which no longer moves on its own.
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(byId("message")).toHaveTextContent("Desk lamp is now on at 40%.");
   });
 
   it("drops a slider move that has not settled when Turn off is clicked", async () => {
