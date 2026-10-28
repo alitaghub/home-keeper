@@ -235,7 +235,7 @@ describe("dashboard behavior", () => {
     await waitFor(() =>
       expect(
         monitored.getByText(
-          "No lights monitored yet. Choose the lights Home Keeper should record.",
+          "No lights monitored yet. Choose the lights Home Keeper should look after.",
         ),
       ).toBeInTheDocument(),
     );
@@ -273,7 +273,7 @@ describe("dashboard behavior", () => {
 
     await waitFor(() => expect(byId("source")).toHaveTextContent("SYNTHETIC DEMO"));
     expect(byId("source-notice")).toHaveTextContent(
-      "Demo data only. No hardware, Home Assistant, model, or device controls are connected.",
+      "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records.",
     );
     expect(byId("health")).toHaveTextContent("healthy");
     expect(byId("heartbeat")).toHaveTextContent(
@@ -298,7 +298,7 @@ describe("dashboard behavior", () => {
 
     await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
     expect(byId("source-notice")).toHaveTextContent(
-      "Home Assistant discovery. Only selected individual Hue lights are recorded. No model or device controls are connected.",
+      "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is off: Home Keeper only records.",
     );
     expect(byId("catalog-status")).toHaveTextContent(
       `Discovery is stale. Showing the last validated catalog from ${localTime(fixtures.catalog.refreshed_at)}.`,
@@ -582,7 +582,7 @@ describe("light control from the dashboard", () => {
     expect(screen.getByText("READ ONLY")).toBeInTheDocument();
     expect(screen.queryByText("CONTROL ON")).toBeNull();
     expect(byId("source-notice")).toHaveTextContent(
-      "Demo data only. No hardware, Home Assistant, model, or device controls are connected.",
+      "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records.",
     );
     expect(byId("source-notice")).not.toHaveTextContent(CONTROL_NOTICE);
   });
@@ -606,7 +606,7 @@ describe("light control from the dashboard", () => {
     expect(screen.queryByText("READ ONLY")).toBeNull();
     const notice = byId("source-notice").textContent ?? "";
     expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
-    expect(notice).not.toContain("device controls are connected");
+    expect(notice).not.toContain("Light control is off");
     expect(notice).toMatch(/^Demo data only\./);
   });
 
@@ -625,7 +625,7 @@ describe("light control from the dashboard", () => {
       /^Home Assistant discovery\. Only selected individual Hue lights are recorded\. /,
     );
     expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
-    expect(notice).not.toContain("device controls are connected");
+    expect(notice).not.toContain("Light control is off");
   });
 
   it("keeps the footer when control is on", async () => {
@@ -918,7 +918,7 @@ describe("light control from the dashboard", () => {
       expect(screen.getByText("READ ONLY")).toBeInTheDocument();
       expect(screen.queryByText("CONTROL ON")).toBeNull();
       expect(byId("source-notice").textContent).toBe(
-        "Demo data only. No hardware, Home Assistant, model, or device controls are connected.",
+        "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records.",
       );
     },
   );

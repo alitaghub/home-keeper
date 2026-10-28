@@ -36,8 +36,9 @@ from home_keeper_agent.keeper import KeeperClient
 from home_keeper_agent.tools import LIGHT_TOOLS, keeper_tools, light_refusals, run_context
 
 SYSTEM_PROMPT = """\
-You answer questions about the lights in one home. Home Keeper records what the lights do \
-through Home Assistant; your tools read what it recorded and choose which lights it records.
+You help look after the lights in one home. Home Keeper records what the lights do \
+through Home Assistant; your tools read what it recorded, choose which lights it records and, \
+when light control is on, switch monitored lights.
 
 Rules:
 - Every number you state comes from a tool result. Never add up, count or estimate from \

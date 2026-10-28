@@ -40,7 +40,7 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await expect(page.locator("#source-notice")).toContainText(
     "Light control is on for monitored lights.",
   );
-  await expect(page.locator("#source-notice")).not.toContainText("device controls are connected");
+  await expect(page.locator("#source-notice")).not.toContainText("Light control is off");
 
   const lamps = page.locator("#catalog");
   await lamps.getByRole("button", { name: `Monitor ${LAMP}` }).click();

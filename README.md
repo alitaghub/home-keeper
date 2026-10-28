@@ -1,6 +1,6 @@
 # Home Keeper
 
-[![CI](https://github.com/alitaghub/home-observer/actions/workflows/ci.yaml/badge.svg)](https://github.com/alitaghub/home-observer/actions/workflows/ci.yaml)
+[![CI](https://github.com/alitaghub/home-keeper/actions/workflows/ci.yaml/badge.svg)](https://github.com/alitaghub/home-keeper/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Home Keeper is an agent that looks after your home. Recording is its
