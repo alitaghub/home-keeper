@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from support.home_assistant import Frame, registry_entry, state_changed
+from support.home_assistant import Frame, hue_room, light_state, registry_entry, state_changed
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
@@ -42,8 +42,9 @@ def test_actual_websocket_and_selected_rest(tmp_path: Path) -> None:
         assert auth["access_token"] == "actual-network-token"
         socket.send(json.dumps({"type": "auth_ok"}))
         results: tuple[list[Frame], ...] = (
-            [registry_entry()],
+            [registry_entry(platform="zha", translation_key=None)],
             [{"id": "device1", "name": "Synthetic bulb"}],
+            [light_state()],
         )
         for result in results:
             message = json.loads(socket.recv())
@@ -73,6 +74,7 @@ def test_actual_websocket_and_selected_rest(tmp_path: Path) -> None:
         "auth",
         "config/entity_registry/list",
         "config/device_registry/list",
+        "get_states",
         ("GET", "/api/states/light.bulb"),
     ]
 
@@ -136,6 +138,7 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
         registry_entry("group", "light.group", translation_key="hue_grouped_light"),
         registry_entry("plug", "switch.plug", platform="other"),
     ]
+    states = [light_state(), hue_room("light.group")]
     fail = [False]
     state_reads: list[str] = []
 
@@ -177,14 +180,15 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                     "configuration_url": "ADMIN_SENTINEL",
                 }
             ],
+            states,
         )
-        for result in results:
+        for index, result in enumerate(results):
             socket.send(
                 json.dumps(
                     {"id": command["id"], "type": "result", "success": True, "result": result}
                 )
             )
-            if command["id"] == 1:
+            if index < len(results) - 1:
                 command = json.loads(socket.recv(timeout=5))
 
     db = tmp_path / "live.sqlite"
@@ -296,6 +300,10 @@ def test_actual_selected_subscription_and_revoked_revision(tmp_path: Path) -> No
             commands.append(request["type"])
             assert request["type"] == "config/device_registry/list"
             socket.send(json.dumps({"id": 2, "type": "result", "success": True, "result": []}))
+            request = json.loads(socket.recv(timeout=5))
+            commands.append(request["type"])
+            assert request["type"] == "get_states"
+            socket.send(json.dumps({"id": 3, "type": "result", "success": True, "result": []}))
 
     with serve(handler, "127.0.0.1", 0) as server:
         thread = Thread(target=server.serve_forever)
@@ -329,5 +337,6 @@ def test_actual_selected_subscription_and_revoked_revision(tmp_path: Path) -> No
     assert commands == [
         "config/entity_registry/list",
         "config/device_registry/list",
+        "get_states",
         "subscribe_events",
     ]

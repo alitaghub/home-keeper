@@ -112,6 +112,9 @@ def home(
             command = json.loads(socket.recv(timeout=5))
             commands.append(command["type"])
             socket.send(json.dumps({"id": 2, "type": "result", "success": True, "result": []}))
+            command = json.loads(socket.recv(timeout=5))
+            commands.append(command["type"])
+            socket.send(json.dumps({"id": 3, "type": "result", "success": True, "result": []}))
 
     with serve(handler, "127.0.0.1", 0, process_request=request) as server:
         worker = Thread(target=server.serve_forever)

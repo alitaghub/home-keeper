@@ -389,8 +389,8 @@ export function App() {
               ? "Waiting for the configured collector."
               : live
                 ? controlOn
-                  ? "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is on for monitored lights."
-                  : "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is off: Home Keeper only records."
+                  ? "Home Assistant discovery. Only selected single lights are recorded. Light control is on for monitored lights."
+                  : "Home Assistant discovery. Only selected single lights are recorded. Light control is off: Home Keeper only records."
                 : controlOn
                   ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
                   : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records."}
@@ -415,7 +415,7 @@ export function App() {
                   ? String(snapshot.catalog.entities.filter((entity) => entity.supported).length)
                   : "—"}
               </strong>
-              <small>Individual Hue lamps, without room groups</small>
+              <small>Single lights, without groups or rooms</small>
             </section>
             <section>
               <span>Monitoring</span>

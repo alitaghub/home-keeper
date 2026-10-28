@@ -14,9 +14,8 @@ port when 8000 is taken, for example
 
 ## What the demo shows
 
-The collector discovers five synthetic entities: two individual Hue lights, a
-room aggregate, a non-Hue plug, and an ungrouped sensor. Only individual lights
-can be selected. Click **Monitor** to establish a baseline. Nothing is monitored
+The collector discovers five synthetic entities: two single lights, a room
+group, a plug, and an ungrouped sensor. Only single lights can be selected. Click **Monitor** to establish a baseline. Nothing is monitored
 automatically. After selection, the demo emits a repeatable sequence of on/off,
 brightness, color-temperature, XY color, unavailability and recovery changes,
 one step per collection pass. The timeline shows only events recorded after

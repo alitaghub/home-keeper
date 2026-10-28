@@ -124,7 +124,9 @@ token for the collector. Then:
 
 2. Open Home Assistant at <http://127.0.0.1:8123>, log in, and add your devices
    under **Settings → Devices & services → Add integration**. Home Assistant owns
-   every device connection. Pairing a Hue Bridge needs one press of its button.
+   every device connection. Home Keeper can record any single light that Home
+   Assistant shows, from any brand. It does not record light groups or rooms.
+   Pairing a Hue Bridge, for example, needs one press of its button.
 3. Open the dashboard at <http://localhost:8000>. On the **Setup** tab, click
    **Refresh discovery**, then **Monitor** on a lamp.
 
@@ -203,13 +205,13 @@ user IDs, setup, limits, and what goes through Telegram.
 
 ## Documentation
 
-| Guide                                            | Read it to                                                         |
-| ------------------------------------------------ | ------------------------------------------------------------------ |
-| [Architecture](docs/architecture.md)             | Understand the parts, the data flow, and the domain terms          |
-| [Demo](docs/demo.md)                             | See what the synthetic home does and how to reset it               |
-| [Home Assistant and Hue](docs/home-assistant.md) | Run the bundled Home Assistant or your own, and check a real light |
-| [Collection and gaps](docs/collection.md)        | Learn what each record proves, how gaps work, and retention        |
-| [Light control](docs/control.md)                 | Turn on the `control` profile and switch monitored lights          |
+| Guide                                     | Read it to                                                         |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| [Architecture](docs/architecture.md)      | Understand the parts, the data flow, and the domain terms          |
+| [Demo](docs/demo.md)                      | See what the synthetic home does and how to reset it               |
+| [Home Assistant](docs/home-assistant.md)  | Run the bundled Home Assistant or your own, and check a real light |
+| [Collection and gaps](docs/collection.md) | Learn what each record proves, how gaps work, and retention        |
+| [Light control](docs/control.md)          | Turn on the `control` profile and switch monitored lights          |
 | [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
 | [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
 | [Telegram](docs/telegram.md)                   | Talk to the agent through a private family bot                     |

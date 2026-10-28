@@ -12,9 +12,19 @@ type Frame = dict[str, Any]
 
 
 class FakeSocket:
-    """Replays a scripted registry conversation and records every frame the adapter sends."""
+    """Replays a scripted registry conversation and records every frame the adapter sends.
 
-    def __init__(self, entities: list[Frame], devices: Iterable[Frame] = ()) -> None:
+    `get_states` is answered when the adapter asks for it, with `states` as the result rows,
+    or with `states_reply` verbatim to script a failed or malformed answer.
+    """
+
+    def __init__(
+        self,
+        entities: list[Frame],
+        devices: Iterable[Frame] = (),
+        states: Iterable[Frame] = (),
+        states_reply: Frame | None = None,
+    ) -> None:
         self.messages: deque[Frame] = deque(
             [
                 {"type": "auth_required"},
@@ -24,6 +34,8 @@ class FakeSocket:
             ]
         )
         self.sent: list[Frame] = []
+        self.states = list(states)
+        self.states_reply = states_reply
 
     def __enter__(self) -> Self:
         return self
@@ -35,7 +47,16 @@ class FakeSocket:
         return json.dumps(self.messages.popleft())
 
     def send(self, value: str) -> None:
-        self.sent.append(json.loads(value))
+        frame = json.loads(value)
+        self.sent.append(frame)
+        if frame.get("type") == "get_states":
+            reply = self.states_reply or {
+                "id": frame["id"],
+                "type": "result",
+                "success": True,
+                "result": self.states,
+            }
+            self.messages.appendleft(reply)
 
     def close(self) -> None:
         pass
@@ -61,6 +82,28 @@ def registry_entry(
         "device_id": "device1",
         **fields,
     }
+
+
+def light_state(entity: str = "light.bulb", **attributes: Any) -> Frame:
+    """One `get_states` row, shaped as Home Assistant reports a light."""
+    return {
+        "entity_id": entity,
+        "state": "on",
+        "attributes": {"friendly_name": entity, **attributes},
+        "last_changed": "2026-10-13T10:00:00Z",
+        "last_updated": "2026-10-13T10:00:00Z",
+        "context": {"id": "context1", "parent_id": None, "user_id": None},
+    }
+
+
+def hue_room(entity: str = "light.living_room") -> Frame:
+    """The `get_states` row Home Assistant's Hue integration reports for a room."""
+    return light_state(
+        entity,
+        is_hue_group=True,
+        hue_type="room",
+        entity_id=["light.bulb", "light.desk"],
+    )
 
 
 def state_changed(entity: str = "light.bulb", **changes: Any) -> Frame:

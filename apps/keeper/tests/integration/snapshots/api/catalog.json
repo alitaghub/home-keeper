@@ -15,7 +15,7 @@
         "device_name": "Plug",
         "id": "plug",
         "name": "Plug state",
-        "reason": "Not an individual Hue light",
+        "reason": "Only single lights are supported",
         "supported": false
       },
       {
@@ -23,7 +23,7 @@
         "device_name": null,
         "id": "room",
         "name": "Living room",
-        "reason": "Room aggregate",
+        "reason": "Light groups and rooms are not recorded",
         "supported": false
       }
     ],

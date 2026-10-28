@@ -95,8 +95,8 @@ times out. Check it with `docker compose logs ha-setup`.
 4. Open <http://127.0.0.1:8000> and click **Refresh discovery**.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
-supports. Home Keeper records only individual Hue lights today; other
-entities appear under **Show other entities**. When no supported device exists
+supports. Home Keeper records any single light from any brand. Light groups,
+rooms and other entities appear under **Show other entities**. When no supported device exists
 yet, the dashboard links to the Home Assistant integrations page.
 
 ### Limits
@@ -212,13 +212,21 @@ Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discove
 shows supported lamps by default, using their device names. Room groups, scenes,
 sensors and other entities stay in the collapsed **Show other entities** section
 on the **Setup** tab.
-Discovery retains minimal device/entity metadata exposed by Home Assistant. Only enabled
-individual Hue V2 lights with recognized registry metadata can be monitored.
-Hue groups, other integrations, disabled entities and unknown metadata remain
-unsupported. This classification uses the released Home Assistant
-[2026.10.1 individual-light contract](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/components/hue/v2/light.py)
-and [group-light contract](https://github.com/home-assistant/core/blob/2026.10.1/homeassistant/components/hue/v2/group.py).
-Changed or legacy metadata is rejected rather than guessed.
+Discovery retains minimal device/entity metadata exposed by Home Assistant. Any
+enabled `light.*` entity that is not a group can be monitored, whatever
+integration provides it. Discovery reads the current states once to find groups,
+and keeps only that answer. A light is a group when it comes from the
+[`group` integration](https://www.home-assistant.io/integrations/group/), when its
+state lists member entities in an `entity_id` attribute, or when an attribute such
+as `is_hue_group` or `is_deconz_group` is true. A Hue room is one example. The
+dashboard gives the reason for each entity it cannot record:
+
+- **Light groups and rooms are not recorded**: a group or room light.
+- **Disabled in Home Assistant**: the entity is disabled there.
+- **Only single lights are supported**: any entity that is not a light.
+
+If the state read fails or returns malformed data, discovery fails rather than
+guessing.
 
 Select a light to record its first state. Add more devices to Home Assistant and
 click **Refresh discovery** to find them without changing configuration or
@@ -236,7 +244,7 @@ the same localhost port.
 
 ## Check it with a real light
 
-Test one individual Hue light end to end:
+Test one single light end to end. The steps use a Hue light as the example:
 
 1. Confirm the bulb appears and responds in Home Assistant.
 2. Open Home Keeper, check the **HOME ASSISTANT** label, and select the bulb.

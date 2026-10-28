@@ -7,12 +7,23 @@ from pathlib import Path
 
 import httpx
 import pytest
-from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry
+from support.home_assistant import (
+    FakeSocket,
+    Frame,
+    hue_room,
+    install_socket,
+    light_state,
+    registry_entry,
+)
 
 from home_keeper.home_assistant import MAX_PAYLOAD, ConnectorError, HomeAssistantConnector
 
 type Install = Callable[..., FakeSocket]
 type Handler = Callable[[httpx.Request], httpx.Response]
+
+GROUP = "Light groups and rooms are not recorded"
+DISABLED = "Disabled in Home Assistant"
+NOT_A_LIGHT = "Only single lights are supported"
 
 
 def use_transport(client: HomeAssistantConnector, handler: Handler) -> None:
@@ -31,8 +42,13 @@ def connector(
     token.write_text("secret-sentinel")
     sockets: list[FakeSocket] = []
 
-    def install(entities: list[Frame], devices: Iterable[Frame] = ()) -> FakeSocket:
-        socket = FakeSocket(entities, devices)
+    def install(
+        entities: list[Frame],
+        devices: Iterable[Frame] = (),
+        states: Iterable[Frame] = (),
+        states_reply: Frame | None = None,
+    ) -> FakeSocket:
+        socket = FakeSocket(entities, devices, states, states_reply)
         sockets.append(socket)
         install_socket(monkeypatch, socket)
         return socket
@@ -55,18 +71,12 @@ def adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[HomeAss
     client.close()
 
 
-def test_projection_and_classification(
+def test_projection_keeps_device_names_and_drops_private_registry_fields(
     connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
 ) -> None:
     client, install, _ = connector
-    socket = install(
-        [
-            registry_entry(),
-            registry_entry("group", "light.group", translation_key="hue_grouped_light"),
-            registry_entry("other", "light.other", platform="other"),
-            registry_entry("disabled", "light.disabled", disabled_by="user"),
-            registry_entry("sensor", "sensor.x"),
-        ],
+    install(
+        [registry_entry()],
         [
             {
                 "id": "device1",
@@ -75,18 +85,112 @@ def test_projection_and_classification(
                 "identifiers": ["PRIVATE_SENTINEL"],
             }
         ],
+        [light_state(context="PRIVATE_SENTINEL")],
     )
     catalog = client.discover()
-    assert [entity.supported for entity in catalog.entities] == [True, False, False, False, False]
     assert catalog.entities[0].id == "ha:registry1"
     assert catalog.entities[0].device_id == "ha:device1"
     assert "ADMIN_SENTINEL" not in catalog.model_dump_json()
     assert "PRIVATE_SENTINEL" not in catalog.model_dump_json()
-    assert [message["type"] for message in socket.sent] == [
-        "auth",
-        "config/entity_registry/list",
-        "config/device_registry/list",
+
+
+def test_discovery_reads_registries_then_states_in_order(
+    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+) -> None:
+    client, install, _ = connector
+    socket = install([registry_entry()], states=[light_state()])
+    client.discover()
+    assert socket.sent[0]["type"] == "auth"
+    assert socket.sent[1:] == [
+        {"id": 1, "type": "config/entity_registry/list"},
+        {"id": 2, "type": "config/device_registry/list"},
+        {"id": 3, "type": "get_states"},
     ]
+
+
+def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_not(
+    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+) -> None:
+    client, install, _ = connector
+    no_translation = {"translation_key": None}
+    install(
+        [
+            registry_entry("hue", "light.bulb"),
+            registry_entry("zha", "light.zha_bulb", platform="zha", **no_translation),
+            registry_entry("stateless", "light.stateless", platform="zha", **no_translation),
+            registry_entry("not_group", "light.flagged", platform="hue"),
+            registry_entry("helper", "light.helper_group", platform="group", **no_translation),
+            registry_entry("room", "light.living_room", translation_key="hue_grouped_light"),
+            registry_entry("members", "light.zha_group", platform="zha", **no_translation),
+            registry_entry("deconz", "light.deconz_group", platform="deconz", **no_translation),
+            registry_entry("disabled", "light.disabled", platform="zha", disabled_by="user"),
+            registry_entry("sensor", "sensor.x", platform="zha", **no_translation),
+            registry_entry("switch", "switch.plug", platform="zha", **no_translation),
+        ],
+        states=[
+            light_state("light.bulb"),
+            light_state("light.zha_bulb", color_mode="brightness"),
+            light_state("light.flagged", is_hue_group=False),
+            light_state("light.helper_group"),
+            hue_room("light.living_room"),
+            light_state("light.zha_group", entity_id=["light.zha_bulb", "light.stateless"]),
+            light_state("light.deconz_group", is_deconz_group=True),
+            light_state("sensor.x"),
+            light_state("switch.plug"),
+        ],
+    )
+    catalog = client.discover()
+    assert {entity.id: (entity.supported, entity.reason) for entity in catalog.entities} == {
+        "ha:hue": (True, None),
+        "ha:zha": (True, None),
+        "ha:stateless": (True, None),
+        "ha:not_group": (True, None),
+        "ha:helper": (False, GROUP),
+        "ha:room": (False, GROUP),
+        "ha:members": (False, GROUP),
+        "ha:deconz": (False, GROUP),
+        "ha:disabled": (False, DISABLED),
+        "ha:sensor": (False, NOT_A_LIGHT),
+        "ha:switch": (False, NOT_A_LIGHT),
+    }
+    client.approve({"ha:zha": 1, "ha:stateless": 1})
+    with pytest.raises(ConnectorError):
+        client.approve({"ha:room": 1})
+
+
+@pytest.mark.parametrize(
+    ("reply", "code"),
+    [
+        ({"id": 3, "type": "result", "success": False, "error": {"code": "x"}}, "discovery"),
+        ({"id": 3, "type": "result", "success": True, "result": {"x": {}}}, "invalid_data"),
+        ({"id": 3, "type": "result", "success": True, "result": ["light.bulb"]}, "invalid_data"),
+        (
+            {
+                "id": 3,
+                "type": "result",
+                "success": True,
+                "result": [{"entity_id": "light.bulb", "state": "on", "attributes": ["x"]}],
+            },
+            "invalid_data",
+        ),
+        ({"id": 9, "type": "result", "success": True, "result": []}, "invalid_data"),
+    ],
+    ids=["failed", "not_a_list", "row_not_an_object", "attributes_not_an_object", "wrong_id"],
+)
+def test_failed_or_malformed_states_fail_discovery_and_revoke_reads(
+    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]], reply: Frame, code: str
+) -> None:
+    client, install, _ = connector
+    client.discover()
+    client.approve({"ha:registry1": 1})
+    install([registry_entry()], states_reply=reply)
+    with pytest.raises(ConnectorError) as failure:
+        client.discover()
+    assert failure.value.code == code
+    with pytest.raises(ConnectorError):
+        client.approve({"ha:registry1": 1})
+    with pytest.raises(ConnectorError):
+        client.read_selected("ha:registry1", 1)
 
 
 def test_selected_reads_and_rename_identity(
@@ -193,7 +297,7 @@ def test_names_redact_credentials_and_write_helper_rejected(
     socket = install([registry_entry(name="secret-sentinel internal-sentinel")])
     assert client.discover().entities[0].name == "[redacted] [redacted]"
     count = len(socket.sent)
-    for command in ("call_service", "fire_event", "get_states", "config/device_registry/update"):
+    for command in ("call_service", "fire_event", "config/device_registry/update"):
         with pytest.raises(ConnectorError):
             client._registry(socket, 3, command)  # pyright: ignore[reportPrivateUsage] -- exercise the private write guard directly
     assert len(socket.sent) == count

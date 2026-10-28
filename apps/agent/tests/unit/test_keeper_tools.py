@@ -185,7 +185,7 @@ def test_usage_average_brightness_is_a_rounded_percent(average: float, percent: 
         ("list_lights", "monitored", ["bulb-a", "off", "stale", "bulb-b", "pending"]),
         ("get_health", "health", ["healthy"]),
         ("get_coverage", "coverage", ["interrupted", "reconciliation"]),
-        ("list_devices", "catalog", ["bulb-a", "plug", "Not an individual Hue light"]),
+        ("list_devices", "catalog", ["bulb-a", "plug", "Only single lights are supported"]),
         ("get_events", "events_page_1", ["bulb-a", "09:59:50", "09:59:40"]),
     ],
 )

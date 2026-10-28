@@ -71,7 +71,7 @@ ENTITIES: list[DemoEntity] = [
         "device_name": "Living room group",
         "name": "All living room lights",
         "supported": False,
-        "reason": "Room aggregate, not an individual bulb",
+        "reason": "Light groups and rooms are not recorded",
     },
     {
         "id": "switch.smart_plug",
@@ -79,7 +79,7 @@ ENTITIES: list[DemoEntity] = [
         "device_name": "Smart plug",
         "name": "Plug",
         "supported": False,
-        "reason": "Only individual Hue lights supported",
+        "reason": "Only single lights are supported",
     },
     {
         "id": "sensor.ungrouped",
@@ -87,7 +87,7 @@ ENTITIES: list[DemoEntity] = [
         "device_name": None,
         "name": "Ungrouped sensor",
         "supported": False,
-        "reason": "Sensor monitoring is outside this milestone",
+        "reason": "Only single lights are supported",
     },
 ]
 CATALOG = {"source_id": "demo", "entities": ENTITIES}

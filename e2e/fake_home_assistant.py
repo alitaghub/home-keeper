@@ -38,7 +38,7 @@ def websocket(socket: ServerConnection) -> None:
         socket.send(json.dumps({"type": "auth_invalid"}))
         return
     socket.send(json.dumps({"type": "auth_ok"}))
-    results = {
+    results: dict[str, list[dict[str, object]]] = {
         "config/entity_registry/list": [
             {
                 "id": "fixture",
@@ -51,8 +51,8 @@ def websocket(socket: ServerConnection) -> None:
             {
                 "id": "unsupported",
                 "entity_id": "light.other",
-                "platform": "other",
-                "translation_key": "hue_light",
+                "platform": "hue",
+                "translation_key": "hue_grouped_light",
                 "name": "Unsupported fixture",
             },
         ],
@@ -62,6 +62,15 @@ def websocket(socket: ServerConnection) -> None:
                 "name": "Fixture device",
                 "configuration_url": "ADMIN_SENTINEL",
             }
+        ],
+        # A room light: its group markers make it unsupported.
+        "get_states": [
+            {"entity_id": "light.fixture", "state": "off", "attributes": {}},
+            {
+                "entity_id": "light.other",
+                "state": "off",
+                "attributes": {"is_hue_group": True, "entity_id": ["light.fixture"]},
+            },
         ],
     }
     command = json.loads(socket.recv(timeout=5))
@@ -97,7 +106,7 @@ def websocket(socket: ServerConnection) -> None:
         except ConnectionClosed:
             return
     else:
-        for index in range(2):
+        for index in range(len(results)):
             socket.send(
                 json.dumps(
                     {
@@ -108,7 +117,7 @@ def websocket(socket: ServerConnection) -> None:
                     }
                 )
             )
-            if index == 0:
+            if index < len(results) - 1:
                 command = json.loads(socket.recv(timeout=5))
 
 

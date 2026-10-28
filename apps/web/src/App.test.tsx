@@ -298,7 +298,7 @@ describe("dashboard behavior", () => {
 
     await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
     expect(byId("source-notice")).toHaveTextContent(
-      "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is off: Home Keeper only records.",
+      "Home Assistant discovery. Only selected single lights are recorded. Light control is off: Home Keeper only records.",
     );
     expect(byId("catalog-status")).toHaveTextContent(
       `Discovery is stale. Showing the last validated catalog from ${localTime(fixtures.catalog.refreshed_at)}.`,
@@ -323,6 +323,10 @@ describe("dashboard behavior", () => {
     const link = await waitFor(() => within(byId("catalog")).getByRole("link"));
     expect(link).toHaveTextContent("Connect your devices in Home Assistant");
     expect(link).toHaveAttribute("href", "http://127.0.0.1:8123/config/integrations/dashboard");
+    expect(byId("catalog")).toHaveTextContent(
+      "then refresh discovery. Home Keeper records single lights, not groups or rooms.",
+    );
+    expect(byId("count").parentElement).toHaveTextContent("Single lights, without groups or rooms");
   });
 
   it("pages through older timeline history, dedupes by id, and refreshes back to the newest page", async () => {
@@ -622,7 +626,7 @@ describe("light control from the dashboard", () => {
 
     const notice = byId("source-notice").textContent ?? "";
     expect(notice).toMatch(
-      /^Home Assistant discovery\. Only selected individual Hue lights are recorded\. /,
+      /^Home Assistant discovery\. Only selected single lights are recorded\. /,
     );
     expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
     expect(notice).not.toContain("Light control is off");

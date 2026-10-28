@@ -28,7 +28,7 @@ export const roomGroup = {
   device_name: "Living room group",
   name: "All living room lights",
   supported: false,
-  reason: "Room aggregate, not an individual bulb",
+  reason: "Light groups and rooms are not recorded",
 } satisfies Schemas["Entity"];
 
 export const ungroupedSensor = {
@@ -37,7 +37,7 @@ export const ungroupedSensor = {
   device_name: null,
   name: "Ungrouped sensor",
   supported: false,
-  reason: "Sensor monitoring is outside this milestone",
+  reason: "Only single lights are supported",
 } satisfies Schemas["Entity"];
 
 export const catalog = {

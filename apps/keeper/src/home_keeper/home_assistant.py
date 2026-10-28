@@ -1,4 +1,4 @@
-"""Trusted, fixed-read Home Assistant adapter. Raw registry data never leaves it."""
+"""Trusted, fixed-read Home Assistant adapter. Raw registry and state data never leave it."""
 
 # SelectedSubscription is the connector's companion and reuses its private session state.
 # pyright: reportPrivateUsage=false
@@ -34,6 +34,14 @@ MAX_RECEIVE_TIMEOUT_SECONDS = 5
 VISIBLE_ASCII = range(33, 127)
 _REGISTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,120}$")
 _LIGHT_ID = re.compile(r"^light\.[a-z0-9_]{1,120}$")
+# Integrations flag their group entities with attributes such as is_hue_group or is_deconz_group.
+_GROUP_FLAG = re.compile(r"^is_[a-z0-9_]+_group$")
+_DISCOVERY_COMMANDS = frozenset(
+    {"config/entity_registry/list", "config/device_registry/list", "get_states"}
+)
+GROUP_REASON = "Light groups and rooms are not recorded"
+DISABLED_REASON = "Disabled in Home Assistant"
+NOT_A_LIGHT_REASON = "Only single lights are supported"
 _WS_LOGGER = logging.getLogger("home_keeper.transport.private")
 _WS_LOGGER.addHandler(logging.NullHandler())
 _WS_LOGGER.propagate = False
@@ -162,7 +170,8 @@ class HomeAssistantConnector:
                     raise ConnectorError("invalid_data")
                 entities = self._registry(socket, 1, "config/entity_registry/list")
                 devices = self._registry(socket, 2, "config/device_registry/list")
-            catalog, mapping = self._project(entities, devices)
+                groups = _light_groups(self._registry(socket, 3, "get_states"))
+            catalog, mapping = self._project(entities, devices, groups)
         except ConnectorError:
             raise
         except ssl.SSLError:
@@ -189,7 +198,7 @@ class HomeAssistantConnector:
 
     def _registry(self, socket: WebSocket, request_id: int, command: str) -> list[Any]:
         # This private helper is also guarded: future callers cannot add write commands.
-        if command not in {"config/entity_registry/list", "config/device_registry/list"}:
+        if command not in _DISCOVERY_COMMANDS:
             raise ConnectorError("configuration")
         socket.send(json.dumps({"id": request_id, "type": command}))
         response = self._receive(socket)
@@ -200,7 +209,7 @@ class HomeAssistantConnector:
         result: object = response.get("result")
         if not isinstance(result, list):
             raise ConnectorError("invalid_data")
-        return result  # pyright: ignore[reportUnknownVariableType] -- raw registry rows; _project validates each
+        return result  # pyright: ignore[reportUnknownVariableType] -- raw rows; _project and _light_groups validate each
 
     def _name(self, value: object, fallback: str) -> str:
         name = value if isinstance(value, str) and value else fallback
@@ -209,7 +218,9 @@ class HomeAssistantConnector:
                 name = name.replace(secret, "[redacted]")
         return name[:256]
 
-    def _project(self, entities: list[Any], devices: list[Any]) -> tuple[Catalog, dict[str, str]]:
+    def _project(
+        self, entities: list[Any], devices: list[Any], groups: frozenset[str]
+    ) -> tuple[Catalog, dict[str, str]]:
         if len(entities) > MAX_REGISTRY_ROWS or len(devices) > MAX_REGISTRY_ROWS:
             raise ConnectorError("invalid_data")
         device_names: dict[str, str] = {}
@@ -239,12 +250,15 @@ class HomeAssistantConnector:
             if device_id is not None and device_id not in device_names:
                 # Dangling relationships retain the entity without inventing a device.
                 device_id = None
-            supported = (
-                bool(_LIGHT_ID.fullmatch(entity_id))
-                and entity.get("platform") == "hue"
-                and entity.get("translation_key") == "hue_light"
-                and entity.get("disabled_by") is None
-            )
+            if not _LIGHT_ID.fullmatch(entity_id):
+                reason = NOT_A_LIGHT_REASON
+            elif entity.get("platform") == "group" or entity_id in groups:
+                reason = GROUP_REASON
+            elif entity.get("disabled_by") is not None:
+                reason = DISABLED_REASON
+            else:
+                reason = None
+            supported = reason is None
             projected.append(
                 Entity(
                     id=identity,
@@ -254,7 +268,7 @@ class HomeAssistantConnector:
                     device_id=f"ha:{device_id}" if device_id else None,
                     device_name=device_names.get(device_id) if device_id else None,
                     supported=supported,
-                    reason=None if supported else "Only enabled individual Hue V2 lights supported",
+                    reason=reason,
                 )
             )
             mapping[identity] = entity_id
@@ -340,6 +354,25 @@ class HomeAssistantConnector:
             raise ConnectorError("connection") from None
         except (ValueError, TypeError, ValidationError):
             raise ConnectorError("invalid_data") from None
+
+
+def _light_groups(states: list[Any]) -> frozenset[str]:
+    """Return the light entity ids whose state marks them as a group. Keeps nothing else."""
+    groups: set[str] = set()
+    for row in states:
+        entity_id = row.get("entity_id") if is_json_object(row) else None
+        if not isinstance(entity_id, str):
+            raise ConnectorError("invalid_data")
+        if not _LIGHT_ID.fullmatch(entity_id):
+            continue
+        attributes = row.get("attributes")
+        if not is_json_object(attributes):
+            raise ConnectorError("invalid_data")
+        if isinstance(attributes.get("entity_id"), list) or any(
+            value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
+        ):
+            groups.add(entity_id)
+    return frozenset(groups)
 
 
 class SelectedSubscription:

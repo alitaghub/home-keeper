@@ -27,7 +27,7 @@ def test_subscription_is_selected_only_and_projects_brightness_changes(
         assert connector.subscribe_selected() is None
         with pytest.raises(ConnectorError):
             SelectedSubscription(connector)
-        assert socket.sent[-1]["type"] == "config/device_registry/list"
+        assert socket.sent[-1]["type"] == "get_states"
         connector.approve({"ha:registry1": 1})
         socket.messages.extend(
             [

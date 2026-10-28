@@ -45,7 +45,7 @@ export function Catalog({
                 >
                   Connect your devices in Home Assistant
                 </a>
-                , then refresh discovery. Home Keeper records individual Hue lights.
+                , then refresh discovery. Home Keeper records single lights, not groups or rooms.
               </>
             ) : entities.length ? (
               "No supported lamps found. Check your integrations in Home Assistant."

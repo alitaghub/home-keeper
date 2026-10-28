@@ -15,7 +15,7 @@ Telegram chats to the same agent; [telegram.md](telegram.md) covers setup.
 ```mermaid
 flowchart LR
     subgraph home["Your home"]
-        hue["Hue Bridge and lights"]
+        hue["Lights (any brand)"]
         ha["Home Assistant<br/><i>bundled or your own</i>"]
         hue --> ha
     end
@@ -82,7 +82,8 @@ Python code lives in `apps/keeper/src/home_keeper`.
   rejects data from a collector that works from an older revision, so a slow
   read cannot bring back a light you just removed.
 - **The collector is read-only toward the home.** The connector makes fixed
-  registry reads, selected-state reads and one filtered event subscription. It
+  registry reads, one state read at discovery to detect light groups,
+  selected-state reads and one filtered event subscription. It
   has no service calls and no device writes. The collector image contains no
   controller code.
 - **Control is opt-in and narrow.** Only the controller calls Home Assistant
