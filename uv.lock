@@ -12,6 +12,7 @@ members = [
     "home-keeper-agent",
     "home-keeper-controller",
     "home-keeper-light-command",
+    "home-keeper-settings",
     "home-keeper-workspace",
 ]
 
@@ -866,6 +867,7 @@ dependencies = [
     { name = "anyio" },
     { name = "fastapi" },
     { name = "home-keeper-light-command" },
+    { name = "home-keeper-settings" },
     { name = "httpx" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -876,6 +878,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4,<5" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "home-keeper-light-command", editable = "packages/light-command" },
+    { name = "home-keeper-settings", editable = "packages/settings" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
     { name = "websockets", specifier = ">=15,<16" },
@@ -888,6 +891,7 @@ source = { editable = "apps/agent" }
 dependencies = [
     { name = "deepagents" },
     { name = "home-keeper-light-command" },
+    { name = "home-keeper-settings" },
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-openai" },
@@ -905,6 +909,7 @@ requires-dist = [
     { name = "aegra-cli", marker = "extra == 'serve'", specifier = "==0.10.8" },
     { name = "deepagents", specifier = "==0.7.25" },
     { name = "home-keeper-light-command", editable = "packages/light-command" },
+    { name = "home-keeper-settings", editable = "packages/settings" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "langchain", specifier = "==1.4.5" },
     { name = "langchain-openai", specifier = "==1.7.1" },
@@ -920,6 +925,7 @@ source = { editable = "apps/controller" }
 dependencies = [
     { name = "fastapi" },
     { name = "home-keeper-light-command" },
+    { name = "home-keeper-settings" },
     { name = "httpx" },
     { name = "pydantic" },
     { name = "uvicorn" },
@@ -930,6 +936,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "home-keeper-light-command", editable = "packages/light-command" },
+    { name = "home-keeper-settings", editable = "packages/settings" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
@@ -949,6 +956,21 @@ dependencies = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pydantic", specifier = ">=2,<3" },
+]
+
+[[package]]
+name = "home-keeper-settings"
+version = "0.1.0"
+source = { editable = "packages/settings" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2,<3" },
+    { name = "pydantic-settings", specifier = ">=2.7,<3" },
 ]
 
 [[package]]

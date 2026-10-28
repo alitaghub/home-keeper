@@ -19,7 +19,8 @@ from pydantic import BaseModel, ValidationError
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
-from home_keeper.runtime import parse_origin
+from home_keeper.settings import SetupSettings
+from home_keeper_settings import load
 
 OWNER_USERNAME = "owner"
 CONTROL_NAME = "Home Keeper control"
@@ -436,19 +437,19 @@ def show_login(login_file: Path, public_url: str) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    token_file = Path(os.environ.get("HOME_KEEPER_HA_TOKEN_FILE", "/ha-token/token"))
-    control_token_file = Path(
-        os.environ.get("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", "/ha-control-token/token")
-    )
-    login_file = Path(os.environ.get("HOME_KEEPER_HA_LOGIN_FILE", "/ha-owner/login.json"))
     try:
+        settings = load(SetupSettings)
         if sys.argv[1:] == ["login"]:
-            show_login(login_file, os.environ.get("HOME_KEEPER_HA_PUBLIC_URL", ""))
+            show_login(settings.ha_login_file, settings.ha_public_url)
         elif sys.argv[1:] in ([], ["setup"]):
-            origin = parse_origin("HOME_KEEPER_HA_URL", os.environ.get("HOME_KEEPER_HA_URL", ""))
-            if origin is None:
+            if settings.ha_url is None:
                 raise SetupError("Set HOME_KEEPER_HA_URL to the Home Assistant origin")
-            Setup(origin, token_file, login_file, control_token_file=control_token_file).run()
+            Setup(
+                settings.ha_url,
+                settings.ha_token_file,
+                settings.ha_login_file,
+                control_token_file=settings.ha_control_token_file,
+            ).run()
         else:
             raise SetupError("Usage: ha_setup [setup|login]")
     except ValidationError:

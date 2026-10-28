@@ -22,6 +22,7 @@ home-keeper = { workspace = true }
 home-keeper-agent = { workspace = true }
 home-keeper-controller = { workspace = true }
 home-keeper-light-command = { workspace = true }
+home-keeper-settings = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
@@ -36,6 +37,7 @@ testpaths = [
     "apps/agent/tests/integration",
     "apps/controller/tests/unit",
     "apps/controller/tests/integration",
+    "packages/settings/tests/unit",
     "tests",
 ]
 # Shared test helpers live in apps/keeper/tests/support and apps/agent/tests/agent_support.py;
@@ -57,6 +59,7 @@ source_pkgs = [
     "home_keeper_agent",
     "home_keeper_controller",
     "home_keeper_light_command",
+    "home_keeper_settings",
 ]
 
 [tool.coverage.report]
@@ -119,6 +122,8 @@ include = [
     "apps/controller/src",
     "apps/controller/tests",
     "packages/light-command/src",
+    "packages/settings/src",
+    "packages/settings/tests",
     "e2e",
     "scripts",
     "tests",
@@ -132,6 +137,7 @@ extraPaths = [
     "apps/controller/src",
     "apps/controller/tests",
     "packages/light-command/src",
+    "packages/settings/src",
     "scripts",
 ]
 # Local stubs; see typings/httpx2/__init__.pyi.

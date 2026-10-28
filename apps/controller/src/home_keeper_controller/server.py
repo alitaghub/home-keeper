@@ -4,7 +4,6 @@ Run with `python -m home_keeper_controller.server`.
 """
 
 import logging
-import os
 import secrets
 import time
 from collections.abc import Callable
@@ -21,8 +20,10 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from home_keeper_controller.home_assistant import COMMAND_DEADLINE_SECONDS, HomeAssistantLights
 from home_keeper_controller.lights import Devices, valid_token
+from home_keeper_controller.settings import ControllerSettings
 from home_keeper_light_command import ControllerUnreachable, ForwardedCommand, ForwardResult
 from home_keeper_light_command.client import CommandClient
+from home_keeper_settings import load
 
 HEARTBEAT_SECONDS = 5
 MAX_BODY_BYTES = 64 * 1024
@@ -106,18 +107,13 @@ def read_secret(path: Path, description: str) -> str:
     return token
 
 
-def backend(name: str, service_token: str) -> Devices:
-    if name == "home_assistant":
-        token_file = Path(
-            os.environ.get("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", "/ha-control-token/token")
-        )
-        return HomeAssistantLights(
-            os.environ.get("HOME_KEEPER_HA_URL", ""),
-            lambda: read_secret(token_file, "Home Assistant control token"),
-        )
-    if name == "demo":
+def backend(settings: ControllerSettings, service_token: str) -> Devices:
+    if settings.control_backend == "demo":
         return CommandClient(DEMO_COLLECTOR_URL, service_token, COMMAND_DEADLINE_SECONDS)
-    raise ValueError("HOME_KEEPER_CONTROL_BACKEND must be home_assistant or demo")
+    token_file = settings.ha_control_token_file
+    return HomeAssistantLights(
+        settings.ha_url, lambda: read_secret(token_file, "Home Assistant control token")
+    )
 
 
 def main() -> None:
@@ -125,24 +121,20 @@ def main() -> None:
     # Library debug output can include request headers.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    service_token_path = Path(os.environ.get("HOME_KEEPER_TOKEN_FILE", "/secrets/service-token"))
-    # The API creates the service credential at its first start.
-    while not service_token_path.exists():
-        time.sleep(1)
     try:
-        service_token = read_secret(service_token_path, "Service credential")
-        devices = backend(
-            os.environ.get("HOME_KEEPER_CONTROL_BACKEND", "home_assistant"), service_token
-        )
-        port = int(os.environ.get("HOME_KEEPER_CONTROLLER_PORT", "8080"))
-        api_port = int(os.environ.get("HOME_KEEPER_PORT", "8000"))
+        settings = load(ControllerSettings)
+        # The API creates the service credential at its first start.
+        while not settings.token_file.exists():
+            time.sleep(1)
+        service_token = read_secret(settings.token_file, "Service credential")
+        devices = backend(settings, service_token)
     except ValueError as error:
-        # Messages are fixed strings; they never contain a credential.
+        # Messages name the variable or file and the reason, never a value or credential.
         logging.error("Controller configuration invalid: %s", error)
         raise SystemExit(1) from None
     api = httpx.Client(
         # The API has one fixed host on the control network, not a configurable passthrough.
-        base_url=f"http://api:{api_port}",
+        base_url=f"http://api:{settings.port}",
         headers={"Authorization": f"Bearer {service_token}"},
         timeout=5,
         trust_env=False,
@@ -157,9 +149,8 @@ def main() -> None:
     try:
         uvicorn.run(
             create_app(service_token, devices),
-            # Inside the container only; Compose publishes no port for the controller.
-            host=os.environ.get("HOME_KEEPER_CONTROLLER_BIND", "0.0.0.0"),  # noqa: S104 -- internal network only
-            port=port,
+            host=settings.controller_bind,
+            port=settings.controller_port,
             access_log=False,
         )
     finally:

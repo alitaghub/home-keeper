@@ -3,6 +3,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from home_keeper_agent.model import chat_model
+from home_keeper_agent.settings import AgentSettings
+from home_keeper_settings import load
 
 MODEL_VARIABLES = ("AGENT_MODEL", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "OPENAI_API_KEY")
 
@@ -25,7 +27,7 @@ def test_azure_model_calls_the_deployment_on_the_azure_v1_url(
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://home.openai.azure.com/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key-sentinel")
 
-    model = chat_model()
+    model = chat_model(load(AgentSettings))
 
     assert isinstance(model, ChatOpenAI)
     assert model.model_name == deployment
@@ -48,7 +50,7 @@ def test_azure_endpoint_that_already_names_the_openai_path_is_not_doubled(
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint)
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key-sentinel")
 
-    model = chat_model()
+    model = chat_model(load(AgentSettings))
 
     assert isinstance(model, ChatOpenAI)
     assert model.openai_api_base == "https://home.cognitiveservices.azure.com/openai/v1"
@@ -60,7 +62,7 @@ def test_other_provider_prefix_passes_through_without_azure_settings(
     monkeypatch.setenv("AGENT_MODEL", "openai:gpt-4.1-mini")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key-sentinel")
 
-    model = chat_model()
+    model = chat_model(load(AgentSettings))
 
     # init_chat_model strips the prefix and uses the provider's own endpoint.
     assert isinstance(model, ChatOpenAI)
@@ -81,4 +83,4 @@ def test_missing_azure_setting_fails_naming_the_variable(
             monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError, match=missing):
-        chat_model()
+        chat_model(load(AgentSettings))

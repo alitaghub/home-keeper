@@ -2,12 +2,10 @@
 
 import contextlib
 import logging
-import os
 import time
 from collections import deque
 from datetime import UTC, datetime
 from http import HTTPStatus
-from pathlib import Path
 from threading import Event, Lock, Thread
 
 import httpx
@@ -21,7 +19,9 @@ from home_keeper.home_assistant import (
     Subscription,
 )
 from home_keeper.models import ChangeEvent, SelectionSnapshot
+from home_keeper.settings import CollectorSettings
 from home_keeper.tokens import load_token
+from home_keeper_settings import SettingsError, load
 
 
 def _health(client: httpx.Client, error: str | None) -> None:
@@ -64,7 +64,6 @@ def _check_response(response: httpx.Response) -> None:
 MAX_BUFFER_EVENTS = 256
 MAX_BUFFER_BYTES = 1024 * 1024
 HEARTBEAT_SECONDS = 10
-MAX_INTERVAL_SECONDS = 3600
 
 
 class _EventBuffer:
@@ -277,33 +276,32 @@ def main() -> None:
     # Library debug output can include request headers or authentication frames.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    service_token_path = Path(os.environ.get("HOME_KEEPER_TOKEN_FILE", "/secrets/service-token"))
-    while not service_token_path.exists():
+    try:
+        settings = load(CollectorSettings)
+    except SettingsError as error:
+        logging.error("Live collector configuration invalid: %s", error)
+        raise SystemExit(1) from None
+    while not settings.token_file.exists():
         time.sleep(1)
     try:
-        token = load_token(service_token_path)
+        token = load_token(settings.token_file)
         if not token or not token.isascii() or any(ord(c) not in VISIBLE_ASCII for c in token):
             raise ValueError
     except (OSError, ValueError):
         logging.error("Live collector internal credential invalid; check service token file")
         raise SystemExit(1) from None
     with httpx.Client(
-        base_url=f"http://api:{int(os.environ.get('HOME_KEEPER_PORT', '8000'))}",
+        base_url=f"http://api:{settings.port}",
         headers={"Authorization": f"Bearer {token}"},
         timeout=5,
         trust_env=False,
         follow_redirects=False,
     ) as client:
         try:
-            interval = int(os.environ.get("HOME_KEEPER_RECONCILIATION_SECONDS", "10"))
-            if not 1 <= interval <= MAX_INTERVAL_SECONDS:
-                raise ValueError
             connector = HomeAssistantConnector(
-                os.environ.get("HOME_KEEPER_HA_URL", ""),
-                Path(os.environ.get("HOME_KEEPER_HA_TOKEN_FILE", "/run/secrets/ha-token")),
-                redaction_values=(token,),
+                settings.ha_url, settings.ha_token_file, redaction_values=(token,)
             )
-        except (ConnectorError, ValueError):
+        except ConnectorError:
             logging.error("Home Assistant configuration invalid; check origin and token file")
             with contextlib.suppress(httpx.HTTPError):
                 _health(client, "configuration")
@@ -321,7 +319,7 @@ def main() -> None:
                                 "Collection halted; fix local credentials/configuration and restart"
                             )
                             raise SystemExit(1)
-                        delay = interval if successful else min(60, backoff)
+                        delay = settings.reconciliation_seconds if successful else min(60, backoff)
                         backoff = 1.0 if successful else min(60, backoff * 2)
                         next_pass = time.monotonic() + delay
                     session.receive(min(0.1, max(0.01, next_pass - time.monotonic())))
