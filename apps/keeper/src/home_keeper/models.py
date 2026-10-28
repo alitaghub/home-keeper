@@ -36,16 +36,8 @@ def device_kind_of(source_entity_id: str) -> DeviceKind | None:
             return None
 
 
-def light_by_default(data: object) -> object:
-    """Records stored before plugs carry no device kind; every one of them is a light's."""
-    if not isinstance(data, dict):
-        return data
-    record = cast(dict[str, object], data)
-    return record if "device_kind" in record else record | {"device_kind": "light"}
-
-
 def device_kind_tag(value: object) -> object:
-    """Pick a reading's variant from its device kind, a light when it has none."""
+    """Pick a variant from its device kind. A collector may send a light's state without one."""
     if isinstance(value, dict):
         return cast(dict[str, object], value).get("device_kind", "light")
     return getattr(value, "device_kind", "light")
@@ -167,25 +159,19 @@ class StateHeader(WireModel):
             exclude={"last_changed", "last_updated", "last_reported"}, exclude_none=True
         )
 
+    def stored(self) -> dict[str, object]:
+        """The state as an event stores it."""
+        return self.model_dump(mode="json", exclude_none=True)
 
-# Pydantic orders fields from the last base to the first; the attributes lead so a stored
-# light event keeps the byte form its ID is hashed from.
+
 class LightState(StateHeader, LightAttributes):
     device_kind: Literal["light"] = "light"
-
-    def stored(self) -> dict[str, object]:
-        """The state as an event stores and hashes it. A light's omits its device kind, which
-        keeps stored light rows and event IDs compatible with readers that forbid the field."""
-        return self.model_dump(mode="json", exclude_none=True, exclude={"device_kind"})
 
 
 class SwitchState(StateHeader):
     """A plug or switch: on or off, with no light attributes."""
 
     device_kind: Literal["switch"]
-
-    def stored(self) -> dict[str, object]:
-        return self.model_dump(mode="json", exclude_none=True)
 
 
 DeviceState = Annotated[
@@ -350,13 +336,6 @@ class LightReading(LightAttributes, ReadingHeader):
 
     device_kind: Literal["light"]
 
-    @model_validator(mode="before")
-    @classmethod
-    def stored_before_plugs(cls, data: object) -> object:
-        # Setting the kind here, not as a default, keeps it in responses that exclude unset
-        # fields.
-        return light_by_default(data)
-
 
 class SwitchReading(ReadingHeader):
     """A plug or switch state as stored: no light attributes."""
@@ -459,11 +438,6 @@ class EventRecord(WireModel):
     device_kind: DeviceKind
     old: Reading | None
     new: Reading | None
-
-    @model_validator(mode="before")
-    @classmethod
-    def stored_before_plugs(cls, data: object) -> object:
-        return light_by_default(data)
 
 
 class EventsPage(WireModel):
@@ -618,8 +592,6 @@ CommandOutcome = Literal[
 ]
 
 
-# Each kind declares every field, in this order, so a light's stored row without its device
-# kind has the field order the release before plugs wrote.
 class LightCommandRecord(WireModel):
     id: str
     entity_id: Identity
@@ -630,11 +602,6 @@ class LightCommandRecord(WireModel):
     outcome: CommandOutcome
     # The recorded event that showed the change, when an event (not a snapshot) showed it.
     event_id: Identity | None
-
-    @model_validator(mode="before")
-    @classmethod
-    def stored_before_plugs(cls, data: object) -> object:
-        return light_by_default(data)
 
 
 class SwitchCommandRecord(WireModel):

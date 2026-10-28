@@ -351,15 +351,15 @@ def create_app(
             current = store.selection(db)
             if change.selected != (entity_id in current.entity_ids):
                 if change.selected:
-                    db.execute("INSERT INTO selection VALUES(?)", (entity_id,))
-                    if entity is not None and entity.device_kind == "switch":
-                        db.execute("INSERT OR IGNORE INTO selected_switch VALUES(?)", (entity_id,))
+                    db.execute(
+                        "INSERT INTO selection(id, device_kind) VALUES(?, ?)",
+                        (entity_id, entity.device_kind if entity else None),
+                    )
                     # A fresh selection awaits a new confirmation, even if history exists.
                     db.execute("DELETE FROM confirmed WHERE entity_id=?", (entity_id,))
                     db.execute("DELETE FROM current_state WHERE entity_id=?", (entity_id,))
                 else:
                     db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
-                    db.execute("DELETE FROM selected_switch WHERE id=?", (entity_id,))
                 db.execute(
                     "UPDATE metadata SET value=? WHERE key='revision'",
                     (str(current.revision + 1),),
@@ -375,14 +375,9 @@ def create_app(
                 "INSERT OR REPLACE INTO metadata VALUES('catalog_at', ?)", (now().isoformat(),)
             )
             db.execute("DELETE FROM catalog")
-            db.execute("DELETE FROM catalog_kind")
             db.executemany(
                 "INSERT INTO catalog VALUES(?, ?)",
-                [(e.id, e.model_dump_json(exclude={"device_kind"})) for e in payload.entities],
-            )
-            db.executemany(
-                "INSERT INTO catalog_kind VALUES(?, ?)",
-                [(e.id, e.device_kind) for e in payload.entities if e.device_kind],
+                [(e.id, e.model_dump_json()) for e in payload.entities],
             )
             # Discovery describes support; it never changes the user's approval.
         return {"accepted": True}
@@ -635,8 +630,8 @@ def create_app(
             switches = {
                 row[0]
                 for row in db.execute(
-                    "SELECT id FROM catalog_kind WHERE device_kind='switch' "
-                    "UNION SELECT id FROM selected_switch"
+                    "SELECT id FROM catalog WHERE json_extract(data, '$.device_kind')='switch' "
+                    "UNION SELECT id FROM selection WHERE device_kind='switch'"
                 )
             }
             # Unselected IDs are left out rather than reported as missing.
@@ -744,9 +739,7 @@ def create_app(
                         # Readings, or the kind it was selected as, tell light from switch.
                         device_kind=current.device_kind
                         if current
-                        else "switch"
-                        if store.selected_switch(db, entity_id)
-                        else None,
+                        else store.selected_kind(db, entity_id),
                         supported=False,
                         reason="Entity missing from latest discovery",
                     )

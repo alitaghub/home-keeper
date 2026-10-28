@@ -56,11 +56,13 @@ connector receipt time and API persistence time. Recorded changes use the
 The connector keeps only approved light fields. For a plug or switch it keeps
 only the on/off state, availability and source times, so a plug that reports a
 brightness never stores one. It drops unrelated attributes, account identifiers
-and raw logs. Each reading carries its `device_kind`, `light` or `switch`.
-The database leaves it out of a light's rows, as before plugs were supported, so
-the release before plugs can still read the database after a rollback; a row
-without it reads as `light`. Light event IDs are the same as that release made. Duplicate delivery creates one event. A late
-event remains in history without replacing a newer current state.
+and raw logs. Each reading carries its `device_kind`, `light` or `switch`, and
+so does every stored row. Databases from earlier releases left it out of a
+light's rows. The first start after the upgrade backs such a database up to
+`<database>.pre-forward-only.bak` beside it, then migrates it once. An event ID
+leaves the kind out, so a light's events keep their earlier IDs. Duplicate
+delivery creates one event. A late event remains in history without replacing
+a newer current state.
 
 Allowed color fields are `color_mode`, `color_temp_kelvin`, `hs_color`, `xy_color`,
 `rgb_color`, `rgbw_color` and `rgbww_color`. Brightness uses integers from 0 to

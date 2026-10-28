@@ -1,0 +1,357 @@
+{
+  "catalog": {
+    "source_id": "demo",
+    "home_assistant_url": null,
+    "refreshed_at": "2026-10-12T10:00:00+00:00",
+    "freshness": "stale",
+    "entities": [
+      {
+        "id": "bulb-a",
+        "device_id": "device-a",
+        "device_name": "Desk lamp",
+        "name": "Desk",
+        "device_kind": "light",
+        "supported": true,
+        "reason": null
+      },
+      {
+        "id": "plug-a",
+        "device_id": "device-plug-a",
+        "device_name": "Kettle plug",
+        "name": "Kettle",
+        "device_kind": "switch",
+        "supported": true,
+        "reason": null
+      },
+      {
+        "id": "room",
+        "device_id": null,
+        "device_name": null,
+        "name": "Living room",
+        "device_kind": null,
+        "supported": false,
+        "reason": "Groups and rooms are not recorded"
+      }
+    ]
+  },
+  "monitored": {
+    "entities": [
+      {
+        "id": "bulb-a",
+        "device_id": "device-a",
+        "device_name": "Desk lamp",
+        "name": "Desk",
+        "device_kind": "light",
+        "supported": true,
+        "reason": null,
+        "baseline": {
+          "state": "on",
+          "availability": "available",
+          "brightness": 100,
+          "color_mode": "brightness",
+          "device_kind": "light",
+          "id": "30aa4353e5d1d50b88083877250fcdade9dda53146197ed2dcb7819ce573fafa",
+          "kind": "event",
+          "entity_id": "bulb-a",
+          "source_entity_id": "light.desk",
+          "source_id": "demo",
+          "event_time": "2026-10-12T10:00:01+00:00",
+          "received_at": "2026-10-12T10:00:01+00:00",
+          "persisted_at": "2026-10-12T10:00:01+00:00"
+        },
+        "freshness": "stale",
+        "confirmed_at": "2026-10-12T10:00:01+00:00"
+      },
+      {
+        "id": "plug-a",
+        "device_id": "device-plug-a",
+        "device_name": "Kettle plug",
+        "name": "Kettle",
+        "device_kind": "switch",
+        "supported": true,
+        "reason": null,
+        "baseline": {
+          "state": "off",
+          "availability": "available",
+          "device_kind": "switch",
+          "id": "3d1c0b1f6792de4f817d0b6eeb52b69146c71fe80b97bf49ae50f928b6b8a50e",
+          "kind": "event",
+          "entity_id": "plug-a",
+          "source_entity_id": "switch.kettle",
+          "source_id": "demo",
+          "event_time": "2026-10-12T10:00:01+00:00",
+          "received_at": "2026-10-12T10:00:01+00:00",
+          "persisted_at": "2026-10-12T10:00:01+00:00"
+        },
+        "freshness": "stale",
+        "confirmed_at": "2026-10-12T10:00:01+00:00"
+      },
+      {
+        "id": "plug-gone",
+        "device_id": null,
+        "device_name": null,
+        "name": "plug-gone",
+        "device_kind": "switch",
+        "supported": false,
+        "reason": "Entity missing from latest discovery",
+        "baseline": null,
+        "freshness": "pending",
+        "confirmed_at": null
+      }
+    ]
+  },
+  "events": {
+    "events": [
+      {
+        "id": "3d1c0b1f6792de4f817d0b6eeb52b69146c71fe80b97bf49ae50f928b6b8a50e",
+        "entity_id": "plug-a",
+        "source_entity_id": "switch.kettle",
+        "source_id": "demo",
+        "selection_revision": 3,
+        "event_time": "2026-10-12T10:00:01Z",
+        "received_at": "2026-10-12T10:00:01Z",
+        "persisted_at": "2026-10-12T10:00:01+00:00",
+        "device_kind": "switch",
+        "old": {
+          "state": "on",
+          "availability": "available",
+          "device_kind": "switch"
+        },
+        "new": {
+          "state": "off",
+          "availability": "available",
+          "device_kind": "switch"
+        }
+      },
+      {
+        "id": "30aa4353e5d1d50b88083877250fcdade9dda53146197ed2dcb7819ce573fafa",
+        "entity_id": "bulb-a",
+        "source_entity_id": "light.desk",
+        "source_id": "demo",
+        "selection_revision": 3,
+        "event_time": "2026-10-12T10:00:01Z",
+        "received_at": "2026-10-12T10:00:01Z",
+        "persisted_at": "2026-10-12T10:00:01+00:00",
+        "device_kind": "light",
+        "old": {
+          "state": "off",
+          "availability": "available",
+          "device_kind": "light"
+        },
+        "new": {
+          "state": "on",
+          "availability": "available",
+          "brightness": 100,
+          "color_mode": "brightness",
+          "device_kind": "light"
+        }
+      }
+    ],
+    "next_cursor": null,
+    "retained_since": "2026-09-12T10:10:00+00:00",
+    "coverage": "unknown"
+  },
+  "commands": {
+    "commands": [
+      {
+        "id": "command-plug",
+        "entity_id": "plug-a",
+        "device_kind": "switch",
+        "command": {
+          "action": "on"
+        },
+        "sender": {
+          "kind": "telegram",
+          "id": 424242,
+          "name": "Ali <b>Telegram</b>"
+        },
+        "sent_at": "2026-10-12T10:00:03+00:00",
+        "outcome": "not_observed",
+        "event_id": null
+      },
+      {
+        "id": "command-bulb",
+        "entity_id": "bulb-a",
+        "device_kind": "light",
+        "command": {
+          "action": "off"
+        },
+        "sender": {
+          "kind": "telegram",
+          "id": 424242,
+          "name": "Ali <b>Telegram</b>"
+        },
+        "sent_at": "2026-10-12T10:00:02+00:00",
+        "outcome": "not_observed",
+        "event_id": null
+      }
+    ],
+    "next_cursor": null,
+    "retained_since": "2026-09-12T10:10:00+00:00"
+  },
+  "usage": {
+    "start": "2026-10-12T09:00:00+00:00",
+    "end": "2026-10-12T10:10:00+00:00",
+    "timezone": "UTC",
+    "retained_since": "2026-09-12T10:10:00+00:00",
+    "devices": [
+      {
+        "entity_id": "bulb-a",
+        "on_seconds": 0.0,
+        "unknown_seconds": 4199.0,
+        "switch_ons": 1,
+        "days": [
+          {
+            "date": "2026-10-12",
+            "on_seconds": 0.0,
+            "unknown_seconds": 4199.0
+          }
+        ],
+        "hours": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "unknown_intervals": [
+          {
+            "start": "2026-10-12T09:00:00+00:00",
+            "end": "2026-10-12T10:00:00+00:00",
+            "reason": "no_evidence"
+          },
+          {
+            "start": "2026-10-12T10:00:01+00:00",
+            "end": "2026-10-12T10:10:00+00:00",
+            "reason": "gap"
+          }
+        ],
+        "device_kind": "light",
+        "average_brightness": null
+      },
+      {
+        "entity_id": "plug-a",
+        "on_seconds": 1.0,
+        "unknown_seconds": 4199.0,
+        "switch_ons": 0,
+        "days": [
+          {
+            "date": "2026-10-12",
+            "on_seconds": 1.0,
+            "unknown_seconds": 4199.0
+          }
+        ],
+        "hours": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "unknown_intervals": [
+          {
+            "start": "2026-10-12T09:00:00+00:00",
+            "end": "2026-10-12T10:00:00+00:00",
+            "reason": "no_evidence"
+          },
+          {
+            "start": "2026-10-12T10:00:01+00:00",
+            "end": "2026-10-12T10:10:00+00:00",
+            "reason": "gap"
+          }
+        ],
+        "device_kind": "switch"
+      },
+      {
+        "entity_id": "plug-gone",
+        "on_seconds": 0.0,
+        "unknown_seconds": 4200.0,
+        "switch_ons": 0,
+        "days": [
+          {
+            "date": "2026-10-12",
+            "on_seconds": 0.0,
+            "unknown_seconds": 4200.0
+          }
+        ],
+        "hours": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "unknown_intervals": [
+          {
+            "start": "2026-10-12T09:00:00+00:00",
+            "end": "2026-10-12T10:00:01+00:00",
+            "reason": "no_evidence"
+          },
+          {
+            "start": "2026-10-12T10:00:01+00:00",
+            "end": "2026-10-12T10:10:00+00:00",
+            "reason": "gap"
+          }
+        ],
+        "device_kind": "switch"
+      }
+    ]
+  }
+}

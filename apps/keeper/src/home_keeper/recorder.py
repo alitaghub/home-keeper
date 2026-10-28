@@ -4,7 +4,6 @@ Every check and write for one reading runs in a single IMMEDIATE transaction, so
 other writer can change the selection or the current state between them.
 """
 
-import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -221,17 +220,17 @@ class Recorder:
             previous = db.execute(
                 "SELECT data FROM events WHERE source_id=? AND id=?", (self.source_id, payload.id)
             ).fetchone()
-            # `stored()` omits a light's device kind, keeping the row and its ID compatible.
-            data: dict[str, object] = {
-                **payload.model_dump(mode="json"),
-                "old": payload.old.stored() if payload.old else None,
-                "new": payload.new.stored() if payload.new else None,
-                "persisted_at": persisted.isoformat(),
-            }
-            if payload.device_kind == "switch":
-                data["device_kind"] = "switch"
+            row = EventRecord.model_validate(
+                payload.model_dump(mode="json")
+                | {
+                    "device_kind": payload.device_kind,
+                    "old": payload.old.stored() if payload.old else None,
+                    "new": payload.new.stored() if payload.new else None,
+                    "persisted_at": persisted.isoformat(),
+                }
+            )
             if previous:
-                return _repeat(previous[0], data)
+                return _repeat(previous[0], row)
             old = payload.old.meaningful() if payload.old else None
             new = payload.new.meaningful() if payload.new else None
             if old == new:
@@ -244,7 +243,7 @@ class Recorder:
                     payload.entity_id,
                     payload.event_time.isoformat(),
                     persisted.isoformat(),
-                    json.dumps(data),
+                    stored_json(row),
                 ),
             )
             # A change without a new state means Home Assistant dropped the entity.
@@ -332,10 +331,10 @@ class Recorder:
         )
 
 
-def _repeat(stored_row: str, data: dict[str, object]) -> Literal["duplicate"] | Rejected:
-    # Both sides are read as records, so rows with and without a light's kind compare alike.
+def _repeat(stored_row: str, row: EventRecord) -> Literal["duplicate"] | Rejected:
+    # Both sides are read as records, so the stored row's JSON formatting does not matter.
     stored = EventRecord.model_validate_json(stored_row).model_dump(mode="json", exclude_unset=True)
-    incoming = EventRecord.model_validate(data).model_dump(mode="json", exclude_unset=True)
+    incoming = row.model_dump(mode="json", exclude_unset=True)
     # A stable source ID cannot silently refer to different evidence.
     ignored = EVENT_CONTEXT_KEYS | {"persisted_at"}
     if _without(stored, ignored) != _without(incoming, ignored):

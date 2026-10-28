@@ -21,12 +21,3 @@ def test_a_switch_command_record_cannot_carry_a_brightness() -> None:
     assert record.validate_python(switch | {"command": {"action": "on"}}).device_kind == "switch"
     with pytest.raises(ValidationError):
         record.validate_python(switch | {"command": {"action": "on", "brightness_pct": 40}})
-
-
-def test_a_command_record_without_a_device_kind_is_a_light_command() -> None:
-    light = record.validate_python(STORED | {"command": {"action": "on", "brightness_pct": 40}})
-    assert light.device_kind == "light"
-    assert record.dump_python(light, mode="json")["command"] == {
-        "action": "on",
-        "brightness_pct": 40,
-    }

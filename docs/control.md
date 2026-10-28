@@ -122,7 +122,7 @@ with the command record, which names the device's `device_kind`, and one
 
 In the command history, a command still waiting shows `pending`. A command the
 API was restarted during shows `interrupted`: it may or may not have switched
-the device. Commands recorded before plugs could be switched read as
+the device. Commands recorded before plugs could be switched carry
 `device_kind` `light`.
 
 A reading received before the send never counts. With a brightness, a recorded
