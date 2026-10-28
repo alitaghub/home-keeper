@@ -22,6 +22,7 @@ from home_keeper_agent.keeper import (
     CommandRequest,
     Control,
     CoverageReport,
+    DeviceUsage,
     DiscoveryRefresh,
     EventsPage,
     Health,
@@ -117,26 +118,29 @@ def format_lights(monitored: Monitored) -> str:
     return "\n".join(lines)
 
 
-def _light_usage(light: LightUsage) -> list[str]:
-    brightness = (
-        "unknown" if light.average_brightness is None else f"{percent(light.average_brightness)}%"
+def _device_usage(device: DeviceUsage) -> list[str]:
+    line = (
+        f"- {device.entity_id}{_kind(device.device_kind)}: on {duration(device.on_seconds)}, "
+        f"unknown {duration(device.unknown_seconds)}, switched on {device.switch_ons} time(s)"
     )
-    lines = [
-        f"- {light.entity_id}: on {duration(light.on_seconds)}, "
-        f"unknown {duration(light.unknown_seconds)}, switched on {light.switch_ons} time(s), "
-        f"average brightness while on {brightness}"
-    ]
+    # Plugs and switches have no brightness, so their line never mentions it.
+    if isinstance(device, LightUsage):
+        brightness = device.average_brightness
+        line += ", average brightness while on " + (
+            "unknown" if brightness is None else f"{percent(brightness)}%"
+        )
+    lines = [line]
     lines.extend(
         f"  {day.date}: on {duration(day.on_seconds)}, unknown {duration(day.unknown_seconds)}"
-        for day in light.days
+        for day in device.days
     )
     hours = [
-        f"{hour:02d}:00 {duration(seconds)}" for hour, seconds in enumerate(light.hours) if seconds
+        f"{hour:02d}:00 {duration(seconds)}" for hour, seconds in enumerate(device.hours) if seconds
     ]
     lines.append(f"  on-time by hour of day: {', '.join(hours) or 'none'}")
     lines.extend(
         f"  unknown {interval.start} to {interval.end} ({interval.reason})"
-        for interval in light.unknown_intervals
+        for interval in device.unknown_intervals
     )
     return lines
 
@@ -146,10 +150,10 @@ def format_usage(usage: Usage) -> str:
         f"Usage from {usage.start} to {usage.end}, days and hours in {usage.timezone}, "
         f"data retained since {usage.retained_since}. Unknown time is neither on nor off."
     ]
-    if not usage.lights:
-        lines.append("No monitored lights match this request.")
-    for light in usage.lights:
-        lines.extend(_light_usage(light))
+    if not usage.devices:
+        lines.append("No monitored lights, plugs or switches match this request.")
+    for device in usage.devices:
+        lines.extend(_device_usage(device))
     return "\n".join(lines)
 
 
@@ -337,13 +341,15 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def get_usage(start: str, end: str, entity_ids: list[str] | None = None) -> str:
-        """Report on-time, unknown time, switch-ons, per-day and per-hour on-time, and average
-        brightness for monitored lights. Use this for every usage number.
+        """Report on-time, unknown time, switch-ons, and per-day and per-hour on-time for
+        monitored lights, plugs and switches, and average brightness for lights. Use this for
+        every usage number.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset, e.g. 2026-10-12T00:00:00+00:00.
             end: Range end, ISO 8601 with a UTC offset. At most 366 days after start.
-            entity_ids: Light entity IDs such as light.kitchen; omit for all monitored lights.
+            entity_ids: Entity IDs such as light.kitchen or switch.kettle; omit for all
+                monitored devices.
         """
         params: Params = {"start": start, "end": end}
         if entity_ids:

@@ -14,8 +14,9 @@ dashboard uses. It can:
 
 - list the lights, plugs and switches you monitor, with each one's kind
   (`kind=light` or `kind=switch`) and current state
-- report usage over a time range: on-time per day and per hour, switch-ons,
-  average brightness, and unknown time
+- report usage over a time range for lights, plugs and switches: on-time per
+  day and per hour, switch-ons, and unknown time. Lights also get their average
+  brightness; plugs and switches have none
 - show recorded changes, collection gaps and collector health
 - list discovered devices, with their kind, and refresh discovery
 - start or stop monitoring a light, plug or switch, after you approve it in the chat. You can

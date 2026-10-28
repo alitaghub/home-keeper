@@ -525,16 +525,29 @@ class DayUsage(WireModel):
     unknown_seconds: float
 
 
-class LightUsage(WireModel):
+class UsageFields(WireModel):
     entity_id: Identity
     on_seconds: float
     unknown_seconds: float
     switch_ons: int
-    average_brightness: float | None
     days: list[DayUsage]
     # On-seconds per local hour of day, 0 to 23, summed over the whole range.
     hours: list[float] = Field(min_length=24, max_length=24)
     unknown_intervals: list[UnknownInterval]
+
+
+class LightUsage(UsageFields):
+    device_kind: Literal["light"]
+    average_brightness: float | None
+
+
+class SwitchUsage(UsageFields):
+    """A plug or switch: the same numbers as a light, with no brightness."""
+
+    device_kind: Literal["switch"]
+
+
+DeviceUsage = Annotated[LightUsage | SwitchUsage, Field(discriminator="device_kind")]
 
 
 class UsageReport(WireModel):
@@ -542,7 +555,7 @@ class UsageReport(WireModel):
     end: Timestamp
     timezone: str
     retained_since: Timestamp
-    lights: list[LightUsage]
+    devices: list[DeviceUsage]
 
 
 class ControlHeartbeat(WireModel):

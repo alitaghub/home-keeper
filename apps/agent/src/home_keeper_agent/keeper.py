@@ -57,16 +57,28 @@ class DayUsage(Wire):
     unknown_seconds: float
 
 
-class LightUsage(Wire):
+class UsageFields(Wire):
     entity_id: str
     on_seconds: float
     unknown_seconds: float
     switch_ons: int
-    average_brightness: float | None
     days: list[DayUsage]
     # On-seconds per local hour of day, 0 to 23.
     hours: list[float] = Field(min_length=24, max_length=24)
     unknown_intervals: list[UnknownInterval]
+
+
+class LightUsage(UsageFields):
+    device_kind: Literal["light"]
+    average_brightness: float | None
+
+
+class SwitchUsage(UsageFields):
+    # Plugs and switches have no brightness.
+    device_kind: Literal["switch"]
+
+
+DeviceUsage = Annotated[LightUsage | SwitchUsage, Field(discriminator="device_kind")]
 
 
 class Usage(Wire):
@@ -74,7 +86,7 @@ class Usage(Wire):
     end: str
     timezone: str
     retained_since: str
-    lights: list[LightUsage]
+    devices: list[DeviceUsage]
 
 
 class Event(Wire):

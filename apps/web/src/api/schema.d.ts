@@ -800,6 +800,11 @@ export interface components {
             average_brightness: number | null;
             /** Days */
             days: components["schemas"]["DayUsage"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            device_kind: "light";
             /** Entity Id */
             entity_id: string;
             /** Hours */
@@ -999,6 +1004,31 @@ export interface components {
              */
             state: "on" | "off" | "unavailable" | "unknown";
         };
+        /**
+         * SwitchUsage
+         * @description A plug or switch: the same numbers as a light, with no brightness.
+         */
+        SwitchUsage: {
+            /** Days */
+            days: components["schemas"]["DayUsage"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            device_kind: "switch";
+            /** Entity Id */
+            entity_id: string;
+            /** Hours */
+            hours: number[];
+            /** On Seconds */
+            on_seconds: number;
+            /** Switch Ons */
+            switch_ons: number;
+            /** Unknown Intervals */
+            unknown_intervals: components["schemas"]["UnknownInterval"][];
+            /** Unknown Seconds */
+            unknown_seconds: number;
+        };
         /** TelegramSender */
         TelegramSender: {
             /** Id */
@@ -1031,13 +1061,13 @@ export interface components {
         };
         /** UsageReport */
         UsageReport: {
+            /** Devices */
+            devices: (components["schemas"]["LightUsage"] | components["schemas"]["SwitchUsage"])[];
             /**
              * End
              * Format: date-time
              */
             end: string;
-            /** Lights */
-            lights: components["schemas"]["LightUsage"][];
             /**
              * Retained Since
              * Format: date-time

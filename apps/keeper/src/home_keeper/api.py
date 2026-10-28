@@ -50,9 +50,7 @@ from home_keeper.models import (
     HealthReport,
     HealthStatus,
     Identity,
-    LightBaseline,
     LightCommand,
-    LightEventReading,
     LightReading,
     MonitoredEntities,
     MonitoredEntity,
@@ -64,7 +62,7 @@ from home_keeper.models import (
 )
 from home_keeper.recorder import Recorder, Rejected, update_current
 from home_keeper.store import Store, baseline_record, current_reading
-from home_keeper.usage import light_usage
+from home_keeper.usage import UsageReading, device_usage
 from home_keeper_light_command import LightOff, matches_brightness
 
 UTC_ZONE = ZoneInfo("UTC")
@@ -604,7 +602,6 @@ def create_app(
         # computing happen after it closes. The store runs in WAL mode, so writers continue.
         with store.transaction("DEFERRED") as db:
             selected = store.selection(db).entity_ids
-            # Plugs and switches have no usage report yet.
             switches = {
                 row[0]
                 for row in db.execute(
@@ -612,37 +609,37 @@ def create_app(
                 )
             }
             # Unselected IDs are left out rather than reported as missing.
-            lights = sorted((set(entity_id or selected) & set(selected)) - switches)
-            scope = ",".join("?" * len(lights))
-            # Evidence inside the window, plus each light's latest evidence before it.
+            devices = sorted(set(entity_id or selected) & set(selected))
+            scope = ",".join("?" * len(devices))
+            # Evidence inside the window, plus each device's latest evidence before it.
             snapshot_rows: list[sqlite3.Row] = db.execute(
                 # Only placeholders are interpolated; values are bound parameters.
                 "SELECT entity_id, data FROM baselines WHERE persisted_at>=? "  # noqa: S608 -- placeholders only
                 "AND julianday(json_extract(data, '$.received_at')) <= julianday(?) "
                 f"AND entity_id IN ({scope})",
-                (max(cutoff, start.isoformat()), end.isoformat(), *lights),
+                (max(cutoff, start.isoformat()), end.isoformat(), *devices),
             ).fetchall()
             event_rows: list[sqlite3.Row] = db.execute(
                 "SELECT entity_id, data FROM events WHERE persisted_at>=? AND event_time>=? "  # noqa: S608 -- placeholders only
                 f"AND event_time<=? AND entity_id IN ({scope})",
-                (cutoff, start.isoformat(), end.isoformat(), *lights),
+                (cutoff, start.isoformat(), end.isoformat(), *devices),
             ).fetchall()
             current_rows: list[sqlite3.Row] = []
-            for light in lights:
+            for device in devices:
                 # Snapshots are stored in receipt order, so the newest persisted is the latest read.
                 snapshot_rows += db.execute(
                     "SELECT entity_id, data FROM baselines WHERE entity_id=? AND persisted_at>=? "
                     "AND persisted_at<? ORDER BY persisted_at DESC, rowid DESC LIMIT 1",
-                    (light, cutoff, start.isoformat()),
+                    (device, cutoff, start.isoformat()),
                 ).fetchall()
                 event_rows += db.execute(
                     "SELECT entity_id, data FROM events WHERE entity_id=? AND persisted_at>=? "
                     "AND event_time<? ORDER BY event_time DESC, id DESC LIMIT 1",
-                    (light, cutoff, start.isoformat()),
+                    (device, cutoff, start.isoformat()),
                 ).fetchall()
-                # The cache keeps a steady light's state after its only snapshot expires.
+                # The cache keeps a steady device's state after its only snapshot expires.
                 current_rows += db.execute(
-                    "SELECT entity_id, data FROM current_state WHERE entity_id=?", (light,)
+                    "SELECT entity_id, data FROM current_state WHERE entity_id=?", (device,)
                 ).fetchall()
             # Every retained gap: one that recovered before the window still leaves the light
             # unknown until new evidence arrives. Gaps are few, bounded by retention.
@@ -659,16 +656,13 @@ def create_app(
         changes = [(row[0], EventRecord.model_validate_json(row[1])) for row in event_rows]
         # A selected switch that has left discovery is still known by its readings.
         switches |= {
-            entity for entity, value in [*snapshots, *changes] if value.device_kind != "light"
+            entity for entity, value in [*snapshots, *changes] if value.device_kind == "switch"
         }
-        lights = [light for light in lights if light not in switches]
-        readings: dict[str, list[LightBaseline | LightEventReading]] = {
-            light: [] for light in lights
-        }
+        readings: dict[str, list[UsageReading]] = {device: [] for device in devices}
         for entity, reading in snapshots:
-            if entity in readings and isinstance(reading, LightReading):
+            if entity in readings:
                 readings[entity].append(reading)
-        events: dict[str, list[EventRecord]] = {light: [] for light in lights}
+        events: dict[str, list[EventRecord]] = {device: [] for device in devices}
         for entity, event in changes:
             if entity in events:
                 events[entity].append(event)
@@ -679,19 +673,20 @@ def create_app(
             end=end.isoformat(),
             timezone=timezone.key,
             retained_since=cutoff,
-            lights=[
-                light_usage(
-                    light,
+            devices=[
+                device_usage(
+                    device,
+                    "switch" if device in switches else "light",
                     start=start,
                     end=end,
                     now=now().astimezone(UTC),
                     timezone=timezone,
                     retained_since=retained_since,
-                    readings=readings[light],
-                    events=events[light],
+                    readings=readings[device],
+                    events=events[device],
                     gaps=gaps,
                 )
-                for light in lights
+                for device in devices
             ],
         )
 

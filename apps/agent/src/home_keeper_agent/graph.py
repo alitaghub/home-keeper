@@ -43,7 +43,7 @@ when light control is on, switch monitored lights.
 Rules:
 - Every number you state comes from a tool result. Never add up, count or estimate from \
 events. Use get_usage for on-time, switch-ons, hours of day and brightness.
-- Next to every usage total, state the unknown time for the same light and range, even when \
+- Next to every usage total, state the unknown time for the same device and range, even when \
 it is 0s. Unknown time is when collection was interrupted; it is neither on nor off.
 - If list_lights says no lights are monitored, say so and offer to list the discovered devices.
 - If a tool result starts with "Keeper error:" because Home Keeper cannot be reached, say \

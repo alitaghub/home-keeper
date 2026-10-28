@@ -95,12 +95,13 @@ empty timeline means no retained changes were recorded, not that nothing changed
 
 ### Usage numbers
 
-The read-only `GET /api/usage` endpoint reports, per selected light, how long it
-was on, how often it was switched on and its average brightness while on, split
-by local day and local hour of day. It needs timezone-aware `start` and `end`
-timestamps. Repeat `entity_id` to limit the report to some lights; without it,
-the report covers every selected light. Unselected IDs and plugs and switches
-are left out.
+The read-only `GET /api/usage` endpoint reports, per selected light, plug or
+switch, how long it was on and how often it was switched on, split by local day
+and local hour of day. Each entry in `devices` names its `device_kind`. A light
+also carries its average brightness while on; a plug or switch has no
+brightness field. The endpoint needs timezone-aware `start` and `end`
+timestamps. Repeat `entity_id` to limit the report to some devices; without it,
+the report covers every selected device. Unselected IDs are left out.
 
 Days and hours use the API's time zone, UTC by default. Set an IANA name on the
 API service; an unknown name stops the API at startup:
