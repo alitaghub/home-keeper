@@ -15,7 +15,7 @@ import anyio.to_thread
 import pytest
 from pydantic import TypeAdapter
 
-from home_keeper.commands import Commands, Refusal, UnknownEntity, UnsupportedEntity
+from home_keeper.commands import Commands, Refusal
 from home_keeper.control import ControllerUnreachable
 from home_keeper.models import (
     ChangeEvent,
@@ -28,6 +28,7 @@ from home_keeper.models import (
     LightCommandRecord,
     SwitchCommandRecord,
 )
+from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
 from home_keeper.recorder import Recorder, Rejected
 from home_keeper.store import Store
 from home_keeper_light_command import ForwardedCommand
@@ -148,16 +149,9 @@ class Home:
             return Store.selection(db).revision
 
     def select(self, device: Device, *, selected: bool = True) -> None:
-        """Change the selection as the dashboard's selection route does."""
-        with self.store.transaction() as db:
-            if selected:
-                db.execute(
-                    "INSERT INTO selection(id, device_kind) VALUES(?, ?)",
-                    (device.entity_id, device.kind),
-                )
-            else:
-                db.execute("DELETE FROM selection WHERE id=?", (device.entity_id,))
-            bump_revision(db)
+        monitoring = Monitoring(self.store, now=self.clock, reconciliation_seconds=60)
+        result = monitoring.select(device.entity_id, selected=selected)
+        assert not isinstance(result, UnknownEntity | UnsupportedEntity), result
 
     def snapshot(
         self,
@@ -480,6 +474,27 @@ async def test_refusals_come_in_a_fixed_order_and_nothing_is_sent_or_stored(
     assert await switch(house, device, action) == refused(code, device)
     assert house.controller.sent == []
     assert house.audit() == []
+
+
+async def test_a_reselected_device_refuses_commands_until_a_new_reading_arrives(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT, IS_OFF)
+    house.select(LIGHT, selected=False)
+    house.select(LIGHT)
+    assert await switch(house, LIGHT, ON) == refused("state_unknown")
+    assert house.controller.sent == []
+
+
+async def test_brightness_is_refused_for_a_switch_reading_even_when_discovery_says_light(
+    tmp_path: Path,
+) -> None:
+    house = home(tmp_path)
+    # Discovery lists bulb-a as a light; Home Assistant now reports it as a switch.
+    house.snapshot(Device("bulb-a", "switch.desk", "switch", "device"), IS_OFF)
+    assert house.commands.heartbeat(NOW)
+    assert await switch(house, LIGHT, on(30)) == refused("not_supported")
+    assert house.controller.sent == []
 
 
 async def test_reading_from_outside_the_device_domain_makes_the_entity_unsupported(

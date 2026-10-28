@@ -24,6 +24,7 @@ from home_keeper.models import (
     LightState,
     SwitchState,
 )
+from home_keeper.monitoring import Monitoring
 from home_keeper.store import Store, baseline_record, current_reading, stored_json
 
 device_state: TypeAdapter[DeviceState] = TypeAdapter(DeviceState)
@@ -159,7 +160,7 @@ class Recorder:
         if payload.received_at > persisted:
             return Rejected("future_timestamp", "Future receipt timestamp")
         with self.store.transaction() as db:
-            if not self._admits(db, payload.entity_id, payload.selection_revision):
+            if not Monitoring.admits(db, payload.entity_id, payload.selection_revision):
                 return Rejected("selection_changed", "Selection no longer permits this observation")
             # Only an earlier snapshot makes this one stale. An event received after the read
             # returned is newer evidence; current-state ordering keeps it ahead of this snapshot.
@@ -215,7 +216,7 @@ class Recorder:
         if payload.received_at > persisted or payload.event_time > payload.received_at:
             return Rejected("future_timestamp", "Future event or receipt timestamp")
         with self.store.transaction() as db:
-            if not self._admits(db, payload.entity_id, payload.selection_revision):
+            if not Monitoring.admits(db, payload.entity_id, payload.selection_revision):
                 return Rejected("selection_changed", "Selection no longer permits this event")
             previous = db.execute(
                 "SELECT data FROM events WHERE source_id=? AND id=?", (self.source_id, payload.id)
@@ -271,17 +272,6 @@ class Recorder:
             if confirmed is None or payload.received_at.isoformat() >= confirmed[0]:
                 self._confirm(db, payload.entity_id, payload.received_at, persisted)
             return "recorded"
-
-    def _admits(self, db: sqlite3.Connection, entity_id: str, revision: int) -> bool:
-        """Whether the current selection still approves recording this light."""
-        current = self.store.selection(db)
-        entity = self.store.entity(db, entity_id)
-        return (
-            revision == current.revision
-            and entity_id in current.entity_ids
-            and entity is not None
-            and entity.supported
-        )
 
     @staticmethod
     def _store_baseline(

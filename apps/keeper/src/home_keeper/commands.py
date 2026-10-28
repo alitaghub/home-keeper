@@ -34,6 +34,7 @@ from home_keeper.models import (
     Reading,
     to_utc,
 )
+from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
 from home_keeper.store import Store, baseline_record, stored_json
 from home_keeper_light_command import (
     ForwardedCommand,
@@ -50,16 +51,6 @@ POLL_SECONDS = 0.1
 class Refusal:
     code: CommandRefusalCode
     message: str
-
-
-@dataclass(frozen=True)
-class UnknownEntity:
-    pass
-
-
-@dataclass(frozen=True)
-class UnsupportedEntity:
-    pass
 
 
 type Declined = Refusal | UnknownEntity | UnsupportedEntity
@@ -309,21 +300,21 @@ class Commands:
     def _accept(self, entity_id: str, command: LightCommand) -> _Accepted | Declined:  # noqa: PLR0911 -- one return per ordered check
         # Every refusal happens before anything is sent or stored.
         with self.store.transaction("DEFERRED") as db:
-            entity = self.store.entity(db, entity_id)
-            if entity is None:
+            device = Monitoring.device(db, entity_id)
+            if device.entity is None:
                 return UnknownEntity()
-            if not entity.supported:
+            if not device.entity.supported:
                 return UnsupportedEntity()
             # Refusal messages call a plug or switch a device.
-            noun = "device" if entity.device_kind == "switch" else "light"
+            noun = "device" if device.kind == "switch" else "light"
             if self.controller is None or self._status(db).state == "off":
                 return Refusal("control_off", "Light control is off")
-            if entity_id not in self.store.selection(db).entity_ids:
+            if not device.monitored:
                 return Refusal("not_monitored", f"Monitor this {noun} before switching it")
-            reading = self.store.current(db, entity_id)
+            reading = device.reading
             if reading is None or reading.state not in ("on", "off", "unavailable"):
                 return Refusal("state_unknown", f"The {noun}'s current state is unknown")
-            # The reading names the kind even when the catalog entry has none.
+            # The reading's kind decides what can be forwarded, so it decides this check too.
             if (
                 reading.device_kind == "switch"
                 and not isinstance(command, LightOff)
