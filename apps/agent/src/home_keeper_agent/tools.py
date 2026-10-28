@@ -22,6 +22,7 @@ from home_keeper_agent.keeper import (
     CommandRequest,
     Control,
     CoverageReport,
+    DeviceUsage,
     DiscoveryRefresh,
     EventsPage,
     Health,
@@ -41,7 +42,7 @@ from home_keeper_agent.keeper import (
 from home_keeper_light_command import matches_brightness
 
 EVENT_LIMIT = 100
-LIGHT_TOOLS = ("turn_on_light", "turn_off_light")
+COMMAND_TOOLS = ("turn_on", "turn_off")
 NOT_ALLOWED = "Not sent: you are not allowed to control lights."
 
 
@@ -97,42 +98,49 @@ def _guard[T](render: Callable[[], T]) -> T | str:
         return "Keeper error: unexpected response from Home Keeper."
 
 
-def format_lights(monitored: Monitored) -> str:
+def _kind(device_kind: str | None) -> str:
+    return f" kind={device_kind}" if device_kind else ""
+
+
+def format_monitored(monitored: Monitored) -> str:
     if not monitored.entities:
-        return "No lights are monitored."
-    lines = [f"{len(monitored.entities)} monitored light(s):"]
-    for light in monitored.entities:
-        line = f"- {light.id} name={_name(light.name)}"
-        if light.device_name:
-            line += f" device={_name(light.device_name)}"
-        line += f": {_reading(light.baseline)}"
-        line += f", data {light.freshness}, last confirmed {light.confirmed_at or 'never'}"
-        if not light.supported and light.reason:
-            line += f", unsupported: {_name(light.reason)}"
+        return "No lights, plugs or switches are monitored."
+    lines = [f"{len(monitored.entities)} monitored device(s):"]
+    for device in monitored.entities:
+        line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
+        if device.device_name:
+            line += f" device={_name(device.device_name)}"
+        line += f": {_reading(device.baseline)}"
+        line += f", data {device.freshness}, last confirmed {device.confirmed_at or 'never'}"
+        if not device.supported and device.reason:
+            line += f", unsupported: {_name(device.reason)}"
         lines.append(line)
     return "\n".join(lines)
 
 
-def _light_usage(light: LightUsage) -> list[str]:
-    brightness = (
-        "unknown" if light.average_brightness is None else f"{percent(light.average_brightness)}%"
+def _device_usage(device: DeviceUsage) -> list[str]:
+    line = (
+        f"- {device.entity_id}{_kind(device.device_kind)}: on {duration(device.on_seconds)}, "
+        f"unknown {duration(device.unknown_seconds)}, switched on {device.switch_ons} time(s)"
     )
-    lines = [
-        f"- {light.entity_id}: on {duration(light.on_seconds)}, "
-        f"unknown {duration(light.unknown_seconds)}, switched on {light.switch_ons} time(s), "
-        f"average brightness while on {brightness}"
-    ]
+    # Plugs and switches have no brightness, so their line never mentions it.
+    if isinstance(device, LightUsage):
+        brightness = device.average_brightness
+        line += ", average brightness while on " + (
+            "unknown" if brightness is None else f"{percent(brightness)}%"
+        )
+    lines = [line]
     lines.extend(
         f"  {day.date}: on {duration(day.on_seconds)}, unknown {duration(day.unknown_seconds)}"
-        for day in light.days
+        for day in device.days
     )
     hours = [
-        f"{hour:02d}:00 {duration(seconds)}" for hour, seconds in enumerate(light.hours) if seconds
+        f"{hour:02d}:00 {duration(seconds)}" for hour, seconds in enumerate(device.hours) if seconds
     ]
     lines.append(f"  on-time by hour of day: {', '.join(hours) or 'none'}")
     lines.extend(
         f"  unknown {interval.start} to {interval.end} ({interval.reason})"
-        for interval in light.unknown_intervals
+        for interval in device.unknown_intervals
     )
     return lines
 
@@ -142,10 +150,10 @@ def format_usage(usage: Usage) -> str:
         f"Usage from {usage.start} to {usage.end}, days and hours in {usage.timezone}, "
         f"data retained since {usage.retained_since}. Unknown time is neither on nor off."
     ]
-    if not usage.lights:
-        lines.append("No monitored lights match this request.")
-    for light in usage.lights:
-        lines.extend(_light_usage(light))
+    if not usage.devices:
+        lines.append("No monitored lights, plugs or switches match this request.")
+    for device in usage.devices:
+        lines.extend(_device_usage(device))
     return "\n".join(lines)
 
 
@@ -190,7 +198,7 @@ def format_devices(catalog: Catalog) -> str:
         f"refreshed {catalog.refreshed_at or 'never'}:"
     ]
     for device in catalog.entities:
-        line = f"- {device.id} name={_name(device.name)}"
+        line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
         if device.device_name:
             line += f" device={_name(device.device_name)}"
         if device.supported:
@@ -202,7 +210,7 @@ def format_devices(catalog: Catalog) -> str:
 
 
 class RunContext(Wire):
-    """Who asks in this run and whether they may switch lights.
+    """Who asks in this run and whether they may switch devices.
 
     Read from the run's `configurable`; the browser chat sets neither, so it gets the defaults.
     """
@@ -219,7 +227,7 @@ def run_context(config: RunnableConfig) -> RunContext:
         return RunContext(may_control=False)
 
 
-class LightCall(Wire):
+class CommandCall(Wire):
     entity_id: str
     brightness_percent: int | None = None
 
@@ -242,20 +250,20 @@ def _once[T](fetch: Callable[[], T]) -> Callable[[], T]:
     return get
 
 
-def light_refusals(
+def command_refusals(
     client: KeeperClient, calls: Sequence[tuple[str, Mapping[str, object]]], context: RunContext
 ) -> list[str | None]:
-    """Why each light command must not reach the approval card, or None when it may.
+    """Why each device command must not reach the approval card, or None when it may.
 
     The keeper refuses the same cases; checking first spares approving a command that
-    cannot work. One model response's calls share one read of control and monitored lights.
+    cannot work. One model response's calls share one read of control and monitored devices.
     """
     control = _once(lambda: client.request("GET", "/api/control", Control))
     monitored = _once(lambda: client.request("GET", "/api/monitored", Monitored))
-    return [_light_refusal(name, args, context, control, monitored) for name, args in calls]
+    return [_command_refusal(name, args, context, control, monitored) for name, args in calls]
 
 
-def _light_refusal(
+def _command_refusal(
     name: str,
     args: Mapping[str, object],
     context: RunContext,
@@ -263,10 +271,10 @@ def _light_refusal(
     monitored: Callable[[], Monitored],
 ) -> str | None:
     try:
-        call = LightCall.model_validate(args)
+        call = CommandCall.model_validate(args)
     except ValidationError:
         return "Not sent: the arguments are invalid."
-    action: Literal["on", "off"] = "on" if name == "turn_on_light" else "off"
+    action: Literal["on", "off"] = "on" if name == "turn_on" else "off"
     brightness = call.brightness_percent if action == "on" else None
     entity_id = call.entity_id
 
@@ -277,10 +285,13 @@ def _light_refusal(
             return "Not sent: light control is off."
         if brightness is not None and brightness not in range(1, 101):
             return "Not sent: brightness must be 1 to 100 percent."
-        light = next((light for light in monitored().entities if light.id == entity_id), None)
-        if light is None:
+        device = next((device for device in monitored().entities if device.id == entity_id), None)
+        if device is None:
             return f"Not sent: {entity_id} is not monitored. Offer to start monitoring it first."
-        return _state_refusal(entity_id, light.baseline, action, brightness)
+        # The keeper refuses this too, but only after the user approved it.
+        if brightness is not None and device.device_kind == "switch":
+            return f"Not sent: {entity_id} is a plug or switch and has no brightness."
+        return _state_refusal(entity_id, device.baseline, action, brightness)
 
     return _guard(check)
 
@@ -314,9 +325,9 @@ def format_outcome(entity_id: str, command: LightOn | LightOff, record: CommandR
 
 def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
-    def list_lights() -> str:
-        """List the lights the keeper records, with their latest state and freshness. The first
-        line says whether light control is on."""
+    def list_monitored() -> str:
+        """List the lights, plugs and switches the keeper records, with each one's kind, latest
+        state and freshness. The first line says whether control is on."""
 
         def render() -> str:
             monitored = client.request("GET", "/api/monitored", Monitored)
@@ -324,19 +335,21 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
                 control = client.request("GET", "/api/control", Control).state
             except KeeperError:
                 control = "unknown"
-            return f"Control: {control}\n{format_lights(monitored)}"
+            return f"Control: {control}\n{format_monitored(monitored)}"
 
         return _guard(render)
 
     @tool
     def get_usage(start: str, end: str, entity_ids: list[str] | None = None) -> str:
-        """Report on-time, unknown time, switch-ons, per-day and per-hour on-time, and average
-        brightness for monitored lights. Use this for every usage number.
+        """Report on-time, unknown time, switch-ons, and per-day and per-hour on-time for
+        monitored lights, plugs and switches, and average brightness for lights. Use this for
+        every usage number.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset, e.g. 2026-10-12T00:00:00+00:00.
             end: Range end, ISO 8601 with a UTC offset. At most 366 days after start.
-            entity_ids: Light entity IDs such as light.kitchen; omit for all monitored lights.
+            entity_ids: Entity IDs such as light.kitchen or switch.kettle; omit for all
+                monitored devices.
         """
         params: Params = {"start": start, "end": end}
         if entity_ids:
@@ -347,12 +360,13 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def get_events(start: str, end: str, entity_id: str | None = None) -> str:
-        """List recorded light changes in a time range, newest first, at most 100.
+        """List recorded changes of lights, plugs and switches in a time range, newest first, at
+        most 100.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset.
             end: Range end, ISO 8601 with a UTC offset.
-            entity_id: One light entity ID such as light.kitchen; omit for all lights.
+            entity_id: One entity ID such as light.kitchen; omit for every monitored device.
         """
         params: Params = {"start": start, "end": end, "limit": EVENT_LIMIT}
         if entity_id:
@@ -376,8 +390,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def list_devices() -> str:
-        """List the devices the keeper discovered in Home Assistant and whether each can be
-        monitored."""
+        """List the devices the keeper discovered in Home Assistant, with each one's kind (light
+        or switch, which covers plugs) and whether it can be monitored."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:
@@ -385,7 +399,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         path = f"/api/selection/{quote(entity_id, safe='')}"
         selection = client.request("PUT", path, Selection, body={"selected": selected})
         verb = "Now monitoring" if selected else "Stopped monitoring"
-        return f"{verb} {_name(entity_id)}. {len(selection.entity_ids)} light(s) monitored."
+        return f"{verb} {_name(entity_id)}. {len(selection.entity_ids)} device(s) monitored."
 
     @tool
     def refresh_discovery() -> str:
@@ -399,20 +413,23 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         return _guard(render)
 
     @tool
-    def monitor_light(entity_id: str) -> str:
-        """Start recording a light. The user must approve this; it never changes the light.
+    def monitor(entity_id: str) -> str:
+        """Start recording a light, plug or switch. The user must approve this; it never
+        changes the device.
 
         Args:
-            entity_id: A light entity ID from list_devices, such as light.kitchen.
+            entity_id: An entity ID from list_devices that can be monitored, such as
+                light.kitchen.
         """
         return _guard(lambda: select(entity_id, selected=True))
 
     @tool
     def stop_monitoring(entity_id: str) -> str:
-        """Stop recording a light. The user must approve this; it never changes the light.
+        """Stop recording a light, plug or switch. The user must approve this; it never changes
+        the device.
 
         Args:
-            entity_id: A monitored light entity ID, such as light.kitchen.
+            entity_id: A monitored entity ID, such as light.kitchen.
         """
         return _guard(lambda: select(entity_id, selected=False))
 
@@ -422,43 +439,45 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         if not context.may_control:
             return NOT_ALLOWED
         # The ID comes from the model, so it is encoded as one path segment.
-        path = f"/api/lights/{quote(entity_id, safe='')}/command"
+        path = f"/api/devices/{quote(entity_id, safe='')}/command"
         request = CommandRequest(command=command, sender=context.sender)
         record = client.request("POST", path, CommandRecord, body=request)
         return format_outcome(entity_id, command, record)
 
     @tool
-    def turn_on_light(
+    def turn_on(
         entity_id: str, config: RunnableConfig, brightness_percent: int | None = None
     ) -> str:
-        """Turn a monitored light on, optionally at a brightness. The user must approve this.
+        """Turn a monitored light, plug or switch on, a light optionally at a brightness. The
+        user must approve this.
 
         Args:
-            entity_id: A monitored light's ID as list_lights prints it.
-            brightness_percent: Brightness from 1 to 100 percent; omit to keep the light's own.
+            entity_id: A monitored device's ID as list_monitored prints it.
+            brightness_percent: Brightness from 1 to 100 percent, for a light only; omit to keep
+                the light's own, and always omit it for a plug or switch.
         """
         command = LightOn(brightness_pct=brightness_percent)
         return _guard(lambda: send(entity_id, command, config))
 
     @tool
-    def turn_off_light(entity_id: str, config: RunnableConfig) -> str:
-        """Turn a monitored light off. The user must approve this.
+    def turn_off(entity_id: str, config: RunnableConfig) -> str:
+        """Turn a monitored light, plug or switch off. The user must approve this.
 
         Args:
-            entity_id: A monitored light's ID as list_lights prints it.
+            entity_id: A monitored device's ID as list_monitored prints it.
         """
         return _guard(lambda: send(entity_id, LightOff(), config))
 
     return [
-        list_lights,
+        list_monitored,
         get_usage,
         get_events,
         get_coverage,
         get_health,
         list_devices,
         refresh_discovery,
-        monitor_light,
+        monitor,
         stop_monitoring,
-        turn_on_light,
-        turn_off_light,
+        turn_on,
+        turn_off,
     ]

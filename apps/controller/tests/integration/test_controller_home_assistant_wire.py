@@ -19,22 +19,24 @@ from websockets.sync.server import ServerConnection, serve
 
 from home_keeper.api import create_app as create_api
 from home_keeper.control import ControllerUnreachable, HttpController
-from home_keeper.models import LightCommand
 from home_keeper_controller import home_assistant, server
 from home_keeper_controller.home_assistant import AUTH_CHECK_SECONDS, HomeAssistantLights
 from home_keeper_controller.server import backend, create_app
+from home_keeper_light_command import ForwardedCommand
 
 HA_TOKEN = "synthetic-control-token"
 SERVICE_TOKEN = "synthetic-service-token"
 SERVICE = {"Authorization": f"Bearer {SERVICE_TOKEN}"}
-COMMAND: TypeAdapter[LightCommand] = TypeAdapter(LightCommand)
+FORWARDED: TypeAdapter[ForwardedCommand] = TypeAdapter(ForwardedCommand)
 
 # Raw Home Assistant frames are untyped JSON.
 type Frame = dict[str, Any]
 
 
-def light_command(value: dict[str, object]) -> LightCommand:
-    return COMMAND.validate_python(value)
+def light_command(source_entity_id: str, command: dict[str, object]) -> ForwardedCommand:
+    return FORWARDED.validate_python(
+        {"device_kind": "light", "source_entity_id": source_entity_id, "command": command}
+    )
 
 
 class FakeHomeAssistant:
@@ -130,10 +132,10 @@ def closed_origin() -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def call(service: str, entity: str, **data: object) -> Frame:
+def call(service: str, entity: str, domain: str = "light", **data: object) -> Frame:
     return {
         "type": "call_service",
-        "domain": "light",
+        "domain": domain,
         "service": service,
         "service_data": data,
         "target": {"entity_id": entity},
@@ -145,9 +147,9 @@ def test_light_commands_become_the_two_fixed_service_calls() -> None:
     with running(home) as origin:
         lights = HomeAssistantLights(origin, lambda: HA_TOKEN)
         results = [
-            lights.send("light.desk", light_command({"action": "on", "brightness_pct": 30})),
-            lights.send("light.reading", light_command({"action": "on"})),
-            lights.send("light.desk", light_command({"action": "off"})),
+            lights.send(light_command("light.desk", {"action": "on", "brightness_pct": 30})),
+            lights.send(light_command("light.reading", {"action": "on"})),
+            lights.send(light_command("light.desk", {"action": "off"})),
         ]
     assert results == ["ok", "ok", "ok"]
     assert home.calls() == [
@@ -162,7 +164,7 @@ def test_home_assistant_rejecting_the_call_is_refused() -> None:
     home = FakeHomeAssistant(success=False)
     with running(home) as origin:
         result = HomeAssistantLights(origin, lambda: HA_TOKEN).send(
-            "light.desk", light_command({"action": "off"})
+            light_command("light.desk", {"action": "off"})
         )
     assert result == "refused"
     assert home.calls() == [call("turn_off", "light.desk")]
@@ -171,7 +173,7 @@ def test_home_assistant_rejecting_the_call_is_refused() -> None:
 def test_unreachable_home_assistant_raises_unreachable() -> None:
     with pytest.raises(ControllerUnreachable):
         HomeAssistantLights(closed_origin(), lambda: HA_TOKEN).send(
-            "light.desk", light_command({"action": "on"})
+            light_command("light.desk", {"action": "on"})
         )
 
 
@@ -179,7 +181,7 @@ def test_rejected_control_token_raises_unreachable_and_calls_nothing() -> None:
     home = FakeHomeAssistant()
     with running(home) as origin, pytest.raises(ControllerUnreachable):
         HomeAssistantLights(origin, lambda: "revoked-token").send(
-            "light.desk", light_command({"action": "on"})
+            light_command("light.desk", {"action": "on"})
         )
     assert all(frame.get("type") == "auth" for frames in home.connections for frame in frames)
 
@@ -196,7 +198,7 @@ def test_command_server_forwards_only_light_commands_to_home_assistant() -> None
             ):
                 refused = client.post(
                     "/internal/command",
-                    json={"source_entity_id": source, "command": command},
+                    json={"device_kind": "light", "source_entity_id": source, "command": command},
                     headers=SERVICE,
                 )
                 assert refused.status_code == 422, refused.text
@@ -204,6 +206,7 @@ def test_command_server_forwards_only_light_commands_to_home_assistant() -> None
             accepted = client.post(
                 "/internal/command",
                 json={
+                    "device_kind": "light",
                     "source_entity_id": "light.desk",
                     "command": {"action": "on", "brightness_pct": 30},
                 },
@@ -214,8 +217,58 @@ def test_command_server_forwards_only_light_commands_to_home_assistant() -> None
     assert home.calls() == [call("turn_on", "light.desk", brightness_pct=30)]
 
 
+def test_switch_commands_become_the_two_fixed_switch_calls_without_service_data() -> None:
+    home = FakeHomeAssistant()
+    with running(home) as origin:
+        app = create_app(SERVICE_TOKEN, HomeAssistantLights(origin, lambda: HA_TOKEN))
+        with TestClient(app) as client:
+            for action in ("on", "off"):
+                response = client.post(
+                    "/internal/command",
+                    json={
+                        "device_kind": "switch",
+                        "source_entity_id": "switch.smart_plug",
+                        "command": {"action": action},
+                    },
+                    headers=SERVICE,
+                )
+                assert (response.status_code, response.json()) == (200, {"result": "ok"})
+    # One call per command, each on its own connection.
+    raw = [frame for frames in home.connections for frame in frames if "domain" in frame]
+    assert [frame.get("service_data", "absent") for frame in raw] == ["absent", "absent"]
+    assert home.calls() == [
+        call("turn_on", "switch.smart_plug", domain="switch"),
+        call("turn_off", "switch.smart_plug", domain="switch"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"device_kind": "switch", "source_entity_id": "light.desk", "command": {"action": "on"}},
+        {"device_kind": "light", "source_entity_id": "switch.plug", "command": {"action": "off"}},
+        {
+            "device_kind": "switch",
+            "source_entity_id": "switch.plug",
+            "command": {"action": "on", "brightness_pct": 30},
+        },
+    ],
+    ids=["switch-kind-light-entity", "light-kind-switch-entity", "switch-brightness"],
+)
+def test_mismatched_or_dimmed_switch_command_never_reaches_home_assistant(
+    body: dict[str, object],
+) -> None:
+    home = FakeHomeAssistant()
+    with running(home) as origin:
+        app = create_app(SERVICE_TOKEN, HomeAssistantLights(origin, lambda: HA_TOKEN))
+        with TestClient(app) as client:
+            response = client.post("/internal/command", json=body, headers=SERVICE)
+    assert response.status_code == 422, response.text
+    assert home.connections == []
+
+
 def test_command_server_reports_refused_and_unreachable_home_assistant() -> None:
-    body = {"source_entity_id": "light.desk", "command": {"action": "off"}}
+    body = {"device_kind": "light", "source_entity_id": "light.desk", "command": {"action": "off"}}
     home = FakeHomeAssistant(success=False)
     with running(home) as origin:
         app = create_app(SERVICE_TOKEN, HomeAssistantLights(origin, lambda: HA_TOKEN))
@@ -240,7 +293,7 @@ def test_slow_home_assistant_within_the_deadline_still_switches_the_light() -> N
     home = FakeHomeAssistant(delay=1.0)
     with running(home) as origin:
         result = HomeAssistantLights(origin, lambda: HA_TOKEN).send(
-            "light.desk", light_command({"action": "on"})
+            light_command("light.desk", {"action": "on"})
         )
     assert result == "ok"
     assert home.calls() == [call("turn_on", "light.desk")]
@@ -253,7 +306,7 @@ def test_home_assistant_slower_than_the_deadline_is_unreachable_within_it() -> N
         started = time.monotonic()
         with pytest.raises(ControllerUnreachable):
             HomeAssistantLights(origin, lambda: HA_TOKEN).send(
-                "light.desk", light_command({"action": "on"})
+                light_command("light.desk", {"action": "on"})
             )
         elapsed = time.monotonic() - started
     assert elapsed < DEADLINE_SECONDS + 0.5, f"gave up after {elapsed:.1f}s"
@@ -274,7 +327,11 @@ def test_home_assistant_backend_built_from_the_environment_switches_the_light(
         with TestClient(create_app(SERVICE_TOKEN, lights)) as client:
             response = client.post(
                 "/internal/command",
-                json={"source_entity_id": "light.desk", "command": {"action": "off"}},
+                json={
+                    "device_kind": "light",
+                    "source_entity_id": "light.desk",
+                    "command": {"action": "off"},
+                },
                 headers=SERVICE,
             )
     assert (response.status_code, response.json()) == (200, {"result": "ok"})
@@ -292,14 +349,14 @@ def test_replaced_control_token_switches_the_light_without_a_restart(
         monkeypatch.setenv("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", str(token_file))
         lights = backend("home_assistant", SERVICE_TOKEN)
         with pytest.raises(ControllerUnreachable):
-            lights.send("light.desk", light_command({"action": "off"}))
+            lights.send(light_command("light.desk", {"action": "off"}))
         assert [frames[0]["access_token"] for frames in home.connections] == [
             "revoked-control-token"
         ]
         home.connections.clear()
         # As ha-setup does after you delete the revoked token and run `up`.
         token_file.write_text(f"{HA_TOKEN}\n")
-        assert lights.send("light.desk", light_command({"action": "off"})) == "ok"
+        assert lights.send(light_command("light.desk", {"action": "off"})) == "ok"
     assert home.calls() == [call("turn_off", "light.desk")]
 
 
@@ -377,7 +434,11 @@ def test_controller_reports_control_only_while_home_assistant_accepts_its_token(
             with TestClient(app) as controller:
                 seen["command"] = controller.post(
                     "/internal/command",
-                    json={"source_entity_id": "light.desk", "command": {"action": "on"}},
+                    json={
+                        "device_kind": "light",
+                        "source_entity_id": "light.desk",
+                        "command": {"action": "on"},
+                    },
                     headers=SERVICE,
                 )
             seen["states"] = states

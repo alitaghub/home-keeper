@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorMessage, mutationHeaders, type Schemas, unwrap } from "./api/client";
+import {
+  api,
+  type CommandRecord,
+  errorMessage,
+  mutationHeaders,
+  type Schemas,
+  unwrap,
+} from "./api/client";
 import { Catalog, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { Coverage, openGaps } from "./components/Coverage";
-import { type LightCommand, Monitored } from "./components/Monitored";
+import { type DeviceCommand, Monitored } from "./components/Monitored";
 import { Timeline } from "./components/Timeline";
 import { date, time } from "./format";
 import { useCommands, useTimeline } from "./useTimeline";
@@ -38,8 +45,8 @@ const collectionErrors: Record<NonNullable<Schemas["HealthReport"]["error"]>, st
 // The API answers a command with a final outcome; `pending` and `interrupted`
 // appear only in the command history, and read as "may not have changed" here.
 const outcomeMessages: Record<
-  Schemas["CommandRecord"]["outcome"],
-  (name: string, command: LightCommand) => string
+  CommandRecord["outcome"],
+  (name: string, command: DeviceCommand) => string
 > = {
   observed: (name, command) =>
     command.action === "on" && command.brightness_pct != null
@@ -47,7 +54,7 @@ const outcomeMessages: Record<
       : `${name} is now ${command.action}.`,
   not_observed: (name) => `Sent to ${name}, but no change was seen yet.`,
   refused: (name) => `Home Assistant refused the command for ${name}.`,
-  unreachable: (name) => `Cannot reach the light controller. ${name} may not have changed.`,
+  unreachable: (name) => `Cannot reach the controller. ${name} may not have changed.`,
   pending: (name) => `Sent to ${name}, but no change was seen yet.`,
   interrupted: (name) => `The command for ${name} was interrupted. ${name} may not have changed.`,
 };
@@ -60,12 +67,12 @@ type CommandResult = { notice: string; reload: boolean };
 // Matches `unwrap`, so a dropped connection reads like any other failed request.
 const commandFailed: CommandResult = { notice: "Request failed. Please retry.", reload: false };
 
-async function sendLightCommand(
+async function sendDeviceCommand(
   entity: Schemas["MonitoredEntity"],
-  command: LightCommand,
+  command: DeviceCommand,
 ): Promise<CommandResult> {
   const name = lightName(entity);
-  const { data, error, response } = await api.POST("/api/lights/{entity_id}/command", {
+  const { data, error, response } = await api.POST("/api/devices/{entity_id}/command", {
     params: { path: { entity_id: entity.id } },
     body: { command, sender: { kind: "dashboard" } },
     headers: mutationHeaders,
@@ -121,8 +128,8 @@ export function App() {
   const { load: loadCommands, showingOlder: showingOlderCommands } = commands;
   // One mutation at a time, shared by selection toggles and discovery refresh.
   const busy = useRef(false);
-  // A light command takes several seconds (the send, then up to 5 s of waiting for the
-  // change), so commands lock per light, apart from `busy`.
+  // A command takes several seconds (the send, then up to 5 s of waiting for the
+  // change), so commands lock per device, apart from `busy`.
   const sending = useRef(new Set<string>());
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const discovery = useRef<DiscoveryState>({
@@ -237,14 +244,14 @@ export function App() {
     if (notice) noticeTimer.current = setTimeout(() => setCommandNotice(""), COMMAND_NOTICE_MS);
   };
 
-  const sendCommand = async (entity: Schemas["MonitoredEntity"], command: LightCommand) => {
+  const sendCommand = async (entity: Schemas["MonitoredEntity"], command: DeviceCommand) => {
     if (sending.current.has(entity.id)) return;
     sending.current.add(entity.id);
     setSendingIds(new Set(sending.current));
     showCommandNotice("");
     let result: CommandResult;
     try {
-      result = await sendLightCommand(entity, command);
+      result = await sendDeviceCommand(entity, command);
     } catch {
       result = commandFailed;
     } finally {
@@ -342,7 +349,7 @@ export function App() {
           </div>
           {(controlOn || Boolean(commands.commands?.length)) && (
             <section className="panel" aria-labelledby="commands-heading">
-              <h3 id="commands-heading">Light commands</h3>
+              <h3 id="commands-heading">Device commands</h3>
               <Commands
                 commands={commands.commands}
                 names={names}
@@ -389,8 +396,8 @@ export function App() {
               ? "Waiting for the configured collector."
               : live
                 ? controlOn
-                  ? "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is on for monitored lights."
-                  : "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is off: Home Keeper only records."
+                  ? "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights."
+                  : "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is off: Home Keeper only records."
                 : controlOn
                   ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
                   : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records."}
@@ -409,13 +416,13 @@ export function App() {
               </small>
             </section>
             <section>
-              <span>Supported lamps</span>
+              <span>Supported devices</span>
               <strong id="count">
                 {snapshot
                   ? String(snapshot.catalog.entities.filter((entity) => entity.supported).length)
                   : "—"}
               </strong>
-              <small>Individual Hue lamps, without room groups</small>
+              <small>Single lights, plugs and switches, without groups or rooms</small>
             </section>
             <section>
               <span>Monitoring</span>

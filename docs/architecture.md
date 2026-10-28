@@ -6,7 +6,7 @@ containers from one image. The default stack adds a bundled Home Assistant and
 a one-shot `ha-setup` container that onboards it and stores the collector's and
 the controller's tokens.
 The optional `control` profile adds a controller, from its own image, that
-switches monitored lights for the API; [control.md](control.md) covers it.
+switches monitored lights, plugs and switches for the API; [control.md](control.md) covers it.
 The optional `agent` profile adds a chat agent, its chat page and a Postgres for
 its threads; [agent.md](agent.md) covers it.
 The separate `telegram` profile adds a polling worker that connects private
@@ -15,7 +15,7 @@ Telegram chats to the same agent; [telegram.md](telegram.md) covers setup.
 ```mermaid
 flowchart LR
     subgraph home["Your home"]
-        hue["Hue Bridge and lights"]
+        hue["Lights (any brand)"]
         ha["Home Assistant<br/><i>bundled or your own</i>"]
         hue --> ha
     end
@@ -33,12 +33,12 @@ flowchart LR
         api -- "selection revision" --> collector
         api --> db
         controller["Controller<br/><i>profile control</i>"]
-        api -- "fixed light commands" --> controller
+        api -- "fixed light and switch commands" --> controller
         controller -- "heartbeats" --> api
     end
 
     ha -- "registry reads, state reads,<br/>state_changed events" --> collector
-    controller -- "light.turn_on,<br/>light.turn_off" --> ha
+    controller -- "light.turn_on, light.turn_off,<br/>switch.turn_on, switch.turn_off" --> ha
     browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> api
 
     subgraph agentprofile["Optional agent (profile agent)"]
@@ -62,7 +62,7 @@ flowchart LR
 | Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the collector's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
 | Demo      | `demo.py`                              | Replaces the live collector with a synthetic home. Same API calls, no hardware. Applies demo light commands. |
 | API       | `api.py`, `models.py`, `control.py`    | Validates every record, owns the selection, and records collection gaps. Checks, forwards and records light commands. |
-| Controller | `apps/controller`                     | Optional (profile `control`). Sends the two fixed light calls to Home Assistant with its own token, or to the demo collector. Publishes no port. |
+| Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo collector. Publishes no port. |
 | Recorder  | `recorder.py`                          | Admits baselines and events, stores them, and decides which one is a light's current state. |
 | Store     | `store.py`                             | SQLite schema, transactions, retention.                                                     |
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |
@@ -82,12 +82,14 @@ Python code lives in `apps/keeper/src/home_keeper`.
   rejects data from a collector that works from an older revision, so a slow
   read cannot bring back a light you just removed.
 - **The collector is read-only toward the home.** The connector makes fixed
-  registry reads, selected-state reads and one filtered event subscription. It
+  registry reads, one state read for each new light or switch candidate at
+  discovery to detect groups, selected-state reads and one filtered event subscription. It
   has no service calls and no device writes. The collector image contains no
   controller code.
 - **Control is opt-in and narrow.** Only the controller calls Home Assistant
   services, and only `light.turn_on` (with an optional brightness percent) and
-  `light.turn_off`, on `light.*` entities. It has no passthrough. It runs only
+  `light.turn_off` on `light.*` entities, and `switch.turn_on` and
+  `switch.turn_off` on `switch.*` entities. It has no passthrough. It runs only
   with the `control` profile, and the API reports control `on` only while the
   controller's heartbeat is fresh.
 - **Every command leaves evidence.** The API refuses a command for a light that
@@ -129,13 +131,14 @@ streams events as Home Assistant sends them.
 | ----------- | --------------------------------------------------------------------------------------------- |
 | Source      | Where data comes from: `demo` or `home_assistant`. One database holds one source.             |
 | Catalog     | The devices and entities the collector discovered, with whether each one can be monitored.   |
-| Selection   | The lights you chose to monitor, plus a revision number the API owns.                        |
-| Baseline    | A snapshot of a light's state. Taken at selection, during polling, and after recovery.       |
+| Device kind | What a recorded entity is, from its Home Assistant domain: `light` or `switch` (plugs too). Every reading carries it. A stored light row leaves it out, so the release before plugs can still read the database; a row without it reads as `light`. Separate from a record's `kind` (baseline, event, ...). |
+| Selection   | The lights, plugs and switches you chose to monitor, plus a revision number the API owns.    |
+| Baseline    | A snapshot of a device's state. Taken at selection, during polling, and after recovery.      |
 | Event       | One observed change, with old and new values and three timestamps (fired, received, saved).  |
-| Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the light's current state. |
+| Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the device's current state. |
 | Gap         | A period when collection was interrupted. Open until a recovery snapshot closes it.          |
 | Freshness   | How recently Home Assistant answered. It says nothing about whether the bulb itself answered. |
-| Command     | A request to switch a monitored light, with its sender and the outcome the API observed.     |
+| Command     | A request to switch a monitored light, plug or switch, with its sender and the outcome the API observed. |
 
 ## The API contract
 

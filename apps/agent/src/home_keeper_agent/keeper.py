@@ -19,8 +19,13 @@ class KeeperError(Exception):
     """The keeper could not be reached or did not answer as expected."""
 
 
+# What a device is; None for a domain the keeper does not record, such as a sensor.
+DeviceKind = Literal["light", "switch"] | None
+
+
 class Reading(Wire):
     state: str
+    # Plugs and switches have no brightness.
     brightness: int | None = None
 
 
@@ -28,6 +33,7 @@ class MonitoredLight(Wire):
     id: str
     name: str
     device_name: str | None = None
+    device_kind: DeviceKind = None
     supported: bool
     reason: str | None = None
     baseline: Reading | None
@@ -51,16 +57,28 @@ class DayUsage(Wire):
     unknown_seconds: float
 
 
-class LightUsage(Wire):
+class UsageFields(Wire):
     entity_id: str
     on_seconds: float
     unknown_seconds: float
     switch_ons: int
-    average_brightness: float | None
     days: list[DayUsage]
     # On-seconds per local hour of day, 0 to 23.
     hours: list[float] = Field(min_length=24, max_length=24)
     unknown_intervals: list[UnknownInterval]
+
+
+class LightUsage(UsageFields):
+    device_kind: Literal["light"]
+    average_brightness: float | None
+
+
+class SwitchUsage(UsageFields):
+    # Plugs and switches have no brightness.
+    device_kind: Literal["switch"]
+
+
+DeviceUsage = Annotated[LightUsage | SwitchUsage, Field(discriminator="device_kind")]
 
 
 class Usage(Wire):
@@ -68,7 +86,7 @@ class Usage(Wire):
     end: str
     timezone: str
     retained_since: str
-    lights: list[LightUsage]
+    devices: list[DeviceUsage]
 
 
 class Event(Wire):
@@ -110,6 +128,7 @@ class Device(Wire):
     id: str
     name: str
     device_name: str | None = None
+    device_kind: DeviceKind = None
     supported: bool
     reason: str | None = None
 

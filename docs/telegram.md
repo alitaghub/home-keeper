@@ -3,8 +3,9 @@
 The optional Telegram bot gives your family another way to talk to the existing
 Home Keeper agent. Each allowed person has a private, saved conversation.
 The bot can answer questions and propose monitoring changes. People on a
-separate control allowlist can also switch lights, after they approve each
-command; see [Switch lights](#switch-lights).
+separate control allowlist can also switch lights, plugs and switches, after
+they approve each command; see
+[Switch lights, plugs and switches](#switch-lights-plugs-and-switches).
 
 ## Set up the bot
 
@@ -15,13 +16,13 @@ command; see [Switch lights](#switch-lights).
    ```dotenv
    TELEGRAM_BOT_TOKEN=your-bot-token
    TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
-   # Optional: who may switch lights from Telegram.
+   # Optional: who may switch lights, plugs and switches from Telegram.
    TELEGRAM_CONTROL_USER_IDS=123456789
    ```
 
    Use numeric Telegram user IDs, separated by commas. Names and usernames do
    not grant access. Every allowed family member can use the same agent tools
-   and change which lights the shared home records.
+   and change which devices the shared home records.
 
    If you do not know the IDs yet, temporarily use
    `TELEGRAM_ALLOWED_USER_IDS=9223372036854775807`. Start the bot, then have each
@@ -63,26 +64,32 @@ remove it for you.
 - While a decision is pending, choose a button or use `/new`. More questions do
   not bypass the approval. Pending approvals survive normal bot/agent restarts.
 
-## Switch lights
+## Switch lights, plugs and switches
 
-`TELEGRAM_CONTROL_USER_IDS` lists who may switch lights from Telegram. It is
-optional. When it is unset or empty, nobody can switch a light from Telegram;
+`TELEGRAM_CONTROL_USER_IDS` lists who may switch lights, plugs and switches from
+Telegram. It is optional. When it is unset or empty, nobody can switch a device
+from Telegram;
 everyone on `TELEGRAM_ALLOWED_USER_IDS` can still ask questions and change
 monitoring. Every control ID must also be an allowed ID, or the bot stops at
-startup with a message that names `TELEGRAM_CONTROL_USER_IDS`. Light commands
+startup with a message that names `TELEGRAM_CONTROL_USER_IDS`. Device commands
 also need the [`control` profile](control.md).
 
 - A person on the control list who asks "Turn on the desk light at 30 percent"
   gets a proposal such as `Turn on light.desk at 30%` with **Approve** and
-  **Reject**. Nothing changes until they approve.
+  **Reject**. "Turn off the kettle plug" gets `Turn off switch.kettle` the same
+  way. A plug or switch has no brightness: the agent refuses a brightness for it
+  and shows no proposal. Nothing changes until they approve. The agent calls
+  these tools `turn_on` and `turn_off`.
 - Home Keeper records each approved command with that person's numeric Telegram
   ID and their Telegram name at approval time. The name is a label for the
   record, not authentication.
-- A person who is not on the control list gets no light proposal. The agent
+- A person who is not on the control list gets no light, plug or switch proposal. The agent
   says that they are not allowed to control lights. If an old proposal still
   reaches them, **Approve** sends nothing. The bot replies "You are not allowed
   to control lights. Nothing was changed." and counts it as a rejection, so
   the next question is answered normally.
+- A proposal saved by an older version, such as one for `turn_on_light`, is no
+  longer accepted. The bot says the result is uncertain; use `/new` to continue.
 
 Telegram history is separate from browser chat and from other family members'
 conversations. Browser chat still runs at <http://localhost:3000>. Anyone who can
@@ -180,7 +187,7 @@ For a real-bot check after configuring credentials:
 4. Ask to stop monitoring, then use `/new`. The old buttons must no longer work.
 5. Restart the bot and ask a follow-up. Confirm the current conversation remains.
 6. With the `control` profile, have a person on `TELEGRAM_CONTROL_USER_IDS`
-   ask to turn on a monitored light and approve it. Confirm the light changes
+   ask to turn on a monitored light or plug and approve it. Confirm it changes
    and [`GET /api/commands`](control.md#command-history) shows their ID and name. Have an allowed person
    who is not on the control list ask the same; confirm no proposal appears.
 

@@ -2,7 +2,7 @@
 
 from typing import Literal, Protocol
 
-from home_keeper_light_command import ControllerUnreachable, LightCommand
+from home_keeper_light_command import ControllerUnreachable, ForwardedCommand
 from home_keeper_light_command.client import CommandClient
 
 # The API catches the controller's own exception, re-exported from here.
@@ -13,7 +13,7 @@ CONTROLLER_TIMEOUT_SECONDS = 6
 
 
 class Controller(Protocol):
-    def send(self, source_entity_id: str, command: LightCommand) -> Literal["ok", "refused"]:
+    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
         """`refused`: Home Assistant rejected the call. Raises ControllerUnreachable."""
         ...
 

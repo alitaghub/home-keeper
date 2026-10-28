@@ -7,7 +7,7 @@ from agent_support import HOME_KEEPER_URL, FakeKeeper, call, snapshot
 # One call per write tool: (args, method, path, JSON body or None).
 WRITES: dict[str, tuple[dict[str, object], str, str, object]] = {
     "refresh_discovery": ({}, "POST", "/api/discovery/refresh", None),
-    "monitor_light": ({"entity_id": "bulb-a"}, "PUT", "/api/selection/bulb-a", {"selected": True}),
+    "monitor": ({"entity_id": "bulb-a"}, "PUT", "/api/selection/bulb-a", {"selected": True}),
     "stop_monitoring": (
         {"entity_id": "bulb-a"},
         "PUT",
@@ -41,8 +41,8 @@ def test_write_tool_sends_one_marked_request_to_its_keeper_route(name: str) -> N
 @pytest.mark.parametrize(
     ("name", "fixture", "detail"),
     [
-        ("monitor_light", "error_unsupported_entity", "Entity is unsupported"),
-        ("monitor_light", "error_unknown_entity", "Unknown entity"),
+        ("monitor", "error_unsupported_entity", "Entity is unsupported"),
+        ("monitor", "error_unknown_entity", "Unknown entity"),
         ("stop_monitoring", "error_unknown_entity", "Unknown entity"),
     ],
 )

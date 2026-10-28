@@ -64,7 +64,7 @@ def telegram_body(request: httpx.Request) -> TelegramBody:
 def monitoring_request(
     entity_id: str = "bulb-a",
     *,
-    name: Literal["monitor_light", "stop_monitoring"] = "monitor_light",
+    name: Literal["monitor", "stop_monitoring"] = "monitor",
     call_id: str = "select",
 ) -> AIMessage:
     return AIMessage(

@@ -17,14 +17,22 @@ def http_response(_connection: ServerConnection, request: Request) -> Response |
     if request.path.startswith("/api/states/"):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return Response(401, "Unauthorized", Headers(), b"")
-        if request.path != "/api/states/light.fixture":
+        if request.path == "/api/states/light.fixture":
+            data = {
+                "entity_id": "light.fixture",
+                "state": "off",
+                "last_changed": "2026-01-01T00:00:00Z",
+                "attributes": {"brightness": light["brightness"]},
+            }
+        elif request.path == "/api/states/light.other":
+            # A room light: discovery reads its group markers and leaves it unsupported.
+            data = {
+                "entity_id": "light.other",
+                "state": "off",
+                "attributes": {"is_hue_group": True, "entity_id": ["light.fixture"]},
+            }
+        else:
             return Response(404, "Not Found", Headers(), b"")
-        data = {
-            "entity_id": "light.fixture",
-            "state": "off",
-            "last_changed": "2026-01-01T00:00:00Z",
-            "attributes": {"brightness": light["brightness"]},
-        }
         return Response(
             200, "OK", Headers({"Content-Type": "application/json"}), json.dumps(data).encode()
         )
@@ -38,7 +46,7 @@ def websocket(socket: ServerConnection) -> None:
         socket.send(json.dumps({"type": "auth_invalid"}))
         return
     socket.send(json.dumps({"type": "auth_ok"}))
-    results = {
+    results: dict[str, list[dict[str, object]]] = {
         "config/entity_registry/list": [
             {
                 "id": "fixture",
@@ -51,8 +59,8 @@ def websocket(socket: ServerConnection) -> None:
             {
                 "id": "unsupported",
                 "entity_id": "light.other",
-                "platform": "other",
-                "translation_key": "hue_light",
+                "platform": "hue",
+                "translation_key": "hue_grouped_light",
                 "name": "Unsupported fixture",
             },
         ],
@@ -97,7 +105,7 @@ def websocket(socket: ServerConnection) -> None:
         except ConnectionClosed:
             return
     else:
-        for index in range(2):
+        for index in range(len(results)):
             socket.send(
                 json.dumps(
                     {
@@ -108,7 +116,7 @@ def websocket(socket: ServerConnection) -> None:
                     }
                 )
             )
-            if index == 0:
+            if index < len(results) - 1:
                 command = json.loads(socket.recv(timeout=5))
 
 

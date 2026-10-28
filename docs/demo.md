@@ -14,12 +14,13 @@ port when 8000 is taken, for example
 
 ## What the demo shows
 
-The collector discovers five synthetic entities: two individual Hue lights, a
-room aggregate, a non-Hue plug, and an ungrouped sensor. Only individual lights
-can be selected. Click **Monitor** to establish a baseline. Nothing is monitored
+The collector discovers five synthetic entities: two single lights, a room
+group, a smart plug, and an ungrouped sensor. The two lights and the plug can be
+selected. Click **Monitor** to establish a baseline. Nothing is monitored
 automatically. After selection, the demo emits a repeatable sequence of on/off,
 brightness, color-temperature, XY color, unavailability and recovery changes,
-one step per collection pass. The timeline shows only events recorded after
+one step per collection pass. The plug follows the same steps with on, off and
+unavailable only, and shows under **Plugs and switches** on the Home tab. The timeline shows only events recorded after
 selection. Restarting the collector starts the sequence again; it does not erase
 retained history.
 
@@ -39,14 +40,15 @@ unselected until you choose it.
 
 ## Switch a demo light
 
-Add the `control` profile to switch the synthetic lights:
+Add the `control` profile to switch the synthetic lights and plug:
 
 ```sh
 docker compose -f compose.demo.yaml --profile control up --build --wait
 ```
 
-A command on a monitored demo light changes it at once, records the change,
-and keeps the light out of the replay sequence for three collection passes.
+A command on a monitored demo light or the plug changes it at once, records the
+change, and keeps the device out of the replay sequence for three collection
+passes.
 [control.md](control.md) shows how to send one.
 
 ## Restart, stop and reset

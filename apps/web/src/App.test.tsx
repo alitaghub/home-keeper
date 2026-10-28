@@ -179,6 +179,7 @@ describe("dashboard behavior", () => {
     let selected: string[] = [];
     const recoveryBaseline = {
       kind: "recovery",
+      device_kind: "light",
       id: "baseline-1",
       entity_id: fixtures.desk.id,
       source_entity_id: null,
@@ -190,7 +191,7 @@ describe("dashboard behavior", () => {
       transition_time: "unknown",
       received_at: "2026-10-12T10:00:06Z",
       persisted_at: "2026-10-12T10:00:06+00:00",
-    } satisfies Schemas["BaselineRecord"];
+    } satisfies Schemas["LightBaseline"];
     const { api, user } = renderDashboard({
       "GET /api/selection": () => ({ ...fixtures.emptySelection, entity_ids: selected }),
       "GET /api/monitored": () => ({
@@ -298,7 +299,7 @@ describe("dashboard behavior", () => {
 
     await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
     expect(byId("source-notice")).toHaveTextContent(
-      "Home Assistant discovery. Only selected individual Hue lights are recorded. Light control is off: Home Keeper only records.",
+      "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is off: Home Keeper only records.",
     );
     expect(byId("catalog-status")).toHaveTextContent(
       `Discovery is stale. Showing the last validated catalog from ${localTime(fixtures.catalog.refreshed_at)}.`,
@@ -323,6 +324,12 @@ describe("dashboard behavior", () => {
     const link = await waitFor(() => within(byId("catalog")).getByRole("link"));
     expect(link).toHaveTextContent("Connect your devices in Home Assistant");
     expect(link).toHaveAttribute("href", "http://127.0.0.1:8123/config/integrations/dashboard");
+    expect(byId("catalog")).toHaveTextContent(
+      "then refresh discovery. Home Keeper records single lights, plugs and switches, not groups or rooms.",
+    );
+    expect(byId("count").parentElement).toHaveTextContent(
+      "Single lights, plugs and switches, without groups or rooms",
+    );
   });
 
   it("pages through older timeline history, dedupes by id, and refreshes back to the newest page", async () => {
@@ -540,17 +547,17 @@ describe("dashboard behavior", () => {
 });
 
 describe("light control from the dashboard", () => {
-  const COMMAND = "POST /api/lights/{entity_id}/command";
+  const COMMAND = "POST /api/devices/{entity_id}/command";
   const CONTROL_NOTICE = "Light control is on for monitored lights.";
 
   /** Monitors the desk lamp (recorded state `state`); control is on unless told otherwise. */
   function renderControl(
     options: {
       control?: Schemas["ControlStatus"];
-      state?: Schemas["BaselineRecord"]["state"];
-      availability?: "available" | "unavailable" | "unknown";
+      state?: Schemas["LightBaseline"]["state"];
+      availability?: Schemas["LightBaseline"]["availability"];
       light?: Schemas["Entity"];
-      outcome?: Schemas["CommandRecord"]["outcome"];
+      outcome?: Schemas["CommandsPage"]["commands"][number]["outcome"];
     } = {},
   ) {
     const light = options.light ?? fixtures.desk;
@@ -620,12 +627,10 @@ describe("light control from the dashboard", () => {
     await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
     await monitored().findByRole("button", { name: "Turn on Desk lamp" });
 
-    const notice = byId("source-notice").textContent ?? "";
-    expect(notice).toMatch(
-      /^Home Assistant discovery\. Only selected individual Hue lights are recorded\. /,
+    expect(byId("source-notice")).toHaveTextContent(
+      "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights.",
     );
-    expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
-    expect(notice).not.toContain("Light control is off");
+    expect(byId("source-notice")).not.toHaveTextContent("Light control is off");
   });
 
   it("keeps the footer when control is on", async () => {
@@ -685,7 +690,7 @@ describe("light control from the dashboard", () => {
     await waitFor(() => expect(byId("message").textContent).toBe("Desk lamp is now on."));
     expect(api.callsTo(COMMAND)).toHaveLength(1);
     const [command] = api.callsTo(COMMAND);
-    expect(command?.url.pathname).toBe("/api/lights/light.hue_desk/command");
+    expect(command?.url.pathname).toBe("/api/devices/light.hue_desk/command");
     expect(command?.headers.get("X-Home-Keeper")).toBe("1");
     expect(command?.body).toEqual({ command: { action: "on" }, sender: { kind: "dashboard" } });
   });
@@ -752,7 +757,7 @@ describe("light control from the dashboard", () => {
   it.each([
     ["not_observed", "Sent to Desk lamp, but no change was seen yet."],
     ["refused", "Home Assistant refused the command for Desk lamp."],
-    ["unreachable", "Cannot reach the light controller. Desk lamp may not have changed."],
+    ["unreachable", "Cannot reach the controller. Desk lamp may not have changed."],
   ] as const)("shows the %s outcome and keeps the recorded state", async (outcome, message) => {
     const { user } = renderControl({ state: "off", outcome });
 
@@ -837,7 +842,7 @@ describe("light control from the dashboard", () => {
 
     await waitFor(() =>
       expect(byId("message").textContent).toBe(
-        "Cannot reach the light controller. Desk lamp may not have changed.",
+        "Cannot reach the controller. Desk lamp may not have changed.",
       ),
     );
     expect(monitored().queryByText("Sending…")).toBeNull();
@@ -895,8 +900,8 @@ describe("light control from the dashboard", () => {
 
     await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(2));
     expect(api.callsTo(COMMAND).map((call) => call.url.pathname)).toEqual([
-      "/api/lights/light.hue_desk/command",
-      "/api/lights/light.hue_reading/command",
+      "/api/devices/light.hue_desk/command",
+      "/api/devices/light.hue_reading/command",
     ]);
     release();
   });
@@ -1029,15 +1034,15 @@ describe("command history in the timeline", () => {
     await act(() => vi.advanceTimersByTimeAsync(100));
 
     expect(document.getElementById("commands")).toBeNull();
-    expect(screen.queryByText("Light commands")).toBeNull();
-    expect(screen.queryByText("No light commands yet.")).toBeNull();
+    expect(screen.queryByText("Device commands")).toBeNull();
+    expect(screen.queryByText("No device commands yet.")).toBeNull();
   });
 
   it("says there are no commands yet when control is on", async () => {
     renderDashboard({ "GET /api/control": fixtures.controlOn });
 
-    expect(await screen.findByText("No light commands yet.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Light commands" })).toBeInTheDocument();
+    expect(await screen.findByText("No device commands yet.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Device commands" })).toBeInTheDocument();
   });
 
   it("shows commands when control is off but commands exist, newest page of 20", async () => {
@@ -1045,7 +1050,7 @@ describe("command history in the timeline", () => {
 
     await waitFor(() => expect(articles()).toHaveLength(1));
     expect(api.callsTo(COMMANDS)[0]?.url.searchParams.get("limit")).toBe("20");
-    expect(screen.queryByText("No light commands yet.")).toBeNull();
+    expect(screen.queryByText("No device commands yet.")).toBeNull();
   });
 
   it("renders time, light name, action, sender and outcome for each sender and outcome", async () => {
@@ -1303,11 +1308,11 @@ describe("command history in the timeline", () => {
 });
 
 describe("tabs, brightness and plain history", () => {
-  const COMMAND = "POST /api/lights/{entity_id}/command";
+  const COMMAND = "POST /api/devices/{entity_id}/command";
 
   /** The desk lamp, monitored and recorded `state`, with control on unless told otherwise. */
   function renderLamp(
-    state: Schemas["BaselineRecord"]["state"] = "on",
+    state: Schemas["LightBaseline"]["state"] = "on",
     control: Schemas["ControlStatus"] = fixtures.controlOn,
   ) {
     return renderDashboard({
@@ -1453,5 +1458,202 @@ describe("tabs, brightness and plain history", () => {
     expect(timeline.getByText("turned off")).toBeInTheDocument();
     expect(timeline.getByText("color changed")).toBeInTheDocument();
     expect(timeline.getAllByText("Desk lamp")).toHaveLength(3);
+  });
+});
+
+describe("plugs and switches on Home", () => {
+  const plugsHeading = () => screen.queryByRole("heading", { name: "Plugs and switches" });
+
+  /** Monitors the desk lamp and the smart plug in the given states, with control on. */
+  function renderHome(plug: Schemas["MonitoredEntity"][] = []) {
+    return renderDashboard({
+      "GET /api/control": fixtures.controlOn,
+      "GET /api/catalog": {
+        ...fixtures.catalog,
+        entities: [fixtures.desk, fixtures.smartPlug, fixtures.ungroupedSensor],
+      },
+      "GET /api/selection": {
+        ...fixtures.emptySelection,
+        entity_ids: [fixtures.desk.id, ...plug.map((entity) => entity.id)],
+      },
+      "GET /api/monitored": {
+        entities: [fixtures.monitoredLight(fixtures.desk, "on"), ...plug],
+      },
+    });
+  }
+
+  /** The plug's card: the element around its name heading. */
+  async function plugCard() {
+    const name = await screen.findByRole("heading", { name: "Smart plug" });
+    const card = name.closest("article");
+    if (!card) throw new Error("The plug's name is not inside a card");
+    return card;
+  }
+
+  it("shows a monitored plug's state under the lights, without brightness", async () => {
+    renderHome([fixtures.monitoredSwitch(fixtures.smartPlug, "on")]);
+    await screen.findByRole("button", { name: "Turn off Desk lamp" });
+
+    const card = await plugCard();
+    const lamp = screen.getByRole("heading", { name: "Desk lamp" });
+    const heading = screen.getByRole("heading", { name: "Plugs and switches" });
+    // Lamp, then the section heading, then the plug card.
+    expect(lamp.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(heading.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(card).getByText("On")).toBeInTheDocument();
+    expect(within(card).queryByRole("slider")).toBeNull();
+    expect(card).not.toHaveTextContent("Brightness");
+    expect(card).not.toHaveTextContent("%");
+  });
+
+  it("has no plugs section when no switch is monitored", async () => {
+    renderHome();
+    await screen.findByRole("button", { name: "Turn off Desk lamp" });
+
+    expect(plugsHeading()).toBeNull();
+  });
+
+  it("names a plug's change in the timeline among light changes", async () => {
+    startOn("history");
+    renderHome([fixtures.monitoredSwitch(fixtures.smartPlug, "on")]);
+    api.reply("GET /api/events", {
+      ...fixtures.eventsPage2,
+      events: [fixtures.plugChange, fixtures.change3],
+    });
+
+    const timeline = within(byId("timeline"));
+    const plug = (await timeline.findByText("Smart plug")).closest("article");
+    if (!plug) throw new Error("The plug's change is not a timeline row");
+    expect(plug).toHaveTextContent("turned on");
+    expect(plug).toHaveTextContent("off → on");
+    expect(plug).not.toHaveTextContent("%");
+    expect(timeline.getByText("turned on at 59%")).toBeInTheDocument();
+  });
+});
+
+describe("plug control from the dashboard", () => {
+  const COMMAND = "POST /api/devices/{entity_id}/command";
+  const PLUG_TOGGLE = /^Turn (on|off) Smart plug$/;
+
+  /** Monitors the desk lamp (on) and the smart plug in `state`; control is on unless told otherwise. */
+  function renderPlug(
+    options: {
+      control?: Schemas["ControlStatus"];
+      state?: Schemas["SwitchBaseline"]["state"];
+      availability?: Schemas["SwitchBaseline"]["availability"];
+    } = {},
+  ) {
+    return renderDashboard({
+      "GET /api/control": options.control ?? fixtures.controlOn,
+      "GET /api/catalog": { ...fixtures.catalog, entities: [fixtures.desk, fixtures.smartPlug] },
+      "GET /api/selection": {
+        ...fixtures.emptySelection,
+        entity_ids: [fixtures.desk.id, fixtures.smartPlug.id],
+      },
+      "GET /api/monitored": {
+        entities: [
+          fixtures.monitoredLight(fixtures.desk, "on"),
+          fixtures.monitoredSwitch(
+            fixtures.smartPlug,
+            options.state ?? "off",
+            options.availability,
+          ),
+        ],
+      },
+      [COMMAND]: fixtures.switchCommandRecord("observed"),
+    });
+  }
+
+  /** The plug's card, once the lamp's controls show that the control status has loaded. */
+  async function plugCard() {
+    await screen.findByRole("heading", { name: "Desk lamp" });
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    const name = await screen.findByRole("heading", { name: "Smart plug" });
+    const card = name.closest("article");
+    if (!(card instanceof HTMLElement)) throw new Error("The plug's name is not inside a card");
+    return within(card);
+  }
+
+  /** The accessible names of the plug's switch buttons that can be clicked now. */
+  const enabledToggles = (card: Awaited<ReturnType<typeof plugCard>>) =>
+    card
+      .queryAllByRole("button", { name: PLUG_TOGGLE })
+      .filter((button) => !button.hasAttribute("disabled"))
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent);
+
+  it.each([
+    ["off", "Turn on Smart plug"],
+    ["on", "Turn off Smart plug"],
+  ] as const)("offers only the opposite of a plug recorded %s", async (state, name) => {
+    renderPlug({ state });
+    const card = await plugCard();
+
+    await card.findByRole("button", { name });
+    expect(enabledToggles(card)).toEqual([name]);
+    expect(card.queryByRole("slider")).toBeNull();
+    expect(card.queryByLabelText(/Brightness/)).toBeNull();
+  });
+
+  it("shows no plug buttons when control is off", async () => {
+    renderPlug({ control: fixtures.controlOff });
+    const card = await plugCard();
+
+    expect(card.queryAllByRole("button", { name: PLUG_TOGGLE })).toEqual([]);
+  });
+
+  it.each([
+    ["unknown state", "unknown", "available"],
+    ["unavailable plug", "unavailable", "unavailable"],
+  ] as const)("offers no plug switch for an %s", async (_label, state, availability) => {
+    renderPlug({ state, availability });
+    // The lamp's switch shows that control is on.
+    await screen.findByRole("button", { name: "Turn off Desk lamp" });
+    const card = await plugCard();
+
+    expect(enabledToggles(card)).toEqual([]);
+  });
+
+  it("sends on for a plug recorded off, with no brightness, to the device command route", async () => {
+    const { api, user } = renderPlug({ state: "off" });
+    const card = await plugCard();
+
+    await user.click(await card.findByRole("button", { name: "Turn on Smart plug" }));
+
+    await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(1));
+    const [command] = api.callsTo(COMMAND);
+    expect(command?.url.pathname).toBe("/api/devices/switch.smart_plug/command");
+    expect(command?.headers.get("X-Home-Keeper")).toBe("1");
+    expect(command?.body).toEqual({ command: { action: "on" }, sender: { kind: "dashboard" } });
+  });
+
+  it("sends off for a plug recorded on", async () => {
+    const { api, user } = renderPlug({ state: "on" });
+    const card = await plugCard();
+
+    await user.click(await card.findByRole("button", { name: "Turn off Smart plug" }));
+
+    await waitFor(() => expect(api.callsTo(COMMAND)).toHaveLength(1));
+    expect(api.callsTo(COMMAND)[0]?.body).toEqual({
+      command: { action: "off" },
+      sender: { kind: "dashboard" },
+    });
+  });
+
+  it("disables the plug's buttons while its command runs, and ignores a second click", async () => {
+    const { api, user } = renderPlug({ state: "off" });
+    const release = api.hold(COMMAND);
+    const card = await plugCard();
+    const button = await card.findByRole("button", { name: "Turn on Smart plug" });
+
+    await user.click(button);
+
+    await waitFor(() => expect(enabledToggles(card)).toEqual([]));
+    expect(card.getAllByRole("button", { name: PLUG_TOGGLE }).length).toBeGreaterThan(0);
+    fireEvent.click(button);
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
+
+    release();
+    await waitFor(() => expect(enabledToggles(card)).toEqual(["Turn on Smart plug"]));
+    expect(api.callsTo(COMMAND)).toHaveLength(1);
   });
 });

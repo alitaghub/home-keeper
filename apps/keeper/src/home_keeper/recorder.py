@@ -1,4 +1,4 @@
-"""Admits baselines and events, stores them, and decides each light's current state.
+"""Admits baselines and events, stores them, and decides each device's current state.
 
 Every check and write for one reading runs in a single IMMEDIATE transaction, so no
 other writer can change the selection or the current state between them.
@@ -12,16 +12,30 @@ from datetime import UTC, datetime
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from pydantic import TypeAdapter
+
 from home_keeper.models import (
     BaselineRecord,
     ChangeEvent,
     CurrentReading,
+    DeviceObservation,
+    DeviceState,
     EventReading,
     EventRecord,
     LightState,
-    Observation,
+    SwitchState,
 )
-from home_keeper.store import Store, current_reading
+from home_keeper.store import Store, baseline_record, current_reading, stored_json
+
+device_state: TypeAdapter[DeviceState] = TypeAdapter(DeviceState)
+event_reading: TypeAdapter[EventReading] = TypeAdapter(EventReading)
+
+
+def state_of(reading: DeviceObservation | CurrentReading) -> LightState | SwitchState:
+    """The device state a reading or observation records, without its record fields."""
+    model = LightState if reading.device_kind == "light" else SwitchState
+    return model.model_validate(reading.model_dump(include=set(model.model_fields)))
+
 
 # Delivery context, not evidence: event IDs exclude these fields, so a re-sent event
 # may differ in them. The stored record keeps the values it was first recorded with.
@@ -55,7 +69,7 @@ def snapshot_can_replace(
     if snapshot.received_at < receipt:
         return False
     return not (
-        isinstance(value, EventReading)
+        value.kind == "event"
         and event_outranks_snapshot(
             receipt, datetime.fromisoformat(previous["source_time"]), source_time, snapshot
         )
@@ -92,7 +106,7 @@ def update_current(
         # Keep delayed observations in history without crossing a newer HTTP read boundary.
         if (
             boundary
-            and isinstance(data, EventReading)
+            and data.kind == "event"
             and datetime.fromisoformat(data.received_at) < datetime.fromisoformat(boundary)
         ):
             return
@@ -105,7 +119,7 @@ def update_current(
         (
             entity_id,
             instant.isoformat(),
-            data.model_dump_json(exclude_unset=True),
+            stored_json(data),
             boundary,
             snapshot_received_at,
         ),
@@ -138,7 +152,7 @@ class Recorder:
         self.source_id = source_id
         self.now = now
 
-    def observe(self, payload: Observation) -> BaselineRecord | Rejected:
+    def observe(self, payload: DeviceObservation) -> BaselineRecord | Rejected:
         """Record a state snapshot; returns the baseline it is stored as."""
         if payload.source_id != self.source_id:
             return SOURCE_MISMATCH
@@ -170,26 +184,16 @@ class Recorder:
             latest = self.store.current(db, payload.entity_id)
             # Only an authoritative snapshot lacking a recorded change exposes a gap.
             # A newer buffered event wins over an older reconciliation snapshot.
-            if confirmed and latest:
-                keys = LightState.model_fields.keys()
-                previous_state = LightState.model_validate(
-                    latest.model_dump(include=set(keys), exclude_unset=True)
+            if (
+                confirmed
+                and latest
+                and state_of(payload).meaningful() != state_of(latest).meaningful()
+                and snapshot_can_replace(db, payload.entity_id, source_time, read)
+                and not self.store.open_gaps(db, payload.entity_id)
+            ):
+                self.store.interrupt(
+                    db, self.source_id, persisted.isoformat(), "reconciliation", payload.entity_id
                 )
-                if (
-                    LightState.model_validate(
-                        {key: getattr(payload, key) for key in keys}
-                    ).meaningful()
-                    != previous_state.meaningful()
-                    and snapshot_can_replace(db, payload.entity_id, source_time, read)
-                    and not self.store.open_gaps(db, payload.entity_id)
-                ):
-                    self.store.interrupt(
-                        db,
-                        self.source_id,
-                        persisted.isoformat(),
-                        "reconciliation",
-                        payload.entity_id,
-                    )
             data = payload.model_dump(mode="json", exclude={"selection_revision"})
             gaps = self.store.open_gaps(db, payload.entity_id)
             data["kind"] = (
@@ -217,17 +221,21 @@ class Recorder:
             previous = db.execute(
                 "SELECT data FROM events WHERE source_id=? AND id=?", (self.source_id, payload.id)
             ).fetchone()
-            data = payload.model_dump(mode="json")
-            for key in ("old", "new"):
-                state = getattr(payload, key)
-                data[key] = state.model_dump(mode="json", exclude_none=True) if state else None
+            # `stored()` omits a light's device kind, keeping the row and its ID compatible.
+            data: dict[str, object] = {
+                **payload.model_dump(mode="json"),
+                "old": payload.old.stored() if payload.old else None,
+                "new": payload.new.stored() if payload.new else None,
+                "persisted_at": persisted.isoformat(),
+            }
+            if payload.device_kind == "switch":
+                data["device_kind"] = "switch"
             if previous:
                 return _repeat(previous[0], data)
             old = payload.old.meaningful() if payload.old else None
             new = payload.new.meaningful() if payload.new else None
             if old == new:
                 return "unchanged"
-            data["persisted_at"] = persisted.isoformat()
             db.execute(
                 "INSERT INTO events VALUES(?, ?, ?, ?, ?, ?)",
                 (
@@ -239,22 +247,24 @@ class Recorder:
                     json.dumps(data),
                 ),
             )
-            current_value = payload.new or LightState(state="unknown")
-            if current_value:
-                value = EventReading.model_validate(
-                    current_value.model_dump(mode="json", exclude_none=True)
-                    | {
-                        "id": payload.id,
-                        "entity_id": payload.entity_id,
-                        "source_entity_id": payload.source_entity_id,
-                        "source_id": self.source_id,
-                        "kind": "event",
-                        "event_time": payload.event_time.isoformat(),
-                        "received_at": payload.received_at.isoformat(),
-                        "persisted_at": persisted.isoformat(),
-                    }
-                )
-                update_current(db, payload.entity_id, payload.event_time.isoformat(), value)
+            # A change without a new state means Home Assistant dropped the entity.
+            current_value = payload.new or device_state.validate_python(
+                {"state": "unknown", "device_kind": payload.device_kind}
+            )
+            value = event_reading.validate_python(
+                current_value.model_dump(mode="json", exclude_none=True)
+                | {
+                    "id": payload.id,
+                    "entity_id": payload.entity_id,
+                    "source_entity_id": payload.source_entity_id,
+                    "source_id": self.source_id,
+                    "kind": "event",
+                    "event_time": payload.event_time.isoformat(),
+                    "received_at": payload.received_at.isoformat(),
+                    "persisted_at": persisted.isoformat(),
+                }
+            )
+            update_current(db, payload.entity_id, payload.event_time.isoformat(), value)
             # Older deliveries may add evidence but cannot refresh a newer confirmation backwards.
             confirmed = db.execute(
                 "SELECT received_at FROM confirmed WHERE entity_id=?", (payload.entity_id,)
@@ -287,7 +297,7 @@ class Recorder:
             "SELECT data FROM baselines WHERE entity_id=? ORDER BY rowid DESC LIMIT 1",
             (entity_id,),
         ).fetchone()
-        baseline = BaselineRecord.model_validate_json(previous[0]) if previous else None
+        baseline = baseline_record.validate_json(previous[0]) if previous else None
         comparable = _without(
             data,
             {"received_at", "kind", "coverage_gap_ids", "transition_time", "collection_started_at"},
@@ -298,7 +308,7 @@ class Recorder:
         )
         if baseline is not None and comparable == old and not new_recovery:
             return baseline
-        baseline = BaselineRecord.model_validate(
+        baseline = baseline_record.validate_python(
             data | {"id": str(uuid4()), "persisted_at": persisted.isoformat()}
         )
         db.execute(
@@ -306,7 +316,7 @@ class Recorder:
             (
                 baseline.id,
                 entity_id,
-                baseline.model_dump_json(exclude_unset=True),
+                stored_json(baseline),
                 persisted.isoformat(),
             ),
         )
@@ -322,14 +332,13 @@ class Recorder:
         )
 
 
-def _repeat(stored_json: str, data: dict[str, object]) -> Literal["duplicate"] | Rejected:
-    stored = EventRecord.model_validate_json(stored_json).model_dump(
-        mode="json", exclude_unset=True
-    )
+def _repeat(stored_row: str, data: dict[str, object]) -> Literal["duplicate"] | Rejected:
+    # Both sides are read as records, so rows with and without a light's kind compare alike.
+    stored = EventRecord.model_validate_json(stored_row).model_dump(mode="json", exclude_unset=True)
+    incoming = EventRecord.model_validate(data).model_dump(mode="json", exclude_unset=True)
     # A stable source ID cannot silently refer to different evidence.
-    if _without(stored, EVENT_CONTEXT_KEYS | {"persisted_at"}) != _without(
-        data, EVENT_CONTEXT_KEYS
-    ):
+    ignored = EVENT_CONTEXT_KEYS | {"persisted_at"}
+    if _without(stored, ignored) != _without(incoming, ignored):
         return Rejected("event_identity_conflict", "Event identity conflict")
     return "duplicate"
 

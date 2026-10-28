@@ -13,10 +13,16 @@ import pytest
 from pydantic import TypeAdapter
 
 from home_keeper.control import ControllerUnreachable, HttpController
-from home_keeper.models import LightCommand
+from home_keeper_light_command import ForwardedCommand
 
 SERVICE_TOKEN = "synthetic-service-token"
-COMMAND: TypeAdapter[LightCommand] = TypeAdapter(LightCommand)
+FORWARDED: TypeAdapter[ForwardedCommand] = TypeAdapter(ForwardedCommand)
+
+
+def light(command: dict[str, object]) -> ForwardedCommand:
+    return FORWARDED.validate_python(
+        {"device_kind": "light", "source_entity_id": "light.desk", "command": command}
+    )
 
 
 class Controller(BaseHTTPRequestHandler):
@@ -66,32 +72,32 @@ def controller(
         thread.join(timeout=5)
 
 
-def without_none(value: dict[str, Any]) -> dict[str, Any]:
-    return {key: item for key, item in value.items() if item is not None}
-
-
 @pytest.mark.parametrize(
-    "command", [{"action": "on", "brightness_pct": 30}, {"action": "on"}, {"action": "off"}]
+    "body",
+    [
+        {"device_kind": "light", "source_entity_id": "light.desk", "command": command}
+        for command in ({"action": "on", "brightness_pct": 30}, {"action": "on"}, {"action": "off"})
+    ]
+    + [
+        {"device_kind": "switch", "source_entity_id": "switch.kettle", "command": command}
+        for command in ({"action": "on"}, {"action": "off"})
+    ],
 )
-def test_command_is_posted_with_the_service_credential(command: dict[str, object]) -> None:
+def test_command_is_posted_with_its_device_kind_and_the_service_credential(
+    body: dict[str, object],
+) -> None:
     with controller() as url:
-        result = HttpController(url, SERVICE_TOKEN).send(
-            "light.desk", COMMAND.validate_python(command)
-        )
+        result = HttpController(url, SERVICE_TOKEN).send(FORWARDED.validate_python(body))
     assert result == "ok"
     [request] = Controller.requests
     assert request["path"] == "/internal/command"
     assert request["authorization"] == f"Bearer {SERVICE_TOKEN}"
-    assert set(request["json"]) == {"source_entity_id", "command"}
-    assert request["json"]["source_entity_id"] == "light.desk"
-    assert without_none(request["json"]["command"]) == command
+    assert request["json"] == body
 
 
 def test_refused_reply_is_refused() -> None:
     with controller(body=b'{"result": "refused"}') as url:
-        result = HttpController(url, SERVICE_TOKEN).send(
-            "light.desk", COMMAND.validate_python({"action": "off"})
-        )
+        result = HttpController(url, SERVICE_TOKEN).send(light({"action": "off"}))
     assert result == "refused"
 
 
@@ -108,9 +114,7 @@ def test_refused_reply_is_refused() -> None:
 )
 def test_failed_or_unreadable_reply_is_unreachable(status: int, body: bytes) -> None:
     with controller(status, body) as url, pytest.raises(ControllerUnreachable):
-        HttpController(url, SERVICE_TOKEN).send(
-            "light.desk", COMMAND.validate_python({"action": "on"})
-        )
+        HttpController(url, SERVICE_TOKEN).send(light({"action": "on"}))
 
 
 def test_controller_that_is_not_running_is_unreachable() -> None:
@@ -118,15 +122,11 @@ def test_controller_that_is_not_running_is_unreachable() -> None:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     with pytest.raises(ControllerUnreachable):
-        HttpController(f"http://127.0.0.1:{port}", SERVICE_TOKEN).send(
-            "light.desk", COMMAND.validate_python({"action": "on"})
-        )
+        HttpController(f"http://127.0.0.1:{port}", SERVICE_TOKEN).send(light({"action": "on"}))
 
 
 def test_controller_answer_inside_its_own_deadline_is_never_unreachable() -> None:
     # The controller gives up on Home Assistant after 4 s; the API waits up to 6 s for it.
     with controller(delay=5.5) as url:
-        result = HttpController(url, SERVICE_TOKEN).send(
-            "light.desk", COMMAND.validate_python({"action": "on"})
-        )
+        result = HttpController(url, SERVICE_TOKEN).send(light({"action": "on"}))
     assert result == "ok"

@@ -23,7 +23,7 @@ from home_keeper_agent.tools import keeper_tools
 SNAPSHOTS = Path(__file__).resolve().parents[2] / "keeper/tests/integration/snapshots/api"
 HOME_KEEPER_URL = "http://keeper.test:8000"
 READ_TOOLS = {
-    "list_lights",
+    "list_monitored",
     "get_usage",
     "get_events",
     "get_coverage",
@@ -31,7 +31,7 @@ READ_TOOLS = {
     "list_devices",
 }
 # Writes change only the keeper's selection and discovery, never a device.
-WRITE_TOOLS = {"refresh_discovery", "monitor_light", "stop_monitoring"}
+WRITE_TOOLS = {"refresh_discovery", "monitor", "stop_monitoring"}
 
 
 def snapshot(name: str) -> tuple[int, object]:
@@ -123,6 +123,38 @@ def lights_response(
     return 200, {"entities": [light, *others]}
 
 
+# Fields only a light's reading carries; the keeper's switch reading has none of them.
+LIGHT_ATTRIBUTES = frozenset(
+    {
+        "brightness",
+        "color_mode",
+        "color_temp_kelvin",
+        "hs_color",
+        "xy_color",
+        "rgb_color",
+        "rgbw_color",
+        "rgbww_color",
+    }
+)
+
+
+def switch_response(state: str | None = "off", *, entity_id: str = "plug-a") -> tuple[int, object]:
+    """A /api/monitored response with one monitored plug or switch in `state`.
+
+    The recorded light's shape with `device_kind` "switch" and no light attributes.
+    """
+    status, recorded = lights_response(state, entity_id=entity_id)
+    body: dict[str, Any] = json.loads(json.dumps(recorded))
+    [switch] = body["entities"]
+    switch["device_kind"] = "switch"
+    if switch["baseline"] is not None:
+        baseline = {
+            key: value for key, value in switch["baseline"].items() if key not in LIGHT_ATTRIBUTES
+        }
+        switch["baseline"] = baseline | {"device_kind": "switch", "entity_id": entity_id}
+    return status, body
+
+
 def control_response(state: str) -> tuple[int, object]:
     return snapshot(f"control_{state}")
 
@@ -141,5 +173,5 @@ def command_response(
 
 
 def command_requests(keeper: FakeKeeper) -> list[httpx.Request]:
-    """The requests that ask the keeper to switch a light."""
+    """The requests that ask the keeper to switch a light, plug or switch."""
     return [request for request in keeper.requests if request.url.path.endswith("/command")]

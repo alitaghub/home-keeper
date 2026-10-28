@@ -55,7 +55,7 @@ def run_with_full_slots(
                 async def send_command() -> None:
                     responses.append(
                         await api.post(
-                            "/api/lights/bulb-a/command",
+                            "/api/devices/bulb-a/command",
                             json={"command": ON, "sender": DASHBOARD},
                             headers=BROWSER,
                             timeout=30,

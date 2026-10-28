@@ -45,7 +45,7 @@ class TelegramProofModel(FakeMessagesListChatModel):
         text = questions[-1].text
         verb, _, entity = text.partition(" ")
         if verb in {"monitor", "stop"} and entity:
-            name = "monitor_light" if verb == "monitor" else "stop_monitoring"
+            name = "monitor" if verb == "monitor" else "stop_monitoring"
             return AIMessage(
                 "",
                 tool_calls=[
@@ -57,7 +57,7 @@ class TelegramProofModel(FakeMessagesListChatModel):
                 "",
                 tool_calls=[
                     {
-                        "name": f"{verb}_light",
+                        "name": verb,
                         "args": {"entity_id": entity},
                         "id": f"call-{len(questions)}",
                     }

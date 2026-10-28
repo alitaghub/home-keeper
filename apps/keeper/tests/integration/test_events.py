@@ -249,6 +249,38 @@ def test_observed_removal_makes_current_state_unknown_and_numeric_fields_are_str
             assert client.post("/internal/events", json=payload, headers=AUTH).status_code == 422
 
 
+def test_observed_switch_removal_reports_an_unknown_switch_reading(tmp_path: Path) -> None:
+    plug = {
+        "id": "plug-a",
+        "device_id": "device-plug-a",
+        "device_name": "Kettle plug",
+        "name": "Kettle",
+        "device_kind": "switch",
+        "supported": True,
+        "reason": None,
+    }
+    catalog = CATALOG | {"entities": [plug]}
+    with TestClient(create_app(tmp_path / "removal.sqlite", TOKEN, now=lambda: NOW)) as client:
+        client.post("/internal/catalog", json=catalog, headers=AUTH).raise_for_status()
+        revision = select(client, "plug-a")
+        removed = event(
+            revision,
+            "plug-removed",
+            entity_id="plug-a",
+            source_entity_id="switch.kettle",
+            old={"state": "on", "device_kind": "switch"},
+            new=None,
+        )
+        response = client.post("/internal/events", json=removed, headers=AUTH)
+        assert response.json()["recorded"], response.text
+        [monitored] = client.get("/api/monitored").json()["entities"]
+        current = monitored["baseline"]
+        assert (current["kind"], current["device_kind"]) == ("event", "switch")
+        assert (current["state"], current["availability"]) == ("unknown", "unknown")
+        light_fields = {"brightness", "color_mode", "color_temp_kelvin", "hs_color", "xy_color"}
+        assert not light_fields & current.keys(), current
+
+
 def test_legacy_snapshot_migration_compares_timestamp_instants(tmp_path: Path) -> None:
     path = tmp_path / "legacy.sqlite"
     with TestClient(create_app(path, TOKEN, now=lambda: NOW)) as client:

@@ -6,7 +6,7 @@ from typing import Literal
 import httpx
 from pydantic import ValidationError
 
-from home_keeper_light_command import ControllerUnreachable, ForwardResult, LightCommand
+from home_keeper_light_command import ControllerUnreachable, ForwardedCommand, ForwardResult
 
 
 class CommandClient:
@@ -21,14 +21,10 @@ class CommandClient:
             follow_redirects=False,
         )
 
-    def send(self, source_entity_id: str, command: LightCommand) -> Literal["ok", "refused"]:
+    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
         try:
             response = self._client.post(
-                "/internal/command",
-                json={
-                    "source_entity_id": source_entity_id,
-                    "command": command.model_dump(mode="json", exclude_none=True),
-                },
+                "/internal/command", json=forwarded.model_dump(mode="json", exclude_none=True)
             )
             if response.status_code != HTTPStatus.OK:
                 raise ControllerUnreachable

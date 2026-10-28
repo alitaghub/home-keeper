@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { api, type Schemas, unwrap } from "./api/client";
+import { api, type CommandRecord, type Schemas, unwrap } from "./api/client";
 import { date } from "./format";
 
 type EventRecord = Schemas["EventRecord"];
@@ -47,8 +47,6 @@ export function useTimeline() {
 
   return { events, status, hasMore, loading, load, showingOlder };
 }
-
-type CommandRecord = Schemas["CommandRecord"];
 
 // Commands page like events, apart from them: the two lists are not interleaved.
 export function useCommands() {

@@ -13,8 +13,9 @@ from agent_support import (
     control_response,
     lights_response,
     snapshot,
+    switch_response,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import SecretStr
 from telegram_support import (
     FakeTelegram,
@@ -36,6 +37,7 @@ from home_keeper_agent.telegram import (
     TelegramBot,
     TransportError,
 )
+from home_keeper_agent.tools import NOT_ALLOWED as TOOL_NOT_ALLOWED
 
 
 class BotFactory(Protocol):
@@ -161,14 +163,14 @@ def test_family_members_keep_separate_saved_threads_and_new_preserves_old_histor
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 @pytest.mark.parametrize(
     ("name", "verb", "selected"),
-    [("monitor_light", "Start", True), ("stop_monitoring", "Stop", False)],
+    [("monitor", "Start", True), ("stop_monitoring", "Stop", False)],
 )
 def test_telegram_buttons_resume_real_monitoring_action_after_restart(
     make_bot: BotFactory,
     tmp_path: Path,
     decision: str,
     *,
-    name: Literal["monitor_light", "stop_monitoring"],
+    name: Literal["monitor", "stop_monitoring"],
     verb: str,
     selected: bool,
 ) -> None:
@@ -226,7 +228,7 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
             AIMessage(
                 "",
                 tool_calls=[
-                    {"name": "monitor_light", "args": {"entity_id": "bulb-a"}, "id": "first"},
+                    {"name": "monitor", "args": {"entity_id": "bulb-a"}, "id": "first"},
                     {"name": "stop_monitoring", "args": {"entity_id": "bulb-b"}, "id": "second"},
                 ],
             ),
@@ -1138,7 +1140,7 @@ def light_keeper(state: str = "on") -> FakeKeeper:
         {
             "/api/monitored": lights_response(state),
             "/api/control": control_response("on"),
-            "/api/lights/bulb-a/command": command_response("observed"),
+            "/api/devices/bulb-a/command": command_response("observed"),
         }
     )
 
@@ -1153,10 +1155,10 @@ NOT_ALLOWED = "You are not allowed to control lights. Nothing was changed."
 @pytest.mark.parametrize(
     ("name", "args", "state", "first_line"),
     [
-        ("turn_off_light", {"entity_id": "bulb-a"}, "on", "Turn off bulb-a"),
-        ("turn_on_light", {"entity_id": "bulb-a"}, "off", "Turn on bulb-a"),
+        ("turn_off", {"entity_id": "bulb-a"}, "on", "Turn off bulb-a"),
+        ("turn_on", {"entity_id": "bulb-a"}, "off", "Turn on bulb-a"),
         (
-            "turn_on_light",
+            "turn_on",
             {"entity_id": "bulb-a", "brightness_percent": 30},
             "off",
             "Turn on bulb-a at 30%",
@@ -1195,7 +1197,7 @@ def test_every_run_and_resume_carries_the_sender_and_whether_they_may_control(
     telegram = FakeTelegram()
     keeper = light_keeper()
     agent = GraphAegra(
-        [light_call("turn_off_light", {"entity_id": "bulb-a"}), AIMessage("Done.")], keeper
+        [light_call("turn_off", {"entity_id": "bulb-a"}), AIMessage("Done.")], keeper
     )
     bot = make_bot(
         family_settings(
@@ -1227,7 +1229,7 @@ def test_control_user_approval_sends_one_command_attributed_to_them(
     telegram = FakeTelegram()
     keeper = light_keeper()
     agent = GraphAegra(
-        [light_call("turn_off_light", {"entity_id": "bulb-a"}), AIMessage("The light is off.")],
+        [light_call("turn_off", {"entity_id": "bulb-a"}), AIMessage("The light is off.")],
         keeper,
     )
     bot = make_bot(
@@ -1241,6 +1243,7 @@ def test_control_user_approval_sends_one_command_attributed_to_them(
     bot.handle_update(clicked(2, 11, data, 101, first_name="Ali"))
 
     [command] = command_requests(keeper)
+    assert command.url.path == "/api/devices/bulb-a/command"
     assert json.loads(command.content) == {
         "command": {"action": "off"},
         "sender": {"kind": "telegram", "id": 11, "name": "Ali"},
@@ -1254,7 +1257,7 @@ def test_allowed_user_without_control_gets_no_card_and_no_command(
     telegram = FakeTelegram()
     keeper = light_keeper()
     agent = GraphAegra(
-        [light_call("turn_off_light", {"entity_id": "bulb-a"}), AIMessage("Not allowed.")], keeper
+        [light_call("turn_off", {"entity_id": "bulb-a"}), AIMessage("Not allowed.")], keeper
     )
     bot = make_bot(
         family_settings(tmp_path),
@@ -1273,9 +1276,9 @@ def test_allowed_user_without_control_gets_no_card_and_no_command(
 @pytest.mark.parametrize(
     ("name", "args", "state"),
     [
-        ("turn_off_light", {"entity_id": "bulb-a"}, "on"),
-        ("turn_on_light", {"entity_id": "bulb-a"}, "off"),
-        ("turn_on_light", {"entity_id": "bulb-a", "brightness_percent": 30}, "off"),
+        ("turn_off", {"entity_id": "bulb-a"}, "on"),
+        ("turn_on", {"entity_id": "bulb-a"}, "off"),
+        ("turn_on", {"entity_id": "bulb-a", "brightness_percent": 30}, "off"),
     ],
 )
 def test_approve_by_a_user_who_lost_control_is_rejected_and_the_chat_continues(
@@ -1330,7 +1333,7 @@ def test_failed_refusal_notice_still_resumes_the_rejected_approval(
     keeper = light_keeper()
     agent = GraphAegra(
         [
-            light_call("turn_off_light", {"entity_id": "bulb-a"}),
+            light_call("turn_off", {"entity_id": "bulb-a"}),
             AIMessage("Nothing changed."),
             AIMessage("It was on for two hours."),
         ],
@@ -1376,7 +1379,7 @@ def test_fatal_error_on_the_refusal_notice_still_resumes_the_rejected_approval(
     keeper = light_keeper()
     agent = GraphAegra(
         [
-            light_call("turn_off_light", {"entity_id": "bulb-a"}),
+            light_call("turn_off", {"entity_id": "bulb-a"}),
             AIMessage("Nothing changed."),
             AIMessage("It was on for two hours."),
         ],
@@ -1420,4 +1423,79 @@ def test_fatal_error_on_the_refusal_notice_still_resumes_the_rejected_approval(
 
     assert telegram.bodies()[-1]["text"] == "It was on for two hours."
     assert REMINDER not in [body["text"] for body in telegram.bodies()]
+    assert command_requests(keeper) == []
+
+
+def plug_keeper(state: str = "off") -> FakeKeeper:
+    return FakeKeeper(
+        {
+            "/api/monitored": switch_response(state),
+            "/api/control": control_response("on"),
+            "/api/devices/plug-a/command": command_response("observed", "on"),
+        }
+    )
+
+
+def tool_results(agent: GraphAegra) -> list[str]:
+    """The tool results in the thread of the agent's last run."""
+    thread_id = agent.submissions()[-1].url.path.split("/")[2]
+    state = agent.graph.get_state({"configurable": {"thread_id": thread_id}})
+    return [m.text for m in state.values["messages"] if isinstance(m, ToolMessage)]
+
+
+def test_control_user_approves_a_plug_command_and_it_is_attributed_to_them(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    keeper = plug_keeper("off")
+    agent = GraphAegra(
+        [light_call("turn_on", {"entity_id": "plug-a"}), AIMessage("The kettle is on.")], keeper
+    )
+    bot = make_bot(
+        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(incoming(1, 11, "Turn the kettle on", first_name="Ali"))
+
+    [card] = telegram.bodies()
+    assert "plug-a" in card["text"].splitlines()[0]
+    buttons = card["reply_markup"]["inline_keyboard"][0]
+    assert [b["text"] for b in buttons] == ["Approve", "Reject"]
+    assert command_requests(keeper) == []
+
+    bot.handle_update(clicked(2, 11, buttons[0]["callback_data"], 101, first_name="Ali"))
+
+    [command] = command_requests(keeper)
+    assert command.url.path == "/api/devices/plug-a/command"
+    assert json.loads(command.content) == {
+        "command": {"action": "on"},
+        "sender": {"kind": "telegram", "id": 11, "name": "Ali"},
+    }
+    assert telegram.bodies()[-1]["text"] == "The kettle is on."
+
+
+def test_user_not_on_the_control_list_is_refused_a_plug_command_without_buttons(
+    make_bot: BotFactory, tmp_path: Path
+) -> None:
+    telegram = FakeTelegram()
+    keeper = plug_keeper("off")
+    agent = GraphAegra(
+        [light_call("turn_on", {"entity_id": "plug-a"}), AIMessage("Not allowed.")], keeper
+    )
+    bot = make_bot(
+        family_settings(
+            tmp_path, allowed_user_ids=frozenset({11, 22}), control_user_ids=frozenset({11})
+        ),
+        telegram_client=telegram.client(),
+        agent_client=agent.client(),
+    )
+
+    bot.handle_update(incoming(1, 22, "Turn the kettle on"))
+
+    assert tool_results(agent) == [TOOL_NOT_ALLOWED]
+    [reply] = telegram.bodies()
+    assert reply["text"] == "Not allowed."
+    assert "reply_markup" not in reply
     assert command_requests(keeper) == []
