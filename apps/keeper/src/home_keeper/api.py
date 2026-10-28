@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import TypeAdapter
 from starlette.middleware.base import RequestResponseEndpoint
 
-from home_keeper.commands import Commands, Refusal, UnknownEntity, UnsupportedEntity
+from home_keeper.commands import Commands, Refusal
 from home_keeper.control import Controller
 from home_keeper.models import (
     BaselinesPage,
@@ -32,24 +32,23 @@ from home_keeper.models import (
     CoverageGap,
     CoverageReport,
     CurrentReading,
+    DeviceKind,
     DeviceObservation,
     DiscoveryRefresh,
-    Entity,
     EventRecord,
     EventsPage,
-    Freshness,
     Health,
     HealthPending,
     HealthReport,
     HealthStatus,
     Identity,
     MonitoredEntities,
-    MonitoredEntity,
     SelectionChange,
     SelectionSnapshot,
     UsageReport,
     to_utc,
 )
+from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
 from home_keeper.recorder import Recorder, Rejected, update_current
 from home_keeper.store import Store, baseline_record, current_reading
 from home_keeper.usage import device_usage
@@ -126,6 +125,7 @@ def create_app(
     )
     device_commands.interrupt_pending()
     recorder = Recorder(store, source_id, now)
+    monitoring = Monitoring(store, now=now, reconciliation_seconds=reconciliation_seconds)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     next_cleanup = 0.0
@@ -223,8 +223,7 @@ def create_app(
         include_in_schema=False,
     )
     def selection():
-        with store.transaction() as db:
-            return store.selection(db)
+        return monitoring.selection()
 
     @app.post("/api/discovery/refresh", response_model=DiscoveryRefresh)
     def refresh_discovery():
@@ -242,30 +241,12 @@ def create_app(
 
     @app.put("/api/selection/{entity_id}", response_model=SelectionSnapshot)
     def select(entity_id: str, change: SelectionChange):
-        with store.transaction() as db:
-            entity = store.entity(db, entity_id)
-            current = store.selection(db)
-            if entity is None and (change.selected or entity_id not in current.entity_ids):
-                raise HTTPException(404, "Unknown entity")
-            if change.selected and entity is not None and not entity.supported:
-                raise HTTPException(422, "Entity is unsupported")
-            current = store.selection(db)
-            if change.selected != (entity_id in current.entity_ids):
-                if change.selected:
-                    db.execute(
-                        "INSERT INTO selection(id, device_kind) VALUES(?, ?)",
-                        (entity_id, entity.device_kind if entity else None),
-                    )
-                    # A fresh selection awaits a new confirmation, even if history exists.
-                    db.execute("DELETE FROM confirmed WHERE entity_id=?", (entity_id,))
-                    db.execute("DELETE FROM current_state WHERE entity_id=?", (entity_id,))
-                else:
-                    db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
-                db.execute(
-                    "UPDATE metadata SET value=? WHERE key='revision'",
-                    (str(current.revision + 1),),
-                )
-            return store.selection(db)
+        result = monitoring.select(entity_id, selected=change.selected)
+        if isinstance(result, UnknownEntity):
+            raise HTTPException(404, "Unknown entity")
+        if isinstance(result, UnsupportedEntity):
+            raise HTTPException(422, "Entity is unsupported")
+        return result
 
     @app.post("/internal/catalog", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_catalog(payload: Catalog):
@@ -528,15 +509,11 @@ def create_app(
         # computing happen after it closes. The store runs in WAL mode, so writers continue.
         with store.transaction("DEFERRED") as db:
             selected = store.selection(db).entity_ids
-            switches = {
-                row[0]
-                for row in db.execute(
-                    "SELECT id FROM catalog WHERE json_extract(data, '$.device_kind')='switch' "
-                    "UNION SELECT id FROM selection WHERE device_kind='switch'"
-                )
-            }
             # Unselected IDs are left out rather than reported as missing.
             devices = sorted(set(entity_id or selected) & set(selected))
+            kinds: dict[str, DeviceKind] = {
+                device: Monitoring.device(db, device).kind or "light" for device in devices
+            }
             scope = ",".join("?" * len(devices))
             # Evidence inside the window, plus each device's latest evidence before it.
             snapshot_rows: list[sqlite3.Row] = db.execute(
@@ -581,10 +558,6 @@ def create_app(
         snapshots = [(row[0], current_reading.validate_json(row[1])) for row in snapshot_rows]
         snapshots += [(row[0], current_reading.validate_json(row[1])) for row in current_rows]
         changes = [(row[0], EventRecord.model_validate_json(row[1])) for row in event_rows]
-        # A selected switch that has left discovery is still known by its readings.
-        switches |= {
-            entity for entity, value in [*snapshots, *changes] if value.device_kind == "switch"
-        }
         readings: dict[str, list[CurrentReading]] = {device: [] for device in devices}
         for entity, reading in snapshots:
             if entity in readings:
@@ -603,7 +576,7 @@ def create_app(
             devices=[
                 device_usage(
                     device,
-                    "switch" if device in switches else "light",
+                    kinds[device],
                     start=start,
                     end=end,
                     now=now().astimezone(UTC),
@@ -625,50 +598,9 @@ def create_app(
     @app.get("/api/monitored", response_model=MonitoredEntities, response_model_exclude_unset=True)
     def monitored():
         with store.transaction() as db:
-            results: list[MonitoredEntity] = []
+            # An expired heartbeat becomes a recorded gap before freshness is read.
             health = get_health(db)
-            for entity_id in store.selection(db).entity_ids:
-                entity = store.entity(db, entity_id)
-                missing = entity is None
-                if entity is None:
-                    current = store.current(db, entity_id)
-                    entity = Entity(
-                        id=entity_id,
-                        name=entity_id,
-                        device_id=None,
-                        device_name=None,
-                        # Readings, or the kind it was selected as, tell light from switch.
-                        device_kind=current.device_kind
-                        if current
-                        else store.selected_kind(db, entity_id),
-                        supported=False,
-                        reason="Entity missing from latest discovery",
-                    )
-                confirmed = db.execute(
-                    "SELECT * FROM confirmed WHERE entity_id=?", (entity_id,)
-                ).fetchone()
-                freshness: Freshness = "pending"
-                if confirmed:
-                    receipt = datetime.fromisoformat(confirmed["received_at"])
-                    persisted = datetime.fromisoformat(confirmed["persisted_at"])
-                    fresh = (
-                        0 <= (now() - receipt).total_seconds() <= 2 * reconciliation_seconds
-                        and 0 <= (now() - persisted).total_seconds() <= 2 * reconciliation_seconds
-                        and health.status not in ("failed", "stale")
-                        and not store.open_gaps(db, entity_id)
-                        and not missing
-                        and entity.supported
-                    )
-                    freshness = "fresh" if fresh else "stale"
-                results.append(
-                    MonitoredEntity(
-                        **entity.model_dump(),
-                        baseline=store.current(db, entity_id) if confirmed else None,
-                        freshness=freshness,
-                        confirmed_at=confirmed["received_at"] if confirmed else None,
-                    )
-                )
-            return MonitoredEntities(entities=results)
+        return monitoring.devices(collector_healthy=health.status not in ("failed", "stale"))
 
     @app.post("/internal/control", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_control(payload: ControlHeartbeat):
