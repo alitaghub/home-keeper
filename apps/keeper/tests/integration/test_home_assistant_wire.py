@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from support.home_assistant import Frame, hue_room, light_state, registry_entry, state_changed
+from support.home_assistant import Frame, hue_room, registry_entry, state_changed
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
@@ -47,7 +47,6 @@ def test_actual_websocket_and_selected_rest(tmp_path: Path) -> None:
         results: tuple[list[Frame], ...] = (
             [registry_entry(platform="zha", translation_key=None)],
             [{"id": "device1", "name": "Synthetic bulb"}],
-            [light_state()],
         )
         for result in results:
             message = json.loads(socket.recv())
@@ -73,11 +72,12 @@ def test_actual_websocket_and_selected_rest(tmp_path: Path) -> None:
             server.shutdown()
             thread.join(timeout=5)
         assert not thread.is_alive()
+    # Discovery reads the new light's state once for group markers; then the selected read.
     assert transmitted == [
         "auth",
         "config/entity_registry/list",
         "config/device_registry/list",
-        "get_states",
+        ("GET", "/api/states/light.bulb"),
         ("GET", "/api/states/light.bulb"),
     ]
 
@@ -141,7 +141,9 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
         registry_entry("group", "light.group", translation_key="hue_grouped_light"),
         registry_entry("plug", "switch.plug", platform="other"),
     ]
-    states = [light_state(), hue_room("light.group")]
+    unused = {"secret_unused": "UNSELECTED_SENTINEL"}
+    # The room carries Hue's group marker; only discovery's group answer may be kept from it.
+    groups = {"light.group": hue_room("light.group")["attributes"]}
     fail = [False]
     state_reads: list[str] = []
 
@@ -152,7 +154,7 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
             payload = {
                 "entity_id": state_id,
                 "state": "on",
-                "attributes": {"brightness": 180, "secret_unused": "UNSELECTED_SENTINEL"},
+                "attributes": {"brightness": 180, **unused, **groups.get(state_id, {})},
             }
             return Response(
                 200,
@@ -183,7 +185,6 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                     "configuration_url": "ADMIN_SENTINEL",
                 }
             ],
-            states,
         )
         for index, result in enumerate(results):
             socket.send(
@@ -213,7 +214,13 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
             ) as api:
                 session = CollectionSession(api, connector)
                 session.reconcile()
-                assert not state_reads
+                # Discovery reads each candidate's state once, for group markers only.
+                discovered = {
+                    "/api/states/light.bulb",
+                    "/api/states/light.group",
+                    "/api/states/switch.plug",
+                }
+                assert sorted(state_reads) == sorted(discovered)
                 catalog = api.get("/api/catalog").json()
                 assert len(catalog["entities"]) == 3
                 # The bulb and the plug on device1; the room is a group.
@@ -226,9 +233,11 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                 session.reconcile()
                 baseline = api.get("/api/monitored").json()["entities"][0]["baseline"]
                 assert baseline["state"] == "on"
-                assert state_reads == ["/api/states/light.bulb"]
+                assert state_reads[3:] == ["/api/states/light.bulb"]
                 entities.append(registry_entry("new", "light.new"))
                 session.reconcile()
+                # The new light is read once for group markers; the selected bulb is refreshed.
+                assert state_reads[4:].count("/api/states/light.new") == 1
                 assert len(api.get("/api/catalog").json()["entities"]) == 4
                 assert "ha:new" not in api.get("/api/selection").json()["entity_ids"]
                 fail[0] = True
@@ -252,7 +261,7 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                 assert len(state_reads) == count
                 fail[0] = False
                 session.reconcile()
-                assert set(state_reads) == {"/api/states/light.bulb", "/api/states/light.new"}
+                assert set(state_reads) == {*discovered, "/api/states/light.new"}
                 assert all(
                     entity["baseline"] for entity in api.get("/api/monitored").json()["entities"]
                 )
@@ -279,6 +288,12 @@ def test_actual_selected_subscription_and_revoked_revision(tmp_path: Path) -> No
     token.write_text("wire-stream-secret")
     commands: list[Any] = []
 
+    def process_request(_connection: ServerConnection, request: Request) -> Response | None:
+        if request.path.startswith("/api/states/"):
+            # The bulb has no state yet, so it is not a group.
+            return Response(404, "Not Found", Headers(), b"")
+        return None
+
     def handler(socket: ServerConnection) -> None:
         socket.send(json.dumps({"type": "auth_required"}))
         auth = json.loads(socket.recv(timeout=5))
@@ -304,12 +319,8 @@ def test_actual_selected_subscription_and_revoked_revision(tmp_path: Path) -> No
             commands.append(request["type"])
             assert request["type"] == "config/device_registry/list"
             socket.send(json.dumps({"id": 2, "type": "result", "success": True, "result": []}))
-            request = json.loads(socket.recv(timeout=5))
-            commands.append(request["type"])
-            assert request["type"] == "get_states"
-            socket.send(json.dumps({"id": 3, "type": "result", "success": True, "result": []}))
 
-    with serve(handler, "127.0.0.1", 0) as server:
+    with serve(handler, "127.0.0.1", 0, process_request=process_request) as server:
         thread = Thread(target=server.serve_forever)
         thread.start()
         connector = HomeAssistantConnector(
@@ -341,7 +352,6 @@ def test_actual_selected_subscription_and_revoked_revision(tmp_path: Path) -> No
     assert commands == [
         "config/entity_registry/list",
         "config/device_registry/list",
-        "get_states",
         "subscribe_events",
     ]
 
@@ -392,7 +402,6 @@ def test_selected_switch_records_a_baseline_and_a_change_without_light_attribute
         results: tuple[list[Frame], ...] = (
             entities,
             [{"id": "device1", "name": "Smart plug"}],
-            [light_state("switch.plug", brightness=200)],
         )
         for index, result in enumerate(results):
             socket.send(

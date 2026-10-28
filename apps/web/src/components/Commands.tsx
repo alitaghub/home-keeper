@@ -1,7 +1,5 @@
-import type { Schemas } from "../api/client";
+import type { CommandRecord } from "../api/client";
 import { date, time } from "../format";
-
-type CommandRecord = Schemas["CommandRecord"];
 
 const outcomeText: Record<CommandRecord["outcome"], string> = {
   observed: "Observed",
@@ -14,7 +12,9 @@ const outcomeText: Record<CommandRecord["outcome"], string> = {
 
 function actionText(command: CommandRecord["command"]) {
   if (command.action === "off") return "Turn off";
-  return command.brightness_pct == null ? "Turn on" : `Turn on at ${command.brightness_pct}%`;
+  // A plug's or switch's command has no brightness.
+  const percent = "brightness_pct" in command ? command.brightness_pct : null;
+  return percent == null ? "Turn on" : `Turn on at ${percent}%`;
 }
 
 function senderText(sender: CommandRecord["sender"]): string {

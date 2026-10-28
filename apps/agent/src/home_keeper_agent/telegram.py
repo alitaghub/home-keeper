@@ -191,8 +191,7 @@ class TurnOnArguments(EntityArguments):
     brightness_percent: int | None = None
 
 
-# A saved approval that names another tool, such as the old turn_on_light, fails to parse;
-# the worker then reports an uncertain result and /new starts over.
+# Only tools the agent has now, so an approval can never run a tool it no longer offers.
 class EntityAction(Wire):
     name: Literal["monitor", "stop_monitoring", "turn_off"]
     args: EntityArguments

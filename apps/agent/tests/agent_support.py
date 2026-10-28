@@ -123,18 +123,35 @@ def lights_response(
     return 200, {"entities": [light, *others]}
 
 
+# Fields only a light's reading carries; the keeper's switch reading has none of them.
+LIGHT_ATTRIBUTES = frozenset(
+    {
+        "brightness",
+        "color_mode",
+        "color_temp_kelvin",
+        "hs_color",
+        "xy_color",
+        "rgb_color",
+        "rgbw_color",
+        "rgbww_color",
+    }
+)
+
+
 def switch_response(state: str | None = "off", *, entity_id: str = "plug-a") -> tuple[int, object]:
     """A /api/monitored response with one monitored plug or switch in `state`.
 
-    It reuses the recorded light's shape as the keeper reports a switch: no brightness or
-    color, and `device_kind` "switch" on the entity and its baseline.
+    The recorded light's shape with `device_kind` "switch" and no light attributes.
     """
     status, recorded = lights_response(state, entity_id=entity_id)
     body: dict[str, Any] = json.loads(json.dumps(recorded))
     [switch] = body["entities"]
     switch["device_kind"] = "switch"
     if switch["baseline"] is not None:
-        switch["baseline"] |= {"device_kind": "switch", "entity_id": entity_id, "color_mode": None}
+        baseline = {
+            key: value for key, value in switch["baseline"].items() if key not in LIGHT_ATTRIBUTES
+        }
+        switch["baseline"] = baseline | {"device_kind": "switch", "entity_id": entity_id}
     return status, body
 
 

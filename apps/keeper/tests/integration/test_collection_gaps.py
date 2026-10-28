@@ -60,8 +60,6 @@ def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path: Path) 
             )
             socket.recv(timeout=5)
             socket.send(json.dumps({"id": 2, "type": "result", "success": True, "result": []}))
-            socket.recv(timeout=5)
-            socket.send(json.dumps({"id": 3, "type": "result", "success": True, "result": []}))
             return
         socket.send(json.dumps({"id": 1, "type": "result", "success": True}))
         emit.wait(10)

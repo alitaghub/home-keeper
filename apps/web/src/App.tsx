@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorMessage, mutationHeaders, type Schemas, unwrap } from "./api/client";
+import {
+  api,
+  type CommandRecord,
+  errorMessage,
+  mutationHeaders,
+  type Schemas,
+  unwrap,
+} from "./api/client";
 import { Catalog, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { Coverage, openGaps } from "./components/Coverage";
@@ -38,7 +45,7 @@ const collectionErrors: Record<NonNullable<Schemas["HealthReport"]["error"]>, st
 // The API answers a command with a final outcome; `pending` and `interrupted`
 // appear only in the command history, and read as "may not have changed" here.
 const outcomeMessages: Record<
-  Schemas["CommandRecord"]["outcome"],
+  CommandRecord["outcome"],
   (name: string, command: DeviceCommand) => string
 > = {
   observed: (name, command) =>

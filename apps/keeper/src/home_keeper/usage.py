@@ -12,17 +12,14 @@ from zoneinfo import ZoneInfo
 
 from home_keeper.models import (
     CoverageGap,
+    CurrentReading,
     DayUsage,
     DeviceKind,
     DeviceUsage,
     EventRecord,
-    LightBaseline,
-    LightEventReading,
     LightReading,
     LightStateValue,
     LightUsage,
-    SwitchBaseline,
-    SwitchEventReading,
     SwitchUsage,
     UnknownInterval,
     UnknownReason,
@@ -54,10 +51,7 @@ def instant(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(UTC)
 
 
-UsageReading = LightBaseline | LightEventReading | SwitchBaseline | SwitchEventReading
-
-
-def reading_evidence(reading: UsageReading) -> Evidence:
+def reading_evidence(reading: CurrentReading) -> Evidence:
     received = instant(reading.received_at)
     brightness = reading.brightness if isinstance(reading, LightReading) else None
     if reading.kind == "event":
@@ -175,7 +169,7 @@ def device_usage(
     now: datetime,
     timezone: ZoneInfo,
     retained_since: datetime,
-    readings: Sequence[UsageReading],
+    readings: Sequence[CurrentReading],
     events: Sequence[EventRecord],
     gaps: Sequence[CoverageGap],
 ) -> DeviceUsage:

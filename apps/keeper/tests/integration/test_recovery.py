@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry
+from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry, use_transport
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 from websockets.sync.server import ServerConnection, serve
@@ -75,7 +75,14 @@ def home(
     commands: list[str] = []
     rows = [entity or registry()]
 
+    # Discovery reads each new light once, for group markers; every later read is a snapshot.
+    discovered: set[str] = set()
+
     def request(_connection: ServerConnection, incoming: Request) -> Response | None:
+        source = incoming.path.rsplit("/", 1)[-1]
+        if incoming.path.startswith("/api/states/") and source not in discovered:
+            discovered.add(source)
+            return Response(404, "Not Found", Headers(), b"")
         if incoming.path.startswith("/api/states/"):
             # A snapshot cannot begin before the event subscription is acknowledged.
             assert subscribed.wait(1)
@@ -85,7 +92,7 @@ def home(
                 200,
                 "OK",
                 Headers({"Content-Type": "application/json"}),
-                json.dumps(state(100, source=incoming.path.rsplit("/", 1)[-1])).encode(),
+                json.dumps(state(100, source=source)).encode(),
             )
         return None
 
@@ -116,9 +123,6 @@ def home(
             socket.send(
                 json.dumps({"id": 2, "type": "result", "success": True, "result": devices or []})
             )
-            command = json.loads(socket.recv(timeout=5))
-            commands.append(command["type"])
-            socket.send(json.dumps({"id": 3, "type": "result", "success": True, "result": []}))
 
     with serve(handler, "127.0.0.1", 0, process_request=request) as server:
         worker = Thread(target=server.serve_forever)
@@ -571,18 +575,15 @@ def test_initial_missing_baseline_stays_selected_then_recovers(
     secret.write_text("review-ha-secret")
     install_socket(monkeypatch, FakeSocket([registry_entry()]))
     adapter = HomeAssistantConnector("http://ha.example:8123", secret)
-    adapter.discover()
-    adapter.approve({"ha:registry1": 1})
     status = [404]
-    adapter._http.close()  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
-    adapter._http = httpx.Client(  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
-        base_url=adapter.origin,
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(
-                status[0], json={"entity_id": "light.bulb", "state": "off", "attributes": {}}
-            )
+    use_transport(
+        adapter,
+        lambda _request: httpx.Response(
+            status[0], json={"entity_id": "light.bulb", "state": "off", "attributes": {}}
         ),
     )
+    adapter.discover()
+    adapter.approve({"ha:registry1": 1})
 
     def connect(*_args: object, **_kwargs: object) -> LiveSocket:
         return LiveSocket([registry_entry()])

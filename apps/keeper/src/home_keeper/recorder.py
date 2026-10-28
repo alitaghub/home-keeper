@@ -25,7 +25,7 @@ from home_keeper.models import (
     LightState,
     SwitchState,
 )
-from home_keeper.store import Store, baseline_record, current_reading
+from home_keeper.store import Store, baseline_record, current_reading, stored_json
 
 device_state: TypeAdapter[DeviceState] = TypeAdapter(DeviceState)
 event_reading: TypeAdapter[EventReading] = TypeAdapter(EventReading)
@@ -119,7 +119,7 @@ def update_current(
         (
             entity_id,
             instant.isoformat(),
-            data.model_dump_json(exclude_unset=True),
+            stored_json(data),
             boundary,
             snapshot_received_at,
         ),
@@ -221,18 +221,21 @@ class Recorder:
             previous = db.execute(
                 "SELECT data FROM events WHERE source_id=? AND id=?", (self.source_id, payload.id)
             ).fetchone()
-            data = payload.model_dump(mode="json")
-            data["device_kind"] = payload.device_kind
-            for key in ("old", "new"):
-                state = getattr(payload, key)
-                data[key] = state.model_dump(mode="json", exclude_none=True) if state else None
+            # A light's row leaves out its device kind, as before plugs; see stored_json.
+            data: dict[str, object] = {
+                **payload.model_dump(mode="json"),
+                "old": payload.old.stored() if payload.old else None,
+                "new": payload.new.stored() if payload.new else None,
+                "persisted_at": persisted.isoformat(),
+            }
+            if payload.device_kind == "switch":
+                data["device_kind"] = "switch"
             if previous:
                 return _repeat(previous[0], data)
             old = payload.old.meaningful() if payload.old else None
             new = payload.new.meaningful() if payload.new else None
             if old == new:
                 return "unchanged"
-            data["persisted_at"] = persisted.isoformat()
             db.execute(
                 "INSERT INTO events VALUES(?, ?, ?, ?, ?, ?)",
                 (
@@ -313,7 +316,7 @@ class Recorder:
             (
                 baseline.id,
                 entity_id,
-                baseline.model_dump_json(exclude_unset=True),
+                stored_json(baseline),
                 persisted.isoformat(),
             ),
         )
@@ -329,14 +332,13 @@ class Recorder:
         )
 
 
-def _repeat(stored_json: str, data: dict[str, object]) -> Literal["duplicate"] | Rejected:
-    stored = EventRecord.model_validate_json(stored_json).model_dump(
-        mode="json", exclude_unset=True
-    )
+def _repeat(stored_row: str, data: dict[str, object]) -> Literal["duplicate"] | Rejected:
+    # Both sides are read as records, so rows with and without a light's kind compare alike.
+    stored = EventRecord.model_validate_json(stored_row).model_dump(mode="json", exclude_unset=True)
+    incoming = EventRecord.model_validate(data).model_dump(mode="json", exclude_unset=True)
     # A stable source ID cannot silently refer to different evidence.
-    if _without(stored, EVENT_CONTEXT_KEYS | {"persisted_at"}) != _without(
-        data, EVENT_CONTEXT_KEYS
-    ):
+    ignored = EVENT_CONTEXT_KEYS | {"persisted_at"}
+    if _without(stored, ignored) != _without(incoming, ignored):
         return Rejected("event_identity_conflict", "Event identity conflict")
     return "duplicate"
 

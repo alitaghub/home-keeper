@@ -9,6 +9,7 @@ from pydantic import TypeAdapter
 
 from home_keeper.models import (
     BaselineRecord,
+    CommandRecord,
     CoverageGap,
     CurrentReading,
     Entity,
@@ -19,6 +20,13 @@ from home_keeper.models import (
 
 current_reading: TypeAdapter[CurrentReading] = TypeAdapter(CurrentReading)
 baseline_record: TypeAdapter[BaselineRecord] = TypeAdapter(BaselineRecord)
+
+
+def stored_json(record: CurrentReading | CommandRecord) -> str:
+    """A record's row. A light's leaves out its device kind, as before plugs, because the
+    release before forbids unknown fields. Readers take a missing kind as a light."""
+    exclude = {"device_kind"} if record.device_kind == "light" else None
+    return record.model_dump_json(exclude_unset=True, exclude=exclude)
 
 
 class Store:

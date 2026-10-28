@@ -61,8 +61,8 @@ def change_event(
         "entity_id": entity_id,
         "source_entity_id": source_entity_id,
         "event_time": event_time.isoformat(),
-        "old": old.model_dump(mode="json", exclude_none=True) if old else None,
-        "new": new.model_dump(mode="json", exclude_none=True) if new else None,
+        "old": old.stored() if old else None,
+        "new": new.stored() if new else None,
     }
     event_id = hashlib.sha256(
         json.dumps(identity_data, sort_keys=True, separators=(",", ":")).encode()

@@ -42,9 +42,7 @@ _REGISTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,120}$")
 _DEVICE_ID = re.compile(r"^(light|switch)\.[a-z0-9_]{1,120}$")
 # Integrations flag their group entities with attributes such as is_hue_group or is_deconz_group.
 _GROUP_FLAG = re.compile(r"^is_[a-z0-9_]+_group$")
-_DISCOVERY_COMMANDS = frozenset(
-    {"config/entity_registry/list", "config/device_registry/list", "get_states"}
-)
+_DISCOVERY_COMMANDS = frozenset({"config/entity_registry/list", "config/device_registry/list"})
 GROUP_REASON = "Groups and rooms are not recorded"
 DISABLED_REASON = "Disabled in Home Assistant"
 NOT_A_DEVICE_REASON = "Only lights, plugs and switches are supported"
@@ -152,6 +150,9 @@ class HomeAssistantConnector:
         self._supported: set[str] = set()
         self._approved: dict[str, int] = {}
         self._validated = False
+        # Whether each light or switch candidate's state marks it as a group, by source entity
+        # ID. Read once per candidate, so a steady home costs no state reads.
+        self._groups: dict[str, bool] = {}
 
     def close(self) -> None:
         self._http.close()
@@ -179,8 +180,7 @@ class HomeAssistantConnector:
                     raise ConnectorError("invalid_data")
                 entities = self._registry(socket, 1, "config/entity_registry/list")
                 devices = self._registry(socket, 2, "config/device_registry/list")
-                groups = _groups(self._registry(socket, 3, "get_states"))
-            catalog, mapping = self._project(entities, devices, groups)
+            catalog, mapping = self._project(entities, devices)
         except ConnectorError:
             raise
         except ssl.SSLError:
@@ -218,7 +218,7 @@ class HomeAssistantConnector:
         result: object = response.get("result")
         if not isinstance(result, list):
             raise ConnectorError("invalid_data")
-        return result  # pyright: ignore[reportUnknownVariableType] -- raw rows; _project and _groups validate each
+        return result  # pyright: ignore[reportUnknownVariableType] -- raw rows; _project validates each
 
     def _name(self, value: object, fallback: str) -> str:
         name = value if isinstance(value, str) and value else fallback
@@ -227,9 +227,7 @@ class HomeAssistantConnector:
                 name = name.replace(secret, "[redacted]")
         return name[:256]
 
-    def _project(
-        self, entities: list[Any], devices: list[Any], groups: frozenset[str]
-    ) -> tuple[Catalog, dict[str, str]]:
+    def _project(self, entities: list[Any], devices: list[Any]) -> tuple[Catalog, dict[str, str]]:
         if len(entities) > MAX_REGISTRY_ROWS or len(devices) > MAX_REGISTRY_ROWS:
             raise ConnectorError("invalid_data")
         device_names: dict[str, str] = {}
@@ -262,7 +260,7 @@ class HomeAssistantConnector:
             kind = device_kind_of(entity_id)
             if not _DEVICE_ID.fullmatch(entity_id):
                 reason = NOT_A_DEVICE_REASON
-            elif entity.get("platform") == "group" or entity_id in groups:
+            elif entity.get("platform") == "group":
                 reason = GROUP_REASON
             elif entity.get("disabled_by") is not None:
                 reason = DISABLED_REASON
@@ -272,6 +270,9 @@ class HomeAssistantConnector:
                 reason = SWITCH_CATEGORY_REASON
             elif kind == "switch" and not device_id:
                 reason = SWITCH_DEVICE_REASON
+            # Only a candidate that passes every other rule has its state read.
+            elif self._is_group(entity_id):
+                reason = GROUP_REASON
             else:
                 reason = None
             supported = reason is None
@@ -289,7 +290,58 @@ class HomeAssistantConnector:
                 )
             )
             mapping[identity] = entity_id
+        sources = set(mapping.values())
+        self._groups = {
+            entity_id: group for entity_id, group in self._groups.items() if entity_id in sources
+        }
         return Catalog(source_id="home_assistant", entities=projected), mapping
+
+    def _is_group(self, entity_id: str) -> bool:
+        """Whether a candidate's state marks it as a group. Keeps only that answer, and only
+        when the read succeeds."""
+        if entity_id in self._groups:
+            return self._groups[entity_id]
+        try:
+            status, payload = self._read_state(entity_id)
+            if status == HTTPStatus.NOT_FOUND:
+                # No state yet, so no group markers.
+                self._groups[entity_id] = False
+                return False
+            if status != HTTPStatus.OK:
+                raise ConnectorError("discovery")
+            data = json.loads(payload)
+        except ConnectorError:
+            raise
+        except (httpx.HTTPError, TimeoutError):
+            raise ConnectorError("discovery") from None
+        except ValueError:
+            raise ConnectorError("invalid_data") from None
+        if not is_json_object(data) or data.get("entity_id") != entity_id:
+            raise ConnectorError("invalid_data")
+        attributes = data.get("attributes")
+        if not is_json_object(attributes):
+            raise ConnectorError("invalid_data")
+        group = isinstance(attributes.get("entity_id"), list) or any(
+            value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
+        )
+        self._groups[entity_id] = group
+        return group
+
+    def _read_state(self, entity_id: str) -> tuple[int, bytes]:
+        """GET one entity's state: the status, and the body only for 200. Raises TimeoutError
+        when the body outlasts the timeout and ConnectorError when it exceeds MAX_PAYLOAD."""
+        deadline = time.monotonic() + self._timeout
+        with self._http.stream("GET", f"/api/states/{entity_id}") as response:
+            if response.status_code != HTTPStatus.OK:
+                return response.status_code, b""
+            payload = bytearray()
+            for chunk in response.iter_bytes():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                payload.extend(chunk)
+                if len(payload) > MAX_PAYLOAD:
+                    raise ConnectorError("invalid_data")
+        return HTTPStatus.OK, bytes(payload)
 
     def approve(self, selected: dict[str, int]) -> None:
         if not self._validated or any(
@@ -327,22 +379,14 @@ class HomeAssistantConnector:
             raise ConnectorError("configuration")
         entity_id = self._entities[identity]
         started_at = datetime.now(UTC)
-        deadline = time.monotonic() + self._timeout
         try:
-            with self._http.stream("GET", f"/api/states/{entity_id}") as response:
-                if response.status_code in {401, 403}:
-                    raise ConnectorError("authentication")
-                if response.status_code == HTTPStatus.NOT_FOUND:
-                    raise ConnectorError("missing")
-                if response.status_code != HTTPStatus.OK:
-                    raise ConnectorError("connection")
-                payload = bytearray()
-                for chunk in response.iter_bytes():
-                    if time.monotonic() >= deadline:
-                        raise ConnectorError("timeout")
-                    payload.extend(chunk)
-                    if len(payload) > MAX_PAYLOAD:
-                        raise ConnectorError("invalid_data")
+            status, payload = self._read_state(entity_id)
+            if status in {401, 403}:
+                raise ConnectorError("authentication")
+            if status == HTTPStatus.NOT_FOUND:
+                raise ConnectorError("missing")
+            if status != HTTPStatus.OK:
+                raise ConnectorError("connection")
             data = json.loads(payload)
             value = device_state(data, entity_id)
             if value is None:
@@ -361,7 +405,7 @@ class HomeAssistantConnector:
 
         except ConnectorError:
             raise
-        except httpx.TimeoutException:
+        except (httpx.TimeoutException, TimeoutError):
             raise ConnectorError("timeout") from None
         except httpx.HTTPError as error:
             # httpx wraps TLS errors; inspect types, never stringify secrets-bearing causes.
@@ -373,26 +417,6 @@ class HomeAssistantConnector:
             raise ConnectorError("connection") from None
         except (ValueError, TypeError, ValidationError):
             raise ConnectorError("invalid_data") from None
-
-
-def _groups(states: list[Any]) -> frozenset[str]:
-    """Return the light and switch entity ids whose state marks them as a group. Keeps nothing
-    else."""
-    groups: set[str] = set()
-    for row in states:
-        entity_id = row.get("entity_id") if is_json_object(row) else None
-        if not isinstance(entity_id, str):
-            raise ConnectorError("invalid_data")
-        if not _DEVICE_ID.fullmatch(entity_id):
-            continue
-        attributes = row.get("attributes")
-        if not is_json_object(attributes):
-            raise ConnectorError("invalid_data")
-        if isinstance(attributes.get("entity_id"), list) or any(
-            value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
-        ):
-            groups.add(entity_id)
-    return frozenset(groups)
 
 
 class SelectedSubscription:

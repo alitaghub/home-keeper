@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from support.api import AUTH, CATALOG_ENTITIES, NOW, TOKEN, Payload, event, observation, select
 from support.control import (
     DASHBOARD,
+    DESK,
     OFF,
     ON,
     TELEGRAM,
@@ -212,3 +213,29 @@ def test_plug_that_does_not_change_is_not_observed(tmp_path: Path) -> None:
         assert response.status_code == 200, response.text
         assert response.json()["outcome"] == "not_observed"
         assert [record["outcome"] for record in house.commands()] == ["not_observed"]
+
+
+def test_the_command_audit_lists_light_and_switch_commands_with_their_device_kind(
+    tmp_path: Path,
+) -> None:
+    with home(tmp_path) as house:
+        house.client.post(
+            "/internal/baselines",
+            json=observation(house.revision, source_entity_id=DESK),
+            headers=AUTH,
+        ).raise_for_status()
+        light = command(house.client, on(40), TELEGRAM)
+        switch = command(house.client, ON, DASHBOARD, entity="plug-a")
+        assert (light.status_code, switch.status_code) == (200, 200), (light.text, switch.text)
+        audit = {
+            record["entity_id"]: (record["device_kind"], record["command"], record["sender"])
+            for record in house.commands()
+        }
+        assert audit == {
+            "bulb-a": ("light", on(40), TELEGRAM),
+            "plug-a": ("switch", ON, DASHBOARD),
+        }
+        assert house.controller.sent == [
+            forwarded(on(40), DESK),
+            forwarded(ON, KETTLE),
+        ]

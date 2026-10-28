@@ -555,9 +555,9 @@ describe("light control from the dashboard", () => {
     options: {
       control?: Schemas["ControlStatus"];
       state?: Schemas["LightBaseline"]["state"];
-      availability?: "available" | "unavailable" | "unknown";
+      availability?: Schemas["LightBaseline"]["availability"];
       light?: Schemas["Entity"];
-      outcome?: Schemas["CommandRecord"]["outcome"];
+      outcome?: Schemas["CommandsPage"]["commands"][number]["outcome"];
     } = {},
   ) {
     const light = options.light ?? fixtures.desk;
@@ -1541,7 +1541,7 @@ describe("plug control from the dashboard", () => {
     options: {
       control?: Schemas["ControlStatus"];
       state?: Schemas["SwitchBaseline"]["state"];
-      availability?: "available" | "unavailable" | "unknown";
+      availability?: Schemas["SwitchBaseline"]["availability"];
     } = {},
   ) {
     return renderDashboard({

@@ -14,7 +14,7 @@ from pydantic import (
 )
 
 # The command shape is shared with the controller and the demo collector.
-from home_keeper_light_command import LightCommand
+from home_keeper_light_command import LightCommand, SwitchCommand
 
 Identity = Annotated[
     str, StringConstraints(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.:-]+$")
@@ -168,14 +168,25 @@ class StateHeader(WireModel):
         )
 
 
-class LightState(LightAttributes, StateHeader):
+# Pydantic orders fields from the last base to the first. The attributes lead, as before
+# plugs, so a stored light event keeps its exact form.
+class LightState(StateHeader, LightAttributes):
     device_kind: Literal["light"] = "light"
+
+    def stored(self) -> dict[str, object]:
+        """The state as an event stores and hashes it. A light's leaves out its device kind,
+        as before plugs, so its event keeps the same ID and the release before still reads it.
+        """
+        return self.model_dump(mode="json", exclude_none=True, exclude={"device_kind"})
 
 
 class SwitchState(StateHeader):
     """A plug or switch: on or off, with no light attributes."""
 
     device_kind: Literal["switch"]
+
+    def stored(self) -> dict[str, object]:
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 DeviceState = Annotated[
@@ -608,11 +619,12 @@ CommandOutcome = Literal[
 ]
 
 
-class CommandRecord(WireModel):
+# Each kind declares every field, in this order, so a light's stored row without its device
+# kind has the field order the release before plugs wrote.
+class LightCommandRecord(WireModel):
     id: str
     entity_id: Identity
-    device_kind: DeviceKind
-    # A switch's command never carries a brightness: the API refuses one before sending.
+    device_kind: Literal["light"]
     command: LightCommand
     sender: Sender
     sent_at: Timestamp
@@ -624,6 +636,23 @@ class CommandRecord(WireModel):
     @classmethod
     def stored_before_plugs(cls, data: object) -> object:
         return light_by_default(data)
+
+
+class SwitchCommandRecord(WireModel):
+    id: str
+    entity_id: Identity
+    device_kind: Literal["switch"]
+    command: SwitchCommand
+    sender: Sender
+    sent_at: Timestamp
+    outcome: CommandOutcome
+    event_id: Identity | None
+
+
+CommandRecord = Annotated[
+    Annotated[LightCommandRecord, Tag("light")] | Annotated[SwitchCommandRecord, Tag("switch")],
+    Discriminator(device_kind_tag),
+]
 
 
 # Why the API refused a command before sending it.

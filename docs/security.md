@@ -27,9 +27,9 @@
   and restricts source identity. Error status and logs omit submitted secrets
   and raw connector responses.
 - The collector's Home Assistant operations are fixed registry reads, one state
-  read at discovery, approved entity-state reads and a state-change subscription
-  filtered inside the connector. Discovery reads the states only to detect light
-  groups and keeps nothing else from them. It makes no service call and no device write. The collector image
+  read for each new light or switch candidate at discovery, approved entity-state
+  reads and a state-change subscription filtered inside the connector. Discovery
+  reads a candidate's state only to detect a group and keeps only that answer. It makes no service call and no device write. The collector image
   contains no controller code.
 - The controller makes exactly four Home Assistant service calls:
   `light.turn_on`, with an optional `brightness_pct` from 1 to 100, and

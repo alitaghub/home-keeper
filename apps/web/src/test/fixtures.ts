@@ -3,6 +3,8 @@
 import type { components } from "../api/schema";
 
 type Schemas = components["schemas"];
+// A light's or a switch's command record. The union has no schema name of its own.
+type CommandRecord = Schemas["CommandsPage"]["commands"][number];
 
 export const desk = {
   id: "light.hue_desk",
@@ -234,7 +236,7 @@ export const controlOn = {
 export const monitoredLight = (
   entity: Schemas["Entity"],
   state: Schemas["LightBaseline"]["state"],
-  availability: "available" | "unavailable" | "unknown" = "available",
+  availability: Schemas["LightBaseline"]["availability"] = "available",
 ) =>
   ({
     ...entity,
@@ -258,9 +260,9 @@ export const monitoredLight = (
 
 /** A monitored plug or switch whose recorded reading has the given state and availability. */
 export const monitoredSwitch = (
-  entity: Schemas["Entity"],
+  entity: Schemas["Entity"] & { device_kind: "switch" },
   state: Schemas["SwitchBaseline"]["state"],
-  availability: "available" | "unavailable" | "unknown" = "available",
+  availability: Schemas["SwitchBaseline"]["availability"] = "available",
 ) =>
   ({
     ...entity,
@@ -284,8 +286,8 @@ export const monitoredSwitch = (
 
 /** The command record the controller returns for a light command. */
 export const commandRecord = (
-  outcome: Schemas["CommandRecord"]["outcome"],
-  action: "on" | "off" = "on",
+  outcome: CommandRecord["outcome"],
+  action: Schemas["LightCommandRecord"]["command"]["action"] = "on",
 ) =>
   ({
     id: "command-1",
@@ -296,12 +298,12 @@ export const commandRecord = (
     sent_at: "2026-10-12T10:01:00+00:00",
     outcome,
     event_id: outcome === "observed" ? "change-4" : null,
-  }) satisfies Schemas["CommandRecord"];
+  }) satisfies Schemas["LightCommandRecord"];
 
 /** The command record the controller returns for a smart plug command. */
 export const switchCommandRecord = (
-  outcome: Schemas["CommandRecord"]["outcome"],
-  action: "on" | "off" = "on",
+  outcome: CommandRecord["outcome"],
+  action: Schemas["SwitchCommandRecord"]["command"]["action"] = "on",
 ) =>
   ({
     id: "command-plug-1",
@@ -312,13 +314,13 @@ export const switchCommandRecord = (
     sent_at: "2026-10-12T10:01:00+00:00",
     outcome,
     event_id: outcome === "observed" ? "change-plug" : null,
-  }) satisfies Schemas["CommandRecord"];
+  }) satisfies Schemas["SwitchCommandRecord"];
 
 /** A command history row; override any field. */
 export const historyCommand = (
   id: string,
-  overrides: Partial<Schemas["CommandRecord"]> = {},
-): Schemas["CommandRecord"] => ({
+  overrides: Partial<Schemas["LightCommandRecord"]> = {},
+): Schemas["LightCommandRecord"] => ({
   id,
   entity_id: desk.id,
   device_kind: "light",
@@ -330,10 +332,7 @@ export const historyCommand = (
   ...overrides,
 });
 
-export const commandsPage = (
-  commands: Schemas["CommandRecord"][],
-  next_cursor: string | null = null,
-) =>
+export const commandsPage = (commands: CommandRecord[], next_cursor: string | null = null) =>
   ({
     commands,
     next_cursor,

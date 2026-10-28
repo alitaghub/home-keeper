@@ -39,6 +39,7 @@ from home_keeper.models import (
     Coverage,
     CoverageGap,
     CoverageReport,
+    CurrentReading,
     DeviceKind,
     DeviceObservation,
     DiscoveryRefresh,
@@ -62,8 +63,8 @@ from home_keeper.models import (
     to_utc,
 )
 from home_keeper.recorder import Recorder, Rejected, update_current
-from home_keeper.store import Store, baseline_record, current_reading
-from home_keeper.usage import UsageReading, device_usage
+from home_keeper.store import Store, baseline_record, current_reading, stored_json
+from home_keeper.usage import device_usage
 from home_keeper_light_command import (
     ForwardedCommand,
     LightOff,
@@ -72,6 +73,7 @@ from home_keeper_light_command import (
 )
 
 UTC_ZONE = ZoneInfo("UTC")
+command_record: TypeAdapter[CommandRecord] = TypeAdapter(CommandRecord)
 COMMAND_POLL_SECONDS = 0.1
 # Controller sends can block for seconds, so they get their own few threads and never
 # take every worker of the shared pool that ingestion needs.
@@ -681,7 +683,7 @@ def create_app(
         switches |= {
             entity for entity, value in [*snapshots, *changes] if value.device_kind == "switch"
         }
-        readings: dict[str, list[UsageReading]] = {device: [] for device in devices}
+        readings: dict[str, list[CurrentReading]] = {device: [] for device in devices}
         for entity, reading in snapshots:
             if entity in readings:
                 readings[entity].append(reading)
@@ -840,7 +842,7 @@ def create_app(
                     record.id,
                     record.entity_id,
                     record.sent_at,
-                    record.model_dump_json(exclude_unset=True),
+                    stored_json(record),
                 ),
             )
 
@@ -871,15 +873,18 @@ def create_app(
             # have stopped being monitored, or control may have turned off.
             accepted = await run_in_threadpool(accept, entity_id, request.command)
             sent_at = now().astimezone(UTC)
-            record = CommandRecord(
-                id=str(uuid4()),
-                entity_id=entity_id,
-                device_kind=accepted.forwarded.device_kind,
-                command=request.command,
-                sender=request.sender,
-                sent_at=sent_at.isoformat(),
-                outcome="pending",
-                event_id=None,
+            # From the forwarded command, so a switch's record holds a switch command.
+            record = command_record.validate_python(
+                {
+                    "id": str(uuid4()),
+                    "entity_id": entity_id,
+                    "device_kind": accepted.forwarded.device_kind,
+                    "command": accepted.forwarded.command,
+                    "sender": request.sender,
+                    "sent_at": sent_at.isoformat(),
+                    "outcome": "pending",
+                    "event_id": None,
+                }
             )
             # Stored before the send, so a crash during it still leaves the command on record.
             await run_in_threadpool(save_command, record)
@@ -954,7 +959,7 @@ def create_app(
                 + " ORDER BY sent_at DESC, id DESC LIMIT ?",
                 (*parameters, limit + 1),
             ).fetchall()
-        values = [CommandRecord.model_validate_json(row[0]) for row in rows[:limit]]
+        values = [command_record.validate_json(row[0]) for row in rows[:limit]]
         return CommandsPage(
             commands=values,
             next_cursor=f"{values[-1].sent_at}|{values[-1].id}" if len(rows) > limit else None,

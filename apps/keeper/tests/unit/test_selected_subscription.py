@@ -4,7 +4,14 @@ from collections import deque
 from pathlib import Path
 
 import pytest
-from support.home_assistant import FakeSocket, install_socket, registry_entry, state_changed
+from support.home_assistant import (
+    FakeSocket,
+    StateServer,
+    install_socket,
+    registry_entry,
+    state_changed,
+    use_transport,
+)
 
 from home_keeper.home_assistant import (
     ConnectorError,
@@ -22,13 +29,14 @@ def test_subscription_is_selected_only_and_projects_brightness_changes(
     socket = FakeSocket([registry_entry()])
     install_socket(monkeypatch, socket)
     connector = HomeAssistantConnector("http://ha.example:8123", token)
+    use_transport(connector, StateServer())
     try:
         connector.discover()
         connector.approve({})
         assert connector.subscribe_selected() is None
         with pytest.raises(ConnectorError):
             SelectedSubscription(connector)
-        assert socket.sent[-1]["type"] == "get_states"
+        assert socket.sent[-1]["type"] == "config/device_registry/list"
         connector.approve({"ha:registry1": 1})
         socket.messages.extend(
             [
@@ -71,6 +79,7 @@ def test_malformed_selected_event_is_safe_and_unselected_payload_is_dropped(
     socket = FakeSocket([registry_entry()])
     install_socket(monkeypatch, socket)
     connector = HomeAssistantConnector("http://ha.example:8123", token)
+    use_transport(connector, StateServer())
     try:
         connector.discover()
         connector.approve({"ha:registry1": 1})

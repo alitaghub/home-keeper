@@ -10,17 +10,19 @@ import pytest
 from support.home_assistant import (
     FakeSocket,
     Frame,
+    StateServer,
     hue_room,
     install_socket,
     light_state,
     registry_entry,
+    use_transport,
 )
 
 from home_keeper.home_assistant import MAX_PAYLOAD, ConnectorError, HomeAssistantConnector
 from home_keeper.models import Observation
 
 type Install = Callable[..., FakeSocket]
-type Handler = Callable[[httpx.Request], httpx.Response]
+type Connector = tuple[HomeAssistantConnector, Install, StateServer]
 
 GROUP = "Groups and rooms are not recorded"
 DISABLED = "Disabled in Home Assistant"
@@ -29,36 +31,25 @@ SETTING = "Settings and diagnostic switches are not recorded"
 NO_DEVICE = "Switches without a device are not recorded"
 
 
-def use_transport(client: HomeAssistantConnector, handler: Handler) -> None:
-    """Swap the adapter's REST client for one served by `handler`."""
-    client._http.close()  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
-    client._http = httpx.Client(  # pyright: ignore[reportPrivateUsage] -- tests replace the transport
-        base_url=client.origin, transport=httpx.MockTransport(handler)
-    )
-
-
 @pytest.fixture
-def connector(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[tuple[HomeAssistantConnector, Install, list[FakeSocket]]]:
+def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Connector]:
+    """An adapter whose registries come from `install` and whose states from the server."""
     token = tmp_path / "token"
     token.write_text("secret-sentinel")
-    sockets: list[FakeSocket] = []
+    server = StateServer()
 
     def install(
-        entities: list[Frame],
-        devices: Iterable[Frame] = (),
-        states: Iterable[Frame] = (),
-        states_reply: Frame | None = None,
+        entities: list[Frame], devices: Iterable[Frame] = (), states: Iterable[Frame] = ()
     ) -> FakeSocket:
-        socket = FakeSocket(entities, devices, states, states_reply)
-        sockets.append(socket)
+        socket = FakeSocket(entities, devices)
         install_socket(monkeypatch, socket)
+        server.states = {state["entity_id"]: state for state in states}
         return socket
 
     install([registry_entry()])
     client = HomeAssistantConnector("http://ha.example:8123", token)
-    yield client, install, sockets
+    use_transport(client, server)
+    yield client, install, server
     client.close()
 
 
@@ -68,6 +59,7 @@ def adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[HomeAss
     secret.write_text("review-ha-secret")
     install_socket(monkeypatch, FakeSocket([registry_entry()]))
     client = HomeAssistantConnector("http://ha.example:8123", secret)
+    use_transport(client, StateServer())
     client.discover()
     client.approve({"ha:registry1": 1})
     yield client
@@ -75,7 +67,7 @@ def adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[HomeAss
 
 
 def test_projection_keeps_device_names_and_drops_private_registry_fields(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, install, _ = connector
     install(
@@ -97,9 +89,7 @@ def test_projection_keeps_device_names_and_drops_private_registry_fields(
     assert "PRIVATE_SENTINEL" not in catalog.model_dump_json()
 
 
-def test_discovery_reads_registries_then_states_in_order(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
-) -> None:
+def test_discovery_sends_only_the_two_registry_reads(connector: Connector) -> None:
     client, install, _ = connector
     socket = install([registry_entry()], states=[light_state()])
     client.discover()
@@ -107,12 +97,66 @@ def test_discovery_reads_registries_then_states_in_order(
     assert socket.sent[1:] == [
         {"id": 1, "type": "config/entity_registry/list"},
         {"id": 2, "type": "config/device_registry/list"},
-        {"id": 3, "type": "get_states"},
     ]
 
 
+def test_discovery_reads_the_state_of_each_new_candidate_once(connector: Connector) -> None:
+    client, install, server = connector
+    huge = {"untrusted": "x" * MAX_PAYLOAD}
+    entities = [
+        registry_entry("bulb", "light.bulb"),
+        registry_entry("plug", "switch.plug", platform="zha", translation_key=None),
+        # None of these can be recorded whatever their state says, so none is read.
+        registry_entry("sensor", "sensor.power"),
+        registry_entry("helper", "light.helper", platform="group"),
+        registry_entry("disabled", "light.disabled", disabled_by="user"),
+        registry_entry("setting", "switch.child_lock", entity_category="config"),
+        registry_entry("loose", "switch.template", device_id=None),
+    ]
+    install(
+        entities,
+        [{"id": "device1", "name": "Bulb"}],
+        [
+            light_state("light.bulb"),
+            light_state("switch.plug"),
+            *(
+                light_state(entity, **huge)
+                for entity in (
+                    "sensor.power",
+                    "light.helper",
+                    "light.disabled",
+                    "switch.child_lock",
+                    "switch.template",
+                )
+            ),
+        ],
+    )
+    first = client.discover()
+    assert sorted(server.reads) == ["light.bulb", "switch.plug"]
+    assert {entity.id for entity in first.entities if entity.supported} == {"ha:bulb", "ha:plug"}
+
+    # A steady home costs no state reads.
+    install(entities, [{"id": "device1", "name": "Bulb"}], server.states.values())
+    assert client.discover() == first
+    assert sorted(server.reads) == ["light.bulb", "switch.plug"]
+
+    # Only the new candidate is read. An entity that left the registry is read again on return.
+    server.reads.clear()
+    install(
+        [*entities[1:], registry_entry("desk", "light.desk")],
+        [{"id": "device1", "name": "Bulb"}],
+        [*server.states.values(), hue_room("light.desk")],
+    )
+    second = client.discover()
+    assert server.reads == ["light.desk"]
+    assert {entity.id: entity.reason for entity in second.entities}["ha:desk"] == GROUP
+    install(entities, [{"id": "device1", "name": "Bulb"}], server.states.values())
+    client.discover()
+    assert server.reads == ["light.desk", "light.bulb"]
+
+
 def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_not(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, install, _ = connector
     no_translation = {"translation_key": None}
@@ -120,6 +164,7 @@ def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_n
         [
             registry_entry("hue", "light.bulb"),
             registry_entry("zha", "light.zha_bulb", platform="zha", **no_translation),
+            # No state yet: Home Assistant answers 404, which is not a group.
             registry_entry("stateless", "light.stateless", platform="zha", **no_translation),
             registry_entry("not_group", "light.flagged", platform="hue"),
             registry_entry("helper", "light.helper_group", platform="group", **no_translation),
@@ -163,7 +208,7 @@ def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_n
 
 
 def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose_ones_are_not(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, install, _ = connector
     zha = {"platform": "zha", "translation_key": None}
@@ -182,7 +227,7 @@ def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose
             registry_entry(
                 "disabled_loose", "switch.old", disabled_by="user", device_id=None, **zha
             ),
-            # The group rule comes before the switch-only category rule.
+            # Only a switch that passes the other rules has its state read for group markers.
             registry_entry(
                 "group_setting", "switch.group_setting", entity_category="config", **zha
             ),
@@ -212,7 +257,7 @@ def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose
         "ha:flagged": (False, GROUP, "switch"),
         "ha:disabled": (False, DISABLED, "switch"),
         "ha:disabled_loose": (False, DISABLED, "switch"),
-        "ha:group_setting": (False, GROUP, "switch"),
+        "ha:group_setting": (False, SETTING, "switch"),
         "ha:sensor": (False, NOT_SUPPORTED, None),
     }
     client.approve({"ha:plug": 1})
@@ -222,7 +267,7 @@ def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose
 
 
 def test_a_selected_switch_reads_its_state_without_light_attributes(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, install, _ = connector
     install(
@@ -252,42 +297,64 @@ def test_a_selected_switch_reads_its_state_without_light_attributes(
 
 
 @pytest.mark.parametrize(
-    ("reply", "code"),
+    ("response", "code"),
     [
-        ({"id": 3, "type": "result", "success": False, "error": {"code": "x"}}, "discovery"),
-        ({"id": 3, "type": "result", "success": True, "result": {"x": {}}}, "invalid_data"),
-        ({"id": 3, "type": "result", "success": True, "result": ["light.bulb"]}, "invalid_data"),
+        (httpx.Response(500, json={}), "discovery"),
+        # None: Home Assistant cannot be reached.
+        (None, "discovery"),
+        (httpx.Response(200, content=b"{not json"), "invalid_data"),
+        (httpx.Response(200, json=["light.bulb"]), "invalid_data"),
         (
-            {
-                "id": 3,
-                "type": "result",
-                "success": True,
-                "result": [{"entity_id": "light.bulb", "state": "on", "attributes": ["x"]}],
-            },
+            httpx.Response(
+                200, json={"entity_id": "light.bulb", "state": "on", "attributes": ["x"]}
+            ),
             "invalid_data",
         ),
-        ({"id": 9, "type": "result", "success": True, "result": []}, "invalid_data"),
+        (httpx.Response(200, content=b"x" * (MAX_PAYLOAD + 1)), "invalid_data"),
     ],
-    ids=["failed", "not_a_list", "row_not_an_object", "attributes_not_an_object", "wrong_id"],
+    ids=[
+        "server_error",
+        "unreachable",
+        "not_json",
+        "not_an_object",
+        "attributes_not_an_object",
+        "oversized",
+    ],
 )
-def test_failed_or_malformed_states_fail_discovery_and_revoke_reads(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]], reply: Frame, code: str
+def test_a_failed_candidate_state_read_fails_discovery_and_is_retried_next_pass(
+    connector: Connector, response: httpx.Response | None, code: str
 ) -> None:
-    client, install, _ = connector
+    def reply(request: httpx.Request) -> httpx.Response:
+        if response is None:
+            raise httpx.ConnectError("refused", request=request)
+        return response
+
+    client, install, server = connector
     client.discover()
     client.approve({"ha:registry1": 1})
-    install([registry_entry()], states_reply=reply)
+    install([registry_entry(), registry_entry("desk", "light.desk")])
+    use_transport(client, reply)
     with pytest.raises(ConnectorError) as failure:
         client.discover()
     assert failure.value.code == code
+    assert "secret-sentinel" not in str(failure.value)
     with pytest.raises(ConnectorError):
         client.approve({"ha:registry1": 1})
     with pytest.raises(ConnectorError):
         client.read_selected("ha:registry1", 1)
+    # The failed answer was not kept: the next pass reads the candidate again.
+    server.reads.clear()
+    use_transport(client, server)
+    install(
+        [registry_entry(), registry_entry("desk", "light.desk")], states=[hue_room("light.desk")]
+    )
+    catalog = client.discover()
+    assert server.reads == ["light.desk"]
+    assert {entity.id: entity.reason for entity in catalog.entities}["ha:desk"] == GROUP
 
 
 def test_selected_reads_and_rename_identity(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, install, _ = connector
     client.discover()
@@ -329,7 +396,7 @@ def test_selected_reads_and_rename_identity(
 
 
 def test_failed_discovery_revokes_read_permission_and_redacts(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, install, _ = connector
     client.discover()
@@ -364,7 +431,7 @@ def test_invalid_origin_safe(origin: str, tmp_path: Path) -> None:
 
 
 def test_missing_failed_reads_and_recovery(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, _, _ = connector
     client.discover()
@@ -384,7 +451,7 @@ def test_missing_failed_reads_and_recovery(
 
 
 def test_names_redact_credentials_and_write_helper_rejected(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, install, _ = connector
     client._redactions = ("secret-sentinel", "internal-sentinel")  # pyright: ignore[reportPrivateUsage] -- inject redactions
@@ -398,7 +465,7 @@ def test_names_redact_credentials_and_write_helper_rejected(
 
 
 def test_payload_limit_and_contradictory_state_rejected(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
 ) -> None:
     client, _, _ = connector
     client.discover()
@@ -416,7 +483,7 @@ def test_payload_limit_and_contradictory_state_rejected(
 
 
 def test_slow_stream_total_time_is_bounded(
-    connector: tuple[HomeAssistantConnector, Install, list[FakeSocket]],
+    connector: Connector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _, _ = connector

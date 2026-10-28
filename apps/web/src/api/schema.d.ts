@@ -263,34 +263,6 @@ export interface components {
              */
             source_id: "demo" | "home_assistant";
         };
-        /** CommandRecord */
-        CommandRecord: {
-            /** Command */
-            command: components["schemas"]["LightOn"] | components["schemas"]["LightOff"];
-            /**
-             * Device Kind
-             * @enum {string}
-             */
-            device_kind: "light" | "switch";
-            /** Entity Id */
-            entity_id: string;
-            /** Event Id */
-            event_id: string | null;
-            /** Id */
-            id: string;
-            /**
-             * Outcome
-             * @enum {string}
-             */
-            outcome: "pending" | "observed" | "not_observed" | "refused" | "unreachable" | "interrupted";
-            /** Sender */
-            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
-            /**
-             * Sent At
-             * Format: date-time
-             */
-            sent_at: string;
-        };
         /** CommandRefusal */
         CommandRefusal: {
             /**
@@ -318,7 +290,7 @@ export interface components {
         /** CommandsPage */
         CommandsPage: {
             /** Commands */
-            commands: components["schemas"]["CommandRecord"][];
+            commands: (components["schemas"]["LightCommandRecord"] | components["schemas"]["SwitchCommandRecord"])[];
             /** Next Cursor */
             next_cursor: string | null;
             /**
@@ -624,6 +596,34 @@ export interface components {
                 number
             ] | null;
         };
+        /** LightCommandRecord */
+        LightCommandRecord: {
+            /** Command */
+            command: components["schemas"]["LightOn"] | components["schemas"]["LightOff"];
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "light";
+            /** Entity Id */
+            entity_id: string;
+            /** Event Id */
+            event_id: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "pending" | "observed" | "not_observed" | "refused" | "unreachable" | "interrupted";
+            /** Sender */
+            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
+            /**
+             * Sent At
+             * Format: date-time
+             */
+            sent_at: string;
+        };
         /** LightEventReading */
         LightEventReading: {
             /**
@@ -927,6 +927,34 @@ export interface components {
             /** Transition Time */
             transition_time?: "unknown" | null;
         };
+        /** SwitchCommandRecord */
+        SwitchCommandRecord: {
+            /** Command */
+            command: components["schemas"]["SwitchOn"] | components["schemas"]["SwitchOff"];
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "switch";
+            /** Entity Id */
+            entity_id: string;
+            /** Event Id */
+            event_id: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "pending" | "observed" | "not_observed" | "refused" | "unreachable" | "interrupted";
+            /** Sender */
+            sender: components["schemas"]["DashboardSender"] | components["schemas"]["BrowserChatSender"] | components["schemas"]["TelegramSender"];
+            /**
+             * Sent At
+             * Format: date-time
+             */
+            sent_at: string;
+        };
         /** SwitchEventReading */
         SwitchEventReading: {
             /**
@@ -981,6 +1009,25 @@ export interface components {
              * @enum {string}
              */
             state: "on" | "off" | "unavailable" | "unknown";
+        };
+        /** SwitchOff */
+        SwitchOff: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "off";
+        };
+        /**
+         * SwitchOn
+         * @description A plug or switch has no brightness.
+         */
+        SwitchOn: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "on";
         };
         /**
          * SwitchReading
@@ -1267,7 +1314,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CommandRecord"];
+                    "application/json": components["schemas"]["LightCommandRecord"] | components["schemas"]["SwitchCommandRecord"];
                 };
             };
             /** @description Conflict */

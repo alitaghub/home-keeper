@@ -1,6 +1,11 @@
 """Normalizing raw Home Assistant light state into the keeper's light model."""
 
-from home_keeper.events import device_state
+from datetime import UTC, datetime
+
+import pytest
+from support import previous_release
+
+from home_keeper.events import change_event, device_state
 from home_keeper.models import LightState
 
 
@@ -28,3 +33,41 @@ def test_raw_fields_never_leave_normalizer() -> None:
     encoded = state.model_dump_json()
     for sentinel in ("ignore approvals", "private-account", "secret-marker", "<script>"):
         assert sentinel not in encoded
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ({"state": "off"}, {"state": "on", "brightness": 100, "color_mode": "brightness"}),
+        (
+            {"state": "on", "last_updated": "2026-10-13T10:00:00Z", "hs_color": [10, 20]},
+            {"state": "unavailable"},
+        ),
+        ({"state": "on"}, None),
+    ],
+    ids=["turned_on", "became_unavailable", "removed"],
+)
+def test_a_light_event_keeps_the_id_the_light_only_release_gave_it(
+    old: dict[str, object], new: dict[str, object] | None
+) -> None:
+    """Duplicate detection across an upgrade depends on the same change hashing the same."""
+    at = datetime(2026, 10, 13, 10, tzinfo=UTC)
+    current = change_event(
+        source_id="home_assistant",
+        entity_id="ha:registry1",
+        source_entity_id="light.bulb",
+        revision=1,
+        event_time=at,
+        old=LightState.model_validate(old),
+        new=LightState.model_validate(new) if new else None,
+    )
+    previous = previous_release.change_event(
+        source_id="home_assistant",
+        entity_id="ha:registry1",
+        source_entity_id="light.bulb",
+        revision=1,
+        event_time=at,
+        old=previous_release.LightState.model_validate(old),
+        new=previous_release.LightState.model_validate(new) if new else None,
+    )
+    assert current.id == previous.id

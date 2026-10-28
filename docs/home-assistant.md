@@ -220,8 +220,9 @@ and is not a group. Integrations also expose settings as switches, such as a
 plug's child lock or LED indicator. Home Assistant gives those an entity
 category of `config` or `diagnostic`, so they are left out.
 
-Discovery reads the current states once to find groups, and keeps only that
-answer. A light or switch is a group when it comes from the
+Discovery reads the state of each new light or switch candidate once, to detect
+groups, and keeps only that answer. It never reads the states of the whole home.
+A light or switch is a group when it comes from the
 [`group` integration](https://www.home-assistant.io/integrations/group/), when its
 state lists member entities in an `entity_id` attribute, or when an attribute such
 as `is_hue_group` or `is_deconz_group` is true. A Hue room is one example. The
@@ -241,8 +242,9 @@ A plug or switch records its on/off state and availability only. Home Keeper
 keeps no light attributes for it. With the `control` profile it can switch it
 on or off.
 
-If the state read fails or returns malformed data, discovery fails rather than
-guessing.
+A candidate with no state yet is not a group. If a candidate's state read fails
+or returns malformed data, discovery fails rather than guessing, and the next
+pass reads it again.
 
 Select a light, plug or switch to record its first state. Add more devices to Home Assistant and
 click **Refresh discovery** to find them without changing configuration or
