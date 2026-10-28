@@ -1,7 +1,4 @@
-"""Every environment variable the keeper image's processes read, with its default.
-
-Compose sets them per service in compose.yaml and compose.demo.yaml.
-"""
+"""The environment variables the API, the collectors and the Home Assistant setup read."""
 
 from pathlib import Path
 from zoneinfo import ZoneInfo

@@ -58,7 +58,12 @@ def load[T: BaseSettings](settings: type[T]) -> T:
     except ValidationError as error:
         prefix = str(settings.model_config.get("env_prefix", ""))
         problems: dict[str, str] = {}
-        for issue in error.errors(include_url=False, include_input=False):
+        for issue in error.errors(include_url=False):
             field = str(issue["loc"][0]) if issue["loc"] else ""
-            problems.setdefault(f"{prefix}{field}".upper(), issue["msg"])
+            message = issue["msg"]
+            supplied: object = issue["input"]
+            # Some built-in messages quote the value, as in "invalid timezone: <value>".
+            if isinstance(supplied, str) and supplied and supplied in message:
+                message = f"invalid value ({issue['type']})"
+            problems.setdefault(f"{prefix}{field}".upper(), message)
         raise SettingsError(problems) from None

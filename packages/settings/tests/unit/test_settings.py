@@ -1,4 +1,5 @@
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,6 +14,7 @@ class Example(BaseSettings):
     origin: Origin = "http://localhost:3000"
     optional: OptionalOrigin = "http://controller:8080"
     path: Path = Path("/secrets/token")
+    timezone: ZoneInfo = ZoneInfo("UTC")
 
 
 @pytest.mark.parametrize(
@@ -87,3 +89,35 @@ def test_every_invalid_variable_is_named_without_its_value(
     assert error.value.variables == ("EXAMPLE_PORT", "EXAMPLE_ORIGIN")
     assert "EXAMPLE_PORT: Input should be a valid integer" in str(error.value)
     assert "origin-sentinel" not in str(error.value)
+
+
+@pytest.mark.parametrize("port", ["1", "65535"])
+def test_a_port_inside_the_tcp_range_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, port: str
+) -> None:
+    monkeypatch.setenv("EXAMPLE_PORT", port)
+
+    assert load(Example).port == int(port)
+
+
+@pytest.mark.parametrize("port", ["0", "65536"])
+def test_a_port_outside_the_tcp_range_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, port: str
+) -> None:
+    monkeypatch.setenv("EXAMPLE_PORT", port)
+
+    with pytest.raises(SettingsError) as error:
+        load(Example)
+
+    assert error.value.variables == ("EXAMPLE_PORT",)
+
+
+def test_a_message_that_quotes_the_value_is_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pydantic's own message for a bad time zone is "invalid timezone: <value>".
+    monkeypatch.setenv("EXAMPLE_TIMEZONE", "https://user:zone-sentinel@example.test")
+
+    with pytest.raises(SettingsError) as error:
+        load(Example)
+
+    assert error.value.variables == ("EXAMPLE_TIMEZONE",)
+    assert "zone-sentinel" not in str(error.value)

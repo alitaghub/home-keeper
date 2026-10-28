@@ -1,8 +1,4 @@
-"""Every environment variable the agent image reads, with its default.
-
-compose.agent.yaml passes them to the agent service. The Telegram bot has its own
-settings in home_keeper_agent.telegram.
-"""
+"""The environment variables the agent server reads; the Telegram bot has its own."""
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict

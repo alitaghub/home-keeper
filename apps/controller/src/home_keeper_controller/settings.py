@@ -1,7 +1,4 @@
-"""Every environment variable the controller reads, with its default.
-
-Compose sets them in compose.yaml and compose.demo.yaml.
-"""
+"""The environment variables the controller reads."""
 
 from pathlib import Path
 from typing import Literal
