@@ -1,7 +1,7 @@
 [project]
 name = "home-keeper-agent"
 version = "0.1.0"
-description = "Chat agent that answers questions from the Home Keeper API"
+description = "Chat agent that answers questions about the home and switches monitored lights through the Home Keeper API"
 requires-python = ">=3.13"
 # Exact pins: the agent stack moves fast and the image must match what the tests ran.
 dependencies = [

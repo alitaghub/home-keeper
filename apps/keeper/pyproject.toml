@@ -1,7 +1,7 @@
 [project]
 name = "home-keeper"
 version = "0.1.0"
-description = "Local smart-home observation with explicit device selection"
+description = "Local smart-home recording and opt-in light control with explicit device selection"
 requires-python = ">=3.13"
 dependencies = [
     "home-keeper-light-command",

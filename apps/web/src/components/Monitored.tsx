@@ -216,7 +216,7 @@ export function Monitored({
     <div id="monitored" className="tiles">
       {entities && !entities.length && (
         <div className="empty">
-          <p>No lights monitored yet. Choose the lights Home Keeper should record.</p>
+          <p>No lights monitored yet. Choose the lights Home Keeper should look after.</p>
           <button type="button" className="primary" onClick={onChooseLights}>
             Choose lights
           </button>

@@ -1,9 +1,11 @@
 # Chat with the agent
 
-The agent answers questions about your lights in plain words: how long a lamp
-was on, at which hours, how often it was switched on, and whether collection
-was healthy. It works only from the evidence Home Keeper recorded. It is
-opt-in: without the `agent` profile, nothing below runs.
+The agent helps you look after your lights. It answers questions in plain
+words: how long a lamp was on, at which hours, how often it was switched on,
+and whether collection was healthy. It works only from the evidence Home Keeper
+recorded. With the `control` profile, it can also switch a monitored light
+after you approve the command. It is opt-in: without the `agent` profile,
+nothing below runs.
 
 ## What it can and cannot do
 
