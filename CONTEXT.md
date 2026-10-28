@@ -19,6 +19,10 @@ _Avoid_: domain, type
 A device the user chose to record. Only a monitored device can receive a command.
 _Avoid_: selected entity, tracked device
 
+**Selection**:
+The set of monitored devices, with a revision that changes on every add or remove. The collector names the revision it read, so it never records a device the user has just dropped.
+_Avoid_: watch list, tracked devices
+
 **Reading**:
 One recorded state of a device, from an event or a snapshot, with the time Home Keeper received it.
 _Avoid_: sample, state update
