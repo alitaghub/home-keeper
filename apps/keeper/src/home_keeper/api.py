@@ -355,11 +355,14 @@ def create_app(
             if change.selected != (entity_id in current.entity_ids):
                 if change.selected:
                     db.execute("INSERT INTO selection VALUES(?)", (entity_id,))
+                    if entity is not None and entity.device_kind == "switch":
+                        db.execute("INSERT OR IGNORE INTO selected_switch VALUES(?)", (entity_id,))
                     # A fresh selection awaits a new confirmation, even if history exists.
                     db.execute("DELETE FROM confirmed WHERE entity_id=?", (entity_id,))
                     db.execute("DELETE FROM current_state WHERE entity_id=?", (entity_id,))
                 else:
                     db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
+                    db.execute("DELETE FROM selected_switch WHERE id=?", (entity_id,))
                 db.execute(
                     "UPDATE metadata SET value=? WHERE key='revision'",
                     (str(current.revision + 1),),
@@ -630,7 +633,8 @@ def create_app(
             switches = {
                 row[0]
                 for row in db.execute(
-                    "SELECT id FROM catalog WHERE json_extract(data, '$.device_kind')='switch'"
+                    "SELECT id FROM catalog WHERE json_extract(data, '$.device_kind')='switch' "
+                    "UNION SELECT id FROM selected_switch"
                 )
             }
             # Unselected IDs are left out rather than reported as missing.
@@ -735,8 +739,12 @@ def create_app(
                         name=entity_id,
                         device_id=None,
                         device_name=None,
-                        # Its readings still tell a missing light from a missing switch.
-                        device_kind=current.device_kind if current else None,
+                        # Readings, or the kind it was selected as, tell light from switch.
+                        device_kind=current.device_kind
+                        if current
+                        else "switch"
+                        if store.selected_switch(db, entity_id)
+                        else None,
                         supported=False,
                         reason="Entity missing from latest discovery",
                     )

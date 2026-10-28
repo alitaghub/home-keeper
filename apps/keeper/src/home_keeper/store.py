@@ -41,6 +41,9 @@ class Store:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS catalog(id TEXT PRIMARY KEY, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS selection(id TEXT PRIMARY KEY);
+                -- A selected switch's kind outlives its catalog row. A separate table, so
+                -- the light-only release still reads and writes `selection` unchanged.
+                CREATE TABLE IF NOT EXISTS selected_switch(id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 INSERT OR IGNORE INTO metadata VALUES('revision', '0');
                 CREATE TABLE IF NOT EXISTS baselines(
@@ -124,6 +127,13 @@ class Store:
                 db.execute("SELECT value FROM metadata WHERE key='refresh_revision'").fetchone()[0]
             ),
             entity_ids=[row[0] for row in db.execute("SELECT id FROM selection ORDER BY id")],
+        )
+
+    @staticmethod
+    def selected_switch(db: sqlite3.Connection, entity_id: str) -> bool:
+        return (
+            db.execute("SELECT 1 FROM selected_switch WHERE id=?", (entity_id,)).fetchone()
+            is not None
         )
 
     @staticmethod

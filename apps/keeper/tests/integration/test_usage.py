@@ -742,3 +742,19 @@ def test_expired_recovered_gap_does_not_turn_unknown_time_into_on_time(
     [light] = report["devices"]
     assert light["on_seconds"] == 0, light
     assert light["unknown_seconds"] == 24 * HOUR
+
+
+def test_a_selected_plug_stays_a_switch_after_discovery_drops_it_before_any_reading(
+    tmp_path: Path,
+) -> None:
+    with home(tmp_path, ("plug-a",), clock=utc(13, 12)) as house:
+        catalog = CATALOG | {"entities": CATALOG_ENTITIES}
+        house.post("/internal/catalog", catalog)
+        house.at(utc(13, 14))
+
+        monitored = house.client.get("/api/monitored").json()["entities"]
+        plug = house.devices(utc(13, 12), utc(13, 14))["plug-a"]
+
+    assert [e["device_kind"] for e in monitored if e["id"] == "plug-a"] == ["switch"]
+    assert plug["device_kind"] == "switch"
+    assert "average_brightness" not in plug
