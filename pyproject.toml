@@ -11,7 +11,10 @@ dev = [
     "basedpyright>=1.40,<2",
     "pytest>=8,<9",
     "pytest-cov>=7.1,<8",
+    # scripts/check_env.py reads the Compose files.
+    "pyyaml>=6,<7",
     "ruff>=0.11,<1",
+    "types-pyyaml>=6,<7",
 ]
 
 [tool.uv]

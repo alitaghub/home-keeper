@@ -173,6 +173,7 @@ export HOME_KEEPER_HA_PUBLIC_URL=https://home-assistant.example.test:8123
 docker compose -f compose.yaml -f compose.external.yaml up --build --wait
 ```
 
+You can put these lines in `.env` instead, without `export`; `.env.example` lists them.
 Use your actual Home Assistant origin, without credentials, a query string or an
 API path. The address above is an example. HTTPS certificate verification stays
 on. Install a certificate trusted by the container; invalid certificates fail
