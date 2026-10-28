@@ -64,8 +64,8 @@ flowchart LR
 
 The dashboard works on its own. The optional [agent](docs/agent.md) uses the
 same API to answer questions in Agent Chat UI or [Telegram](docs/telegram.md).
-It asks for approval before changing which lights are monitored, and before it
-switches a light with the `control` profile. Neither the agent nor the collector
+It asks for approval before changing which devices are monitored, and before it
+switches a light, plug or switch with the `control` profile. Neither the agent nor the collector
 talks to Home Assistant to control a device; only the optional controller does,
 when the API asks it to. The SQLite database remains local.
 Questions and tool results go to your model provider; Telegram also receives
@@ -181,7 +181,7 @@ dashboard, the API, the refusals and the limits.
 An optional agent answers questions about your lights in plain words: how long
 a lamp was on this week, at which hours, and whether collection was healthy.
 It uses only the recorded evidence and says how much time is unknown. With the
-`control` profile, it can also switch a monitored light after you approve it. Put your model settings in `.env` (see
+`control` profile, it can also switch a monitored light, plug or switch after you approve it. Put your model settings in `.env` (see
 [.env.example](.env.example)), then:
 
 ```sh

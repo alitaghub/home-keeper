@@ -23,7 +23,7 @@ from home_keeper_agent.tools import keeper_tools
 SNAPSHOTS = Path(__file__).resolve().parents[2] / "keeper/tests/integration/snapshots/api"
 HOME_KEEPER_URL = "http://keeper.test:8000"
 READ_TOOLS = {
-    "list_lights",
+    "list_monitored",
     "get_usage",
     "get_events",
     "get_coverage",
@@ -31,7 +31,7 @@ READ_TOOLS = {
     "list_devices",
 }
 # Writes change only the keeper's selection and discovery, never a device.
-WRITE_TOOLS = {"refresh_discovery", "monitor_light", "stop_monitoring"}
+WRITE_TOOLS = {"refresh_discovery", "monitor", "stop_monitoring"}
 
 
 def snapshot(name: str) -> tuple[int, object]:
@@ -123,6 +123,21 @@ def lights_response(
     return 200, {"entities": [light, *others]}
 
 
+def switch_response(state: str | None = "off", *, entity_id: str = "plug-a") -> tuple[int, object]:
+    """A /api/monitored response with one monitored plug or switch in `state`.
+
+    It reuses the recorded light's shape as the keeper reports a switch: no brightness or
+    color, and `device_kind` "switch" on the entity and its baseline.
+    """
+    status, recorded = lights_response(state, entity_id=entity_id)
+    body: dict[str, Any] = json.loads(json.dumps(recorded))
+    [switch] = body["entities"]
+    switch["device_kind"] = "switch"
+    if switch["baseline"] is not None:
+        switch["baseline"] |= {"device_kind": "switch", "entity_id": entity_id, "color_mode": None}
+    return status, body
+
+
 def control_response(state: str) -> tuple[int, object]:
     return snapshot(f"control_{state}")
 
@@ -141,5 +156,5 @@ def command_response(
 
 
 def command_requests(keeper: FakeKeeper) -> list[httpx.Request]:
-    """The requests that ask the keeper to switch a light."""
+    """The requests that ask the keeper to switch a light, plug or switch."""
     return [request for request in keeper.requests if request.url.path.endswith("/command")]

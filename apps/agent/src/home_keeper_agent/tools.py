@@ -42,7 +42,7 @@ from home_keeper_agent.keeper import (
 from home_keeper_light_command import matches_brightness
 
 EVENT_LIMIT = 100
-LIGHT_TOOLS = ("turn_on_light", "turn_off_light")
+COMMAND_TOOLS = ("turn_on", "turn_off")
 NOT_ALLOWED = "Not sent: you are not allowed to control lights."
 
 
@@ -102,18 +102,18 @@ def _kind(device_kind: str | None) -> str:
     return f" kind={device_kind}" if device_kind else ""
 
 
-def format_lights(monitored: Monitored) -> str:
+def format_monitored(monitored: Monitored) -> str:
     if not monitored.entities:
         return "No lights, plugs or switches are monitored."
     lines = [f"{len(monitored.entities)} monitored device(s):"]
-    for light in monitored.entities:
-        line = f"- {light.id}{_kind(light.device_kind)} name={_name(light.name)}"
-        if light.device_name:
-            line += f" device={_name(light.device_name)}"
-        line += f": {_reading(light.baseline)}"
-        line += f", data {light.freshness}, last confirmed {light.confirmed_at or 'never'}"
-        if not light.supported and light.reason:
-            line += f", unsupported: {_name(light.reason)}"
+    for device in monitored.entities:
+        line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
+        if device.device_name:
+            line += f" device={_name(device.device_name)}"
+        line += f": {_reading(device.baseline)}"
+        line += f", data {device.freshness}, last confirmed {device.confirmed_at or 'never'}"
+        if not device.supported and device.reason:
+            line += f", unsupported: {_name(device.reason)}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -210,7 +210,7 @@ def format_devices(catalog: Catalog) -> str:
 
 
 class RunContext(Wire):
-    """Who asks in this run and whether they may switch lights.
+    """Who asks in this run and whether they may switch devices.
 
     Read from the run's `configurable`; the browser chat sets neither, so it gets the defaults.
     """
@@ -227,7 +227,7 @@ def run_context(config: RunnableConfig) -> RunContext:
         return RunContext(may_control=False)
 
 
-class LightCall(Wire):
+class CommandCall(Wire):
     entity_id: str
     brightness_percent: int | None = None
 
@@ -250,20 +250,20 @@ def _once[T](fetch: Callable[[], T]) -> Callable[[], T]:
     return get
 
 
-def light_refusals(
+def command_refusals(
     client: KeeperClient, calls: Sequence[tuple[str, Mapping[str, object]]], context: RunContext
 ) -> list[str | None]:
-    """Why each light command must not reach the approval card, or None when it may.
+    """Why each device command must not reach the approval card, or None when it may.
 
     The keeper refuses the same cases; checking first spares approving a command that
-    cannot work. One model response's calls share one read of control and monitored lights.
+    cannot work. One model response's calls share one read of control and monitored devices.
     """
     control = _once(lambda: client.request("GET", "/api/control", Control))
     monitored = _once(lambda: client.request("GET", "/api/monitored", Monitored))
-    return [_light_refusal(name, args, context, control, monitored) for name, args in calls]
+    return [_command_refusal(name, args, context, control, monitored) for name, args in calls]
 
 
-def _light_refusal(
+def _command_refusal(
     name: str,
     args: Mapping[str, object],
     context: RunContext,
@@ -271,10 +271,10 @@ def _light_refusal(
     monitored: Callable[[], Monitored],
 ) -> str | None:
     try:
-        call = LightCall.model_validate(args)
+        call = CommandCall.model_validate(args)
     except ValidationError:
         return "Not sent: the arguments are invalid."
-    action: Literal["on", "off"] = "on" if name == "turn_on_light" else "off"
+    action: Literal["on", "off"] = "on" if name == "turn_on" else "off"
     brightness = call.brightness_percent if action == "on" else None
     entity_id = call.entity_id
 
@@ -285,13 +285,13 @@ def _light_refusal(
             return "Not sent: light control is off."
         if brightness is not None and brightness not in range(1, 101):
             return "Not sent: brightness must be 1 to 100 percent."
-        light = next((light for light in monitored().entities if light.id == entity_id), None)
-        if light is None:
+        device = next((device for device in monitored().entities if device.id == entity_id), None)
+        if device is None:
             return f"Not sent: {entity_id} is not monitored. Offer to start monitoring it first."
-        # The keeper refuses these too: plugs and switches cannot be switched yet.
-        if light.device_kind == "switch":
-            return f"Not sent: {entity_id} is a plug or switch; only lights can be switched."
-        return _state_refusal(entity_id, light.baseline, action, brightness)
+        # The keeper refuses this too, but only after the user approved it.
+        if brightness is not None and device.device_kind == "switch":
+            return f"Not sent: {entity_id} is a plug or switch and has no brightness."
+        return _state_refusal(entity_id, device.baseline, action, brightness)
 
     return _guard(check)
 
@@ -325,9 +325,9 @@ def format_outcome(entity_id: str, command: LightOn | LightOff, record: CommandR
 
 def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
-    def list_lights() -> str:
+    def list_monitored() -> str:
         """List the lights, plugs and switches the keeper records, with each one's kind, latest
-        state and freshness. The first line says whether light control is on."""
+        state and freshness. The first line says whether control is on."""
 
         def render() -> str:
             monitored = client.request("GET", "/api/monitored", Monitored)
@@ -335,7 +335,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
                 control = client.request("GET", "/api/control", Control).state
             except KeeperError:
                 control = "unknown"
-            return f"Control: {control}\n{format_lights(monitored)}"
+            return f"Control: {control}\n{format_monitored(monitored)}"
 
         return _guard(render)
 
@@ -413,7 +413,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         return _guard(render)
 
     @tool
-    def monitor_light(entity_id: str) -> str:
+    def monitor(entity_id: str) -> str:
         """Start recording a light, plug or switch. The user must approve this; it never
         changes the device.
 
@@ -445,37 +445,39 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         return format_outcome(entity_id, command, record)
 
     @tool
-    def turn_on_light(
+    def turn_on(
         entity_id: str, config: RunnableConfig, brightness_percent: int | None = None
     ) -> str:
-        """Turn a monitored light on, optionally at a brightness. The user must approve this.
+        """Turn a monitored light, plug or switch on, a light optionally at a brightness. The
+        user must approve this.
 
         Args:
-            entity_id: A monitored light's ID as list_lights prints it.
-            brightness_percent: Brightness from 1 to 100 percent; omit to keep the light's own.
+            entity_id: A monitored device's ID as list_monitored prints it.
+            brightness_percent: Brightness from 1 to 100 percent, for a light only; omit to keep
+                the light's own, and always omit it for a plug or switch.
         """
         command = LightOn(brightness_pct=brightness_percent)
         return _guard(lambda: send(entity_id, command, config))
 
     @tool
-    def turn_off_light(entity_id: str, config: RunnableConfig) -> str:
-        """Turn a monitored light off. The user must approve this.
+    def turn_off(entity_id: str, config: RunnableConfig) -> str:
+        """Turn a monitored light, plug or switch off. The user must approve this.
 
         Args:
-            entity_id: A monitored light's ID as list_lights prints it.
+            entity_id: A monitored device's ID as list_monitored prints it.
         """
         return _guard(lambda: send(entity_id, LightOff(), config))
 
     return [
-        list_lights,
+        list_monitored,
         get_usage,
         get_events,
         get_coverage,
         get_health,
         list_devices,
         refresh_discovery,
-        monitor_light,
+        monitor,
         stop_monitoring,
-        turn_on_light,
-        turn_off_light,
+        turn_on,
+        turn_off,
     ]

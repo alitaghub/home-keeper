@@ -12,34 +12,37 @@ nothing below runs.
 The agent reaches Home Keeper only through the public API, the same one the
 dashboard uses. It can:
 
-- list the lights, plugs and switches you monitor, with each one's kind
-  (`kind=light` or `kind=switch`) and current state
+- list the lights, plugs and switches you monitor (`list_monitored`), with each
+  one's kind (`kind=light` or `kind=switch`) and current state
 - report usage over a time range for lights, plugs and switches: on-time per
   day and per hour, switch-ons, and unknown time. Lights also get their average
   brightness; plugs and switches have none
 - show recorded changes, collection gaps and collector health
 - list discovered devices, with their kind, and refresh discovery
-- start or stop monitoring a light, plug or switch, after you approve it in the chat. You can
+- start or stop monitoring a light, plug or switch (`monitor`, `stop_monitoring`),
+  after you approve it in the chat. You can
   approve or reject the proposed change; a rejection changes nothing
-- turn a monitored light on, optionally at a brightness from 1 to 100 percent,
-  or off, after you approve it in the chat. This needs the `control` profile
+- turn a monitored light, plug or switch on or off (`turn_on`, `turn_off`),
+  after you approve it in the chat. A light can also take a brightness from 1
+  to 100 percent; a plug or switch cannot. This needs the `control` profile
   (see [control.md](control.md)). The agent reports what Home Keeper then
   observed: the change, no change within 5 seconds, a refusal from Home
   Assistant, or an unreachable controller. A rejection sends nothing
 
-The agent can suggest a light change inside an answer, but it proposes a
-command only after you ask for one or agree to its suggestion. Before you see
-the approval prompt, the agent checks the light and the control state itself.
-It shows no prompt, and says why, when light control is off, the light is not
-monitored (it offers to monitor it), the light is unavailable or has no known
-on/off state, the light is already in that state, or the brightness is outside
-1 to 100 percent. In Telegram, only people on the control allowlist can
-switch lights; see [Telegram light control](telegram.md#switch-lights).
+The agent can suggest a change inside an answer, but it proposes a command
+only after you ask for one or agree to its suggestion. Before you see the
+approval prompt, the agent checks the device and the control state itself.
+It shows no prompt, and says why, when light control is off, the device is not
+monitored (it offers to monitor it), the device is unavailable or has no known
+on/off state, the device is already in that state, the brightness is outside
+1 to 100 percent, or a brightness was asked for a plug or switch. In Telegram,
+only people on the control allowlist can switch lights, plugs and switches; see
+[Telegram device control](telegram.md#switch-lights-plugs-and-switches).
 
 It cannot:
 
 - see power or energy. Home Keeper does not record it. The agent says so.
-- reach Home Assistant. It sends light commands to the Home Keeper API, which
+- reach Home Assistant. It sends device commands to the Home Keeper API, which
   forwards them to the controller.
 - read the database. It sees only what the API returns.
 
@@ -126,13 +129,14 @@ credential never leave. [security.md](security.md) has the full boundary.
 - Is collection healthy? When did Home Assistant last answer?
 - Start monitoring the hallway light.
 - Turn the desk lamp off.
+- Turn on the kettle plug.
 - Set the reading light to 30 percent.
 
 ## Limits
 
 - Neither Aegra nor the chat page has authentication. Anyone who can reach
   port 2026 can read and write every thread and start the agent. With the
-  `control` profile, they can also propose and approve their own light
+  `control` profile, they can also propose and approve their own device
   commands. Both bind to `127.0.0.1` for that reason. Do not publish them on
   your network.
 - CORS only stops other websites from reading Aegra's answers. A page you visit
@@ -141,4 +145,4 @@ credential never leave. [security.md](security.md) has the full boundary.
 - Known Aegra issue
   [#468](https://github.com/ibbybuilds/aegra/issues/468): when you switch
   threads, the chat can show an approval prompt that belongs to another thread.
-  Check the proposed light before you approve.
+  Check the proposed device before you approve.
