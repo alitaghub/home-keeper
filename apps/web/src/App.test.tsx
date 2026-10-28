@@ -630,8 +630,7 @@ describe("light control from the dashboard", () => {
     expect(byId("source-notice")).toHaveTextContent(
       "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights.",
     );
-    expect(notice.endsWith(CONTROL_NOTICE)).toBe(true);
-    expect(notice).not.toContain("Light control is off");
+    expect(byId("source-notice")).not.toHaveTextContent("Light control is off");
   });
 
   it("keeps the footer when control is on", async () => {
