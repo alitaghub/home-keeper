@@ -3,8 +3,7 @@
 They copy only the fields the tools use, since the keeper is a separate app.
 """
 
-import os
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -206,10 +205,6 @@ class KeeperClient:
             headers={"X-Home-Keeper": "1"},
             timeout=10,
         )
-
-    @classmethod
-    def from_env(cls) -> Self:
-        return cls(os.environ.get("HOME_KEEPER_URL", "http://api:8000"))
 
     def request[T: BaseModel](
         self,

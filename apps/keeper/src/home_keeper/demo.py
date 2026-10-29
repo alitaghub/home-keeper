@@ -6,13 +6,11 @@ and they switch the synthetic home's lights and plug.
 
 import json
 import logging
-import os
 import secrets
 import time
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from threading import Lock, Thread
 from typing import Literal, TypedDict, overload
 
@@ -27,6 +25,7 @@ from home_keeper.models import (
     SelectionSnapshot,
     SwitchState,
 )
+from home_keeper.settings import ServiceSettings
 from home_keeper.tokens import load_token
 from home_keeper_light_command import (
     BRIGHTNESS_MAX,
@@ -40,6 +39,7 @@ from home_keeper_light_command import (
     brightness_value,
     forwarded_command,
 )
+from home_keeper_settings import SettingsError, load
 
 # The replay phase whose events are delivered twice.
 DUPLICATE_PHASE = 3
@@ -363,17 +363,20 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    # The demo has one fixed API host, not a user-supplied HTTP passthrough.
-    api_url = f"http://api:{int(os.environ.get('HOME_KEEPER_PORT', '8000'))}"
-    token_path = Path(os.environ.get("HOME_KEEPER_TOKEN_FILE", "/secrets/service-token"))
-    interval = int(os.environ.get("HOME_KEEPER_RECONCILIATION_SECONDS", "10"))
-    if interval < 1:
-        raise ValueError("Reconciliation interval must be positive")
-    while not token_path.exists():
+    try:
+        settings = load(ServiceSettings)
+    except SettingsError as error:
+        logging.error("Demo collector configuration invalid: %s", error)
+        raise SystemExit(1) from None
+    while not settings.token_file.exists():
         time.sleep(1)
-    token = load_token(token_path)
+    token = load_token(settings.token_file)
     with httpx.Client(
-        base_url=api_url, headers={"Authorization": f"Bearer {token}"}, timeout=5, trust_env=False
+        # The demo has one fixed API host, not a user-supplied HTTP passthrough.
+        base_url=f"http://api:{settings.port}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=5,
+        trust_env=False,
     ) as client:
         replay = DemoReplay()
         server = command_server(client, replay, token)
@@ -397,7 +400,7 @@ def main() -> None:
                     )
                 except httpx.HTTPError:
                     pass
-            time.sleep(interval)
+            time.sleep(settings.reconciliation_seconds)
 
 
 if __name__ == "__main__":

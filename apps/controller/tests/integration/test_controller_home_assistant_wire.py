@@ -1,7 +1,6 @@
 """Controller to Home Assistant over a real local websocket: the only calls it can make."""
 
 import json
-import os
 import socket
 import time
 from collections.abc import Generator
@@ -22,7 +21,9 @@ from home_keeper.control import ControllerUnreachable, HttpController
 from home_keeper_controller import home_assistant, server
 from home_keeper_controller.home_assistant import AUTH_CHECK_SECONDS, HomeAssistantLights
 from home_keeper_controller.server import backend, create_app
+from home_keeper_controller.settings import ControllerSettings
 from home_keeper_light_command import ForwardedCommand
+from home_keeper_settings import load
 
 HA_TOKEN = "synthetic-control-token"
 SERVICE_TOKEN = "synthetic-service-token"
@@ -323,7 +324,7 @@ def test_home_assistant_backend_built_from_the_environment_switches_the_light(
         monkeypatch.setenv("HOME_KEEPER_HA_URL", origin)
         monkeypatch.setenv("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", str(token_file))
         # As the controller's entry point does: the backend named by the environment.
-        lights = backend(os.environ["HOME_KEEPER_CONTROL_BACKEND"], SERVICE_TOKEN)
+        lights = backend(load(ControllerSettings), SERVICE_TOKEN)
         with TestClient(create_app(SERVICE_TOKEN, lights)) as client:
             response = client.post(
                 "/internal/command",
@@ -347,7 +348,7 @@ def test_replaced_control_token_switches_the_light_without_a_restart(
     with running(home) as origin:
         monkeypatch.setenv("HOME_KEEPER_HA_URL", origin)
         monkeypatch.setenv("HOME_KEEPER_HA_CONTROL_TOKEN_FILE", str(token_file))
-        lights = backend("home_assistant", SERVICE_TOKEN)
+        lights = backend(load(ControllerSettings), SERVICE_TOKEN)
         with pytest.raises(ControllerUnreachable):
             lights.send(light_command("light.desk", {"action": "off"}))
         assert [frames[0]["access_token"] for frames in home.connections] == [

@@ -1,14 +1,15 @@
 import os
 import secrets
+import sys
 from pathlib import Path
-from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import uvicorn
 
 from home_keeper.api import create_app
 from home_keeper.control import HttpController
+from home_keeper.settings import ApiSettings
 from home_keeper.tokens import load_token
+from home_keeper_settings import SettingsError, load
 
 
 def create_token(path: Path) -> str:
@@ -32,68 +33,32 @@ def local_authorities(port: int, hosts: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(f"{host}:{port}" for host in hosts)
 
 
-def parse_origin(variable: str, value: str) -> str | None:
-    """Parse an http(s) origin from the environment; empty means none is configured."""
-    if not value:
-        return None
-    error = ValueError(f"{variable} must be an http(s) origin")
-    parsed = urlsplit(value)
-    try:
-        _ = parsed.port  # Raises ValueError for an out-of-range or non-numeric port.
-    except ValueError:
-        raise error from None
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise error
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
-def parse_timezone(variable: str, value: str) -> ZoneInfo:
-    """Parse an IANA time zone name, such as Europe/Copenhagen, from the environment."""
-    try:
-        return ZoneInfo(value)
-    except (ZoneInfoNotFoundError, ValueError):
-        raise ValueError(f"{variable} must be an IANA time zone name") from None
-
-
 def main() -> None:
-    token = create_token(Path(os.environ.get("HOME_KEEPER_TOKEN_FILE", "/secrets/service-token")))
-    port = int(os.environ.get("HOME_KEEPER_PORT", "8000"))
+    try:
+        settings = load(ApiSettings)
+    except SettingsError as error:
+        sys.exit(f"Home Keeper configuration invalid: {error}")
+    token = create_token(settings.token_file)
+    port = settings.port
     hosts = local_authorities(port, ("127.0.0.1", "localhost", "api"))
-    # Control stays off until a controller at this origin sends heartbeats. Empty disables it.
-    controller_url = parse_origin(
-        "HOME_KEEPER_CONTROLLER_URL",
-        os.environ.get("HOME_KEEPER_CONTROLLER_URL", "http://controller:8080"),
-    )
     app = create_app(
-        db_path=Path(os.environ.get("HOME_KEEPER_DB", "/data/home.sqlite")),
+        db_path=settings.db,
         service_token=token,
-        source_id=os.environ.get("HOME_KEEPER_SOURCE_ID", "demo"),
-        home_assistant_url=parse_origin(
-            "HOME_KEEPER_HA_PUBLIC_URL", os.environ.get("HOME_KEEPER_HA_PUBLIC_URL", "")
-        ),
-        retention_days=int(os.environ.get("HOME_KEEPER_RETENTION_DAYS", "30")),
-        reconciliation_seconds=int(os.environ.get("HOME_KEEPER_RECONCILIATION_SECONDS", "10")),
-        timezone=parse_timezone(
-            "HOME_KEEPER_TIMEZONE", os.environ.get("HOME_KEEPER_TIMEZONE", "UTC")
-        ),
+        source_id=settings.source_id,
+        home_assistant_url=settings.ha_public_url,
+        retention_days=settings.retention_days,
+        reconciliation_seconds=settings.reconciliation_seconds,
+        timezone=settings.timezone,
         allowed_hosts=hosts,
         allowed_origins=tuple(
             f"http://{authority}"
             for authority in local_authorities(port, ("127.0.0.1", "localhost"))
         ),
-        controller=HttpController(controller_url, token) if controller_url else None,
+        controller=(
+            HttpController(settings.controller_url, token) if settings.controller_url else None
+        ),
     )
-    uvicorn.run(
-        app, host=os.environ.get("HOME_KEEPER_BIND", "127.0.0.1"), port=port, access_log=False
-    )
+    uvicorn.run(app, host=settings.bind, port=port, access_log=False)
 
 
 if __name__ == "__main__":

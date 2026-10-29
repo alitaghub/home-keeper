@@ -14,6 +14,8 @@ COPY apps/agent/pyproject.toml ./apps/agent/
 COPY apps/controller/pyproject.toml ./apps/controller/
 COPY packages/light-command/pyproject.toml ./packages/light-command/
 COPY packages/light-command/src ./packages/light-command/src
+COPY packages/settings/pyproject.toml ./packages/settings/
+COPY packages/settings/src ./packages/settings/src
 COPY apps/controller/src ./apps/controller/src
 RUN uv sync --locked --no-dev --no-editable --package home-keeper-controller
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1

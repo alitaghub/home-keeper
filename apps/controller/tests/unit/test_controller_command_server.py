@@ -7,8 +7,10 @@ from fastapi.testclient import TestClient
 from pydantic_core import to_jsonable_python
 
 from home_keeper.control import ControllerUnreachable
-from home_keeper_controller.server import backend, create_app
+from home_keeper_controller.server import create_app
+from home_keeper_controller.settings import ControllerSettings
 from home_keeper_light_command import ForwardedCommand
+from home_keeper_settings import SettingsError, load
 
 SERVICE_TOKEN = "synthetic-service-token"
 SERVICE = {"Authorization": f"Bearer {SERVICE_TOKEN}"}
@@ -161,6 +163,9 @@ def test_backend_refusal_and_failure_are_reported_distinctly() -> None:
     assert failing.sent == [VALID]
 
 
-def test_unknown_controller_backend_is_a_configuration_error() -> None:
-    with pytest.raises(ValueError, match="HOME_KEEPER_CONTROL_BACKEND"):
-        backend("passthrough", SERVICE_TOKEN)
+def test_unknown_controller_backend_is_a_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME_KEEPER_CONTROL_BACKEND", "passthrough")
+    with pytest.raises(SettingsError, match="HOME_KEEPER_CONTROL_BACKEND"):
+        load(ControllerSettings)

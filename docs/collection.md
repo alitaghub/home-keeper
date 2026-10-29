@@ -20,7 +20,9 @@ HOME_KEEPER_RECONCILIATION_SECONDS=30 docker compose up --build --wait
 ```
 
 For the demo, run `HOME_KEEPER_RECONCILIATION_SECONDS=30 docker compose -f compose.demo.yaml up --build --wait`.
-Use a positive interval in seconds. Freshness becomes stale after twice the interval
+Use a whole number of seconds from 1 to 3600. Each service checks its settings
+at startup. A wrong value stops it, and `docker compose logs` names the variable.
+Freshness becomes stale after twice the interval
 or a reported collector failure. Authentication, connection and certificate
 errors appear as safe status messages. A failed refresh retains the previous
 catalog marked stale. A missing selected entity gets its own collection gap while healthy selected lights

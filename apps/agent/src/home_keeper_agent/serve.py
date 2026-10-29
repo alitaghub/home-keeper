@@ -8,31 +8,11 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlsplit
+
+from home_keeper_agent.settings import AgentSettings
+from home_keeper_settings import SettingsError, load
 
 DEFAULT_CHAT_ORIGIN = "http://localhost:3000"
-
-
-def parse_origin(value: str) -> str:
-    """Return an http(s) origin such as http://localhost:3000, or raise ValueError."""
-    error = ValueError(f"CHAT_ORIGIN must be an http(s) origin without a path, got {value!r}")
-    try:
-        parts = urlsplit(value)
-        port = parts.port
-    except ValueError:
-        raise error from None
-    if (
-        parts.scheme not in ("http", "https")
-        or not parts.hostname
-        or parts.username is not None
-        or parts.password is not None
-        or parts.path not in ("", "/")
-        or parts.query
-        or parts.fragment
-    ):
-        raise error
-    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
-    return f"{parts.scheme}://{host}" + (f":{port}" if port is not None else "")
 
 
 def aegra_config(origin: str, graph_file: Path) -> dict[str, object]:
@@ -45,9 +25,9 @@ def aegra_config(origin: str, graph_file: Path) -> dict[str, object]:
 
 def main() -> None:
     try:
-        origin = parse_origin(os.environ.get("CHAT_ORIGIN", "").strip() or DEFAULT_CHAT_ORIGIN)
-    except ValueError as error:
-        sys.exit(str(error))
+        origin = load(AgentSettings).chat_origin or DEFAULT_CHAT_ORIGIN
+    except SettingsError as error:
+        sys.exit(f"Agent configuration invalid: {error}")
     config = Path(tempfile.gettempdir()) / "aegra.json"
     config.write_text(json.dumps(aegra_config(origin, Path(__file__).with_name("server.py"))))
     # `aegra serve` ignores an AEGRA_CONFIG outside the working directory; --config sets it.

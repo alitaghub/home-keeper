@@ -233,6 +233,7 @@ user IDs, setup, limits, and what goes through Telegram.
 | `apps/controller` | Optional light controller: the only code that calls Home Assistant services |
 | `apps/chat`     | Image recipe for the unmodified Agent Chat UI                      |
 | `packages/light-command` | Shared Python code: the fixed light command shapes |
+| `packages/settings` | Shared Python code: reads each service's environment into typed settings |
 | `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |
 | `docs`          | User and design docs                                               |
 

@@ -5,7 +5,6 @@ Aegra remains the only owner of conversations and tool execution.
 """
 
 import logging
-import os
 import secrets
 import signal
 import sqlite3
@@ -21,6 +20,7 @@ from uuid import uuid4
 import httpx
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     JsonValue,
@@ -31,6 +31,10 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from home_keeper_settings import SettingsError as InvalidSettings
+from home_keeper_settings import load
 
 CONFIGURATION_ERROR = (
     "Set TELEGRAM_BOT_TOKEN and a comma-separated TELEGRAM_ALLOWED_USER_IDS "
@@ -40,24 +44,31 @@ CONTROL_CONFIGURATION_ERROR = (
     "TELEGRAM_CONTROL_USER_IDS must be empty or comma-separated positive numeric user IDs "
     "that are also in TELEGRAM_ALLOWED_USER_IDS."
 )
-CONTROL_FIELD = "control_user_ids"
 # The keeper stores at most this many characters of a sender's name.
 DISPLAY_NAME_LIMIT = 256
 
 
-def _ids(value: str) -> list[str]:
-    return [part.strip() for part in value.split(",")]
+def _ids(value: object) -> object:
+    # Comma-separated, as in TELEGRAM_ALLOWED_USER_IDS=11,22. Blank means none.
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",")] if value.strip() else []
+    return value
+
+
+type UserIds = Annotated[frozenset[int], NoDecode, BeforeValidator(_ids)]
 
 
 class SettingsError(ValueError):
     """Fixed configuration diagnostic that never includes supplied values."""
 
 
-class Settings(BaseModel):
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="TELEGRAM_")
+
     bot_token: SecretStr
-    allowed_user_ids: frozenset[int] = Field(min_length=1)
+    allowed_user_ids: UserIds = Field(min_length=1)
     # Who may approve device commands; empty means nobody may switch devices from Telegram.
-    control_user_ids: frozenset[int] = frozenset()
+    control_user_ids: UserIds = frozenset()
     agent_url: str = "http://agent:2026"
     state_path: str = "/state/telegram.sqlite3"
     api_url: str = "https://api.telegram.org"
@@ -88,26 +99,10 @@ class Settings(BaseModel):
     @classmethod
     def from_env(cls) -> Self:
         try:
-            values: dict[str, object] = {
-                "bot_token": os.environ["TELEGRAM_BOT_TOKEN"],
-                "allowed_user_ids": _ids(os.environ["TELEGRAM_ALLOWED_USER_IDS"]),
-            }
-            control = os.environ.get("TELEGRAM_CONTROL_USER_IDS", "")
-            if control.strip():
-                values["control_user_ids"] = _ids(control)
-            for field, variable in (
-                ("agent_url", "TELEGRAM_AGENT_URL"),
-                ("state_path", "TELEGRAM_STATE_PATH"),
-                ("api_url", "TELEGRAM_API_URL"),
-            ):
-                if variable in os.environ:
-                    values[field] = os.environ[variable]
-            return cls.model_validate(values)
-        except ValidationError as error:
-            if all(issue["loc"][:1] == (CONTROL_FIELD,) for issue in error.errors()):
+            return load(cls)
+        except InvalidSettings as error:
+            if error.variables == ("TELEGRAM_CONTROL_USER_IDS",):
                 raise SettingsError(CONTROL_CONFIGURATION_ERROR) from None
-            raise SettingsError(CONFIGURATION_ERROR) from None
-        except (KeyError, ValueError):
             raise SettingsError(CONFIGURATION_ERROR) from None
 
 
