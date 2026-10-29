@@ -1,10 +1,6 @@
-"""The reader: the only keeper process that holds the Home Assistant owner token.
-
-It answers the API's reads over the internal network and keeps no state of its own: no
-loop, no database, no service calls and no event subscription. Only the projected catalog
-is cached, for up to CATALOG_SECONDS; state and history are read anew on every request.
-Run with `python -m home_keeper.reader_service`.
-"""
+"""The reader: the only keeper process that holds the Home Assistant owner token. It answers
+the API's reads over the internal network and caches only the projected catalog. Run with
+`python -m home_keeper.reader_service`."""
 
 import logging
 import secrets

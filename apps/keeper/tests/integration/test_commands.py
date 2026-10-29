@@ -1,9 +1,5 @@
 """Device commands through `Commands`, with a real store, a fake reader and a scripted
-controller whose steps run inside the send.
-
-Time is the test's: `now` is a settable clock and `sleep` moves it, so the confirmation
-reads after a send happen at known times and no test waits in real time.
-"""
+controller. `now` is a test clock that `sleep` moves, so no test waits in real time."""
 
 import threading
 from collections.abc import Callable
@@ -552,7 +548,6 @@ async def test_command_is_observed_when_home_assistant_shows_the_commanded_state
     house = ready(tmp_path, device)
     house.controller.steps.append(lambda: house.report(device, shown))
     record = recorded(await switch(house, device, action, TELEGRAM))
-    # No event ID: the state read is the evidence, and a record names no event.
     assert record.model_dump(mode="json", exclude={"id", "sent_at", "command"}) == {
         "entity_id": device.entity_id,
         "device_kind": device.kind,
@@ -579,12 +574,10 @@ async def test_reads_every_half_second_and_stops_at_the_five_second_deadline(
     house = ready(tmp_path, LIGHT)
     record = recorded(await switch(house, LIGHT, ON))
     assert record.outcome == "not_observed"
-    assert "event_id" not in record.model_dump()
 
     reads = house.confirmation_reads
     assert reads, "no state was read after the send"
     assert reads[0] <= POLL_SECONDS
-    # Today's loop polled every 0.1 s; the reader is asked every 0.5 s.
     gaps = [round(later - earlier, 6) for earlier, later in pairwise(reads)]
     assert gaps == [POLL_SECONDS] * (len(reads) - 1)
     assert WAIT_SECONDS - POLL_SECONDS <= reads[-1] <= WAIT_SECONDS

@@ -161,7 +161,7 @@ class Setup:
             elif self.token_accepted(self.control_token_file):
                 logging.info("Home Assistant already set up; stored tokens are valid")
             else:
-                # Control is optional: collection starts, and setup leaves the revocation alone.
+                # Control is optional: the reader starts, and setup leaves the revocation alone.
                 logging.warning(
                     "Home Assistant rejected the stored control token, so light control is off. "
                     "Delete the control token file to create a new one."

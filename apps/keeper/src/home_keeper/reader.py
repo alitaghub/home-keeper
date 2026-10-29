@@ -1,9 +1,5 @@
-"""The API's view of Home Assistant: the reader service, reached over internal HTTP.
-
-The reader alone holds the Home Assistant token. The API asks it for the catalog, the
-current state of selected devices, their history and reachability on each request, and keeps
-no copy.
-"""
+"""The API's view of Home Assistant: the reader service, reached over internal HTTP. The
+API asks it for the catalog, current states, history and reachability on each request."""
 
 from collections.abc import Sequence
 from datetime import datetime
