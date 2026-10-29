@@ -23,6 +23,27 @@
         },
         "source_entity_id": "light.desk",
         "time": "2026-10-12T09:59:30+00:00"
+      },
+      {
+        "device_kind": "light",
+        "entity_id": "bulb-a",
+        "id": "bulb-a@2026-10-12T09:59:20+00:00",
+        "new": {
+          "availability": "available",
+          "device_kind": "light",
+          "last_changed": "2026-10-12T09:59:20+00:00",
+          "last_updated": "2026-10-12T09:59:20+00:00",
+          "state": "off"
+        },
+        "old": {
+          "availability": "unavailable",
+          "device_kind": "light",
+          "last_changed": "2026-10-12T09:59:10+00:00",
+          "last_updated": "2026-10-12T09:59:10+00:00",
+          "state": "unavailable"
+        },
+        "source_entity_id": "light.desk",
+        "time": "2026-10-12T09:59:20+00:00"
       }
     ],
     "next_cursor": null

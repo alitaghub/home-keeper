@@ -1,22 +1,19 @@
-"""How long selected lights, plugs and switches were on, from stored evidence only.
+"""How long selected lights, plugs and switches were on, from Home Assistant's history.
 
-Time the evidence cannot vouch for is unknown, never on or off.
+Time the history cannot vouch for is unknown, never on or off.
 """
 
 from bisect import bisect_right
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from itertools import accumulate, pairwise
+from itertools import pairwise
 from zoneinfo import ZoneInfo
 
 from home_keeper.models import (
-    CoverageGap,
-    CurrentReading,
     DayUsage,
     DeviceKind,
     DeviceUsage,
-    EventRecord,
     LightPeriod,
     LightReading,
     LightStateValue,
@@ -26,7 +23,7 @@ from home_keeper.models import (
     UnknownInterval,
     UnknownReason,
 )
-from home_keeper.recorder import SnapshotRead, event_outranks_snapshot
+from home_keeper.reader import HistoryRow
 
 
 @dataclass(frozen=True)
@@ -34,13 +31,8 @@ class Evidence:
     """A state the device had from `at` until the next evidence."""
 
     at: datetime
-    # At equal times a recorded change wins over a snapshot.
-    rank: int
     state: LightStateValue
     brightness: int | None
-    received_at: datetime
-    # Snapshots only: Home Assistant's source time and the HTTP read, for the ingestion rule.
-    read: tuple[datetime, SnapshotRead] | None
 
 
 @dataclass(frozen=True)
@@ -49,76 +41,10 @@ class Known:
     brightness: int | None
 
 
-def instant(value: str) -> datetime:
-    return datetime.fromisoformat(value).astimezone(UTC)
-
-
-def reading_evidence(reading: CurrentReading) -> Evidence:
-    received = instant(reading.received_at)
+def row_evidence(row: HistoryRow) -> Evidence:
+    reading = row.reading
     brightness = reading.brightness if isinstance(reading, LightReading) else None
-    if reading.kind == "event":
-        return Evidence(instant(reading.event_time), 1, reading.state, brightness, received, None)
-    # A snapshot proves the state when it was read, so a later snapshot never rewrites an
-    # earlier window, whatever source time Home Assistant gave it.
-    started = instant(reading.collection_started_at) if reading.collection_started_at else received
-    source = instant(reading.last_updated) if reading.last_updated else received
-    read = (source, SnapshotRead(started, received))
-    return Evidence(received, 0, reading.state, brightness, received, read)
-
-
-def event_evidence(event: EventRecord) -> Evidence:
-    # A change without a new state means Home Assistant dropped the entity.
-    return Evidence(
-        instant(event.event_time),
-        1,
-        event.new.state if event.new else "unknown",
-        event.new.brightness if isinstance(event.new, LightReading) else None,
-        instant(event.received_at),
-        None,
-    )
-
-
-def timeline(evidence: Sequence[Evidence]) -> list[Evidence]:
-    """Order evidence by placement, dropping snapshots ingestion would not let replace an event."""
-    kept: list[Evidence] = []
-    for item in sorted(evidence, key=lambda entry: (entry.at, entry.rank)):
-        previous = kept[-1] if kept else None
-        if (
-            item.read is not None
-            and previous is not None
-            and previous.read is None
-            and event_outranks_snapshot(previous.received_at, previous.at, *item.read)
-        ):
-            continue
-        kept.append(item)
-    return kept
-
-
-def device_gaps(
-    entity_id: str, gaps: Sequence[CoverageGap], end: datetime
-) -> list[tuple[datetime, datetime]]:
-    """Gap windows for one device, from last confirmation to recovery (or `end` while open)."""
-    windows = (
-        (
-            instant(gap.last_confirmed_at or gap.detected_at),
-            instant(gap.recovered_at) if gap.recovered_at else end,
-        )
-        for gap in gaps
-        # An empty scope means the whole collection stopped, as /api/coverage reads it.
-        if not gap.entity_ids or entity_id in gap.entity_ids
-    )
-    return [(gap_start, gap_end) for gap_start, gap_end in windows if gap_start < gap_end]
-
-
-def merged(windows: Sequence[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
-    """The time covered by any of the windows, as sorted, non-overlapping windows."""
-    covered: list[tuple[datetime, datetime]] = []
-    for gap_start, gap_end in sorted(windows):
-        if covered and gap_start <= covered[-1][1]:
-            covered[-1] = (covered[-1][0], max(covered[-1][1], gap_end))
-        else:
-            covered.append((gap_start, gap_end))
-    return covered
+    return Evidence(row.updated_at, reading.state, brightness)
 
 
 def local_days(
@@ -170,61 +96,26 @@ def device_usage(
     end: datetime,
     now: datetime,
     timezone: ZoneInfo,
-    retained_since: datetime,
-    readings: Sequence[CurrentReading],
-    events: Sequence[EventRecord],
-    gaps: Sequence[CoverageGap],
+    rows: Sequence[HistoryRow],
 ) -> DeviceUsage:
-    """Usage of one device from its own readings and events; gaps are filtered by their scope.
+    """Usage of one device from its Home Assistant history rows, oldest first. The first row
+    may be the state at `start`.
 
     Plugs and switches get the same numbers as lights, without brightness."""
-    evidence = timeline(
-        [reading_evidence(reading) for reading in readings]
-        + [event_evidence(event) for event in events]
-    )
-    keys = [(item.at, item.rank) for item in evidence]
-    own_gaps = device_gaps(entity_id, gaps, end)
-    windows = merged(own_gaps)
-    gap_starts = [gap_start for gap_start, _ in windows]
-    # Each gap needs evidence placed after its own start, so a recovery that resolved one gap
-    # cannot resolve a later one it touches. By end time: the latest start of any ended gap.
-    by_end = sorted(own_gaps, key=lambda window: window[1])
-    gap_ends = [gap_end for _, gap_end in by_end]
-    latest_starts = list(accumulate((gap_start for gap_start, _ in by_end), max))
+    evidence = sorted((row_evidence(row) for row in rows), key=lambda item: item.at)
+    moments = [item.at for item in evidence]
 
     def status(moment: datetime) -> Known | UnknownReason:
-        # A gap wins over the retention cutoff and the future: collection was known to be down.
-        covering = bisect_right(gap_starts, moment) - 1
-        if covering >= 0 and moment < windows[covering][1]:
-            return "gap"
-        if moment < retained_since or moment >= now:
-            return "no_evidence"
-        ended = bisect_right(gap_ends, moment) - 1
-        resumed = latest_starts[ended] if ended >= 0 else None
-        index = bisect_right(keys, (moment, 1)) - 1
-        # Before a device's first record, no gap hid a state it had.
-        if index < 0:
-            return "no_evidence"
-        # After a gap, only evidence placed after it began says what the device did.
-        if resumed is not None and evidence[index].at <= resumed:
-            return "gap"
+        index = bisect_right(moments, moment) - 1
+        if moment >= now or index < 0:
+            return "no_history"
         item = evidence[index]
         if item.state not in ("on", "off"):
             return "unavailable"
         return Known(item.state == "on", item.brightness)
 
     boundaries = sorted(
-        {start, end}
-        | {
-            moment
-            for moment in (
-                retained_since,
-                now,
-                *(item.at for item in evidence),
-                *(edge for window in windows for edge in window),
-            )
-            if start < moment < end
-        }
+        {start, end} | {moment for moment in (now, *moments) if start < moment < end}
     )
     days = {day: [0.0, 0.0] for day in local_dates(start, end, timezone)}
     hours = [0.0] * 24
@@ -238,7 +129,7 @@ def device_usage(
             state = "on" if current.on else "off"
             brightness = current.brightness if current.on else None
             last = periods[-1] if periods else None
-            # A snapshot that confirms the same state continues the period.
+            # A row that repeats the same state continues the period.
             if (
                 last
                 and last.end == segment_start.isoformat()
@@ -278,15 +169,12 @@ def device_usage(
                 )
             )
 
-    # Only observed off-to-on changes count; none are inferred at the range start or a gap.
+    # Only recorded off-to-on changes count; none is inferred at the range start. A change at
+    # exactly `start` counts here and not in the window that ends there.
     switch_ons = sum(
         1
-        for event in events
-        if start <= instant(event.event_time) < end
-        and event.old is not None
-        and event.new is not None
-        and event.old.state == "off"
-        and event.new.state == "on"
+        for old, new in pairwise(evidence)
+        if start <= new.at < end and old.state == "off" and new.state == "on"
     )
     day_usage = [
         DayUsage(date=day.isoformat(), on_seconds=on, unknown_seconds=unknown)

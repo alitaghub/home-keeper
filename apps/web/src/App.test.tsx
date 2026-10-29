@@ -1593,7 +1593,7 @@ describe("device history", () => {
     Date.parse(call?.url.searchParams.get("end") ?? "") -
     Date.parse(call?.url.searchParams.get("start") ?? "");
 
-  it("draws each card's last 24 hours from the recorded periods", async () => {
+  it("draws each card's last 24 hours from the usage periods", async () => {
     const { api } = renderDashboard({
       "GET /api/monitored": monitored,
       "GET /api/usage": fixtures.usage,
@@ -1609,14 +1609,18 @@ describe("device history", () => {
     expect(call?.url.searchParams.getAll("entity_id")).toEqual([]);
   });
 
-  it("hatches gaps and unavailable time but leaves time before any record blank", async () => {
+  it("hatches unavailable time but leaves time without history blank", async () => {
     const unknownIntervals = [
       {
         start: "2026-10-11T10:00:00+00:00",
         end: "2026-10-11T10:30:00+00:00",
-        reason: "no_evidence",
+        reason: "no_history",
       },
-      { start: "2026-10-11T12:00:00+00:00", end: "2026-10-11T12:30:00+00:00", reason: "gap" },
+      {
+        start: "2026-10-11T12:00:00+00:00",
+        end: "2026-10-11T12:30:00+00:00",
+        reason: "unavailable",
+      },
       {
         start: "2026-10-11T13:00:00+00:00",
         end: "2026-10-11T13:30:00+00:00",

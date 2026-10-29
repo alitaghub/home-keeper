@@ -533,7 +533,9 @@ class MonitoredEntities(WireModel):
     entities: list[MonitoredEntity]
 
 
-UnknownReason = Literal["gap", "no_evidence", "unavailable"]
+# no_history: Home Assistant has no row for the time. unavailable: it reported the device
+# `unavailable` or `unknown`.
+UnknownReason = Literal["no_history", "unavailable"]
 
 
 class UnknownInterval(WireModel):
@@ -593,7 +595,6 @@ class UsageReport(WireModel):
     start: Timestamp
     end: Timestamp
     timezone: str
-    retained_since: Timestamp
     devices: list[DeviceUsage]
 
 

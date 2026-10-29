@@ -48,7 +48,9 @@ class Monitored(Wire):
 class UnknownInterval(Wire):
     start: str
     end: str
-    reason: str
+    # no_history: Home Assistant has no history for the time. unavailable: it reported the
+    # device unavailable or unknown.
+    reason: Literal["no_history", "unavailable"]
 
 
 class DayUsage(Wire):
@@ -85,7 +87,6 @@ class Usage(Wire):
     start: str
     end: str
     timezone: str
-    retained_since: str
     devices: list[DeviceUsage]
 
 

@@ -149,7 +149,9 @@ def _device_usage(device: DeviceUsage) -> list[str]:
 def format_usage(usage: Usage) -> str:
     lines = [
         f"Usage from {usage.start} to {usage.end}, days and hours in {usage.timezone}, "
-        f"data retained since {usage.retained_since}. Unknown time is neither on nor off."
+        "from Home Assistant's history. Unknown time is neither on nor off: no_history is time "
+        "Home Assistant has no history for, unavailable is time it reported the device "
+        "unavailable."
     ]
     if not usage.devices:
         lines.append("No monitored lights, plugs or switches match this request.")

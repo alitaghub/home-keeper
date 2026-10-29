@@ -219,7 +219,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Usage */
+        /**
+         * Usage
+         * @description On-time, switch-ons and brightness of selected devices in `[start, end)`, from
+         *     Home Assistant's history.
+         */
         get: operations["usage_api_usage_get"];
         put?: never;
         post?: never;
@@ -950,7 +954,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "gap" | "no_evidence" | "unavailable";
+            reason: "no_history" | "unavailable";
             /**
              * Start
              * Format: date-time
@@ -976,11 +980,6 @@ export interface components {
              * Format: date-time
              */
             end: string;
-            /**
-             * Retained Since
-             * Format: date-time
-             */
-            retained_since: string;
             /**
              * Start
              * Format: date-time
@@ -1399,6 +1398,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };

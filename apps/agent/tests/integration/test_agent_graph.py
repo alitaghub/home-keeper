@@ -85,7 +85,7 @@ def test_scripted_tool_calls_reach_the_keeper_and_the_final_messages() -> None:
     }
     assert "bulb-a" in results["call-lights"]
     assert "healthy" in results["call-health"]
-    assert "no_evidence" in results["call-usage"]
+    assert "no_history" in results["call-usage"]
     assert state["messages"][-1].text == "You watch two lights; collection is healthy."
 
 

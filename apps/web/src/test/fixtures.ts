@@ -348,12 +348,11 @@ export const emptyCommands = commandsPage([]);
 const hourly = (hour: number, seconds: number) =>
   Array.from({ length: 24 }, (_, index) => (index === hour ? seconds : 0));
 
-/** The last day's usage: the desk lamp on 1 h at 75%, with a 30-minute gap; the plug on 2 h. */
+/** The last day's usage: the desk lamp on 1 h at 75%, unavailable for 30 minutes; the plug on 2 h. */
 export const usage = {
   start: "2026-10-11T10:00:00+00:00",
   end: "2026-10-12T10:00:00+00:00",
   timezone: "UTC",
-  retained_since: "2026-09-12T10:00:00+00:00",
   devices: [
     {
       device_kind: "light",
@@ -368,7 +367,11 @@ export const usage = {
       ],
       hours: hourly(10, 3600),
       unknown_intervals: [
-        { start: "2026-10-11T12:00:00+00:00", end: "2026-10-11T12:30:00+00:00", reason: "gap" },
+        {
+          start: "2026-10-11T12:00:00+00:00",
+          end: "2026-10-11T12:30:00+00:00",
+          reason: "unavailable",
+        },
       ],
       periods: [
         {

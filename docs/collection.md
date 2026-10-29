@@ -121,40 +121,29 @@ API service; an unknown name stops the API at startup:
 HOME_KEEPER_TIMEZONE=Europe/Copenhagen docker compose up --build --wait
 ```
 
-The numbers only count what the evidence shows:
+The numbers come from Home Assistant's recorded history and only count what it
+shows. If Home Assistant cannot be read, the endpoint answers 503 with a safe
+error.
 
-- A snapshot counts from the moment it was read, and a change from the moment
-  Home Assistant fired it. A later snapshot never rewrites an earlier stretch.
-
-  If Home Assistant's clock runs ahead of the keeper's, a snapshot can say a
-  light last changed after the moment it was read. Usage still counts that
-  snapshot from when it was read, but the current state keeps it and ignores
-  changes stamped earlier. Until delayed changes arrive, the usage report and
-  the current state can disagree about that light. They agree again once the
-  change matching the snapshot, a newer change, or a later snapshot is
-  recorded. If that change was lost, they disagree until the light changes
-  again or a new snapshot is read. Keep both clocks in sync with NTP to avoid
-  this.
-- A light on before `start` counts from `start`. Only recorded off-to-on
-  changes count as switch-ons.
-- Collection gaps count as neither on nor off. After recovery, time stays
-  unknown, as part of the gap, until a new snapshot or change shows the state.
-- Time when Home Assistant reports a light as `unavailable` or `unknown` is
-  unknown too, never on or off.
-- Time before a light's first evidence, or before the retention cutoff, is
-  unknown. Outside a gap its reason is `no_evidence`, even after an earlier gap
-  has recovered: a device with no record yet had no state for the gap to hide.
-- Each light lists its `unknown_intervals`, with reason `gap`, `unavailable` or
-  `no_evidence`.
-- Each device also lists its `periods`: the stretches the evidence shows it on
+- Each history row counts from the moment Home Assistant updated it until the
+  next row. A light on before `start` counts from `start`.
+- Only recorded off-to-on changes count as switch-ons. A switch-on at exactly
+  `start` counts in that window and not in the window that ends there.
+- Time before a device's first row in the window, and time after now, is
+  unknown with reason `no_history`. A selected device with no history in the
+  window stays in the report with the whole window unknown.
+- Time when Home Assistant reports a device as `unavailable` or `unknown` is
+  unknown with reason `unavailable`.
+- Unknown time counts as neither on nor off. Each device lists its
+  `unknown_intervals`.
+- Each device also lists its `periods`: the stretches the history shows it on
   or off, in time order. A light's period carries its `brightness` (0–255, or
   null when Home Assistant did not report one, and always null while off). A
   plug's or switch's period has no brightness. Together, `periods` and
-  `unknown_intervals` cover the whole range without overlap. A snapshot that
-  confirms the same state does not start a new period.
+  `unknown_intervals` cover the whole range without overlap. A row that repeats
+  the same state does not start a new period.
 
-Selection history is not recorded. If you remove a light and select it again
-later, evidence from before the removal can fill the time it was not selected.
+How far back usage can go depends on Home Assistant's recorder settings.
 
 ### What Home Assistant can and cannot tell us
 

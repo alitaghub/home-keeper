@@ -309,11 +309,50 @@ def test_usage_keeps_unknown_time_and_its_reasons() -> None:
 
     result = call(keeper.tools(), "get_usage", RANGE)
 
-    # bulb-a has 40 s unknown: no evidence until 09:59:30, then a collection gap.
-    assert "unknown" in result.lower()
-    assert re.search(r"(?<![\d.])40(\.0+)?(?![\d.])", result), result
-    for text in ("09:59:30", "no_evidence", "gap"):
+    # bulb-a has 20 s unknown: no history until 09:59:10, then 10 s unavailable.
+    assert re.search(r"unknown 20(\.0+)?s", result), result
+    for text in ("09:59:10", "no_history", "unavailable"):
         assert text in result
+
+
+def test_usage_names_time_without_history_and_unavailable_time_and_no_retention() -> None:
+    hours = [0.0] * 24
+    hours[9] = 30.0
+    usage = {
+        "start": START,
+        "end": END,
+        "timezone": "UTC",
+        "devices": [
+            {
+                "device_kind": "light",
+                "entity_id": "bulb-a",
+                "on_seconds": 30.0,
+                "unknown_seconds": 40.0,
+                "switch_ons": 1,
+                "average_brightness": None,
+                "days": [{"date": "2026-10-12", "on_seconds": 30.0, "unknown_seconds": 40.0}],
+                "hours": hours,
+                "unknown_intervals": [
+                    {"start": START, "end": "2026-10-12T09:59:25+00:00", "reason": "no_history"},
+                    {
+                        "start": "2026-10-12T09:59:25+00:00",
+                        "end": "2026-10-12T09:59:40+00:00",
+                        "reason": "unavailable",
+                    },
+                ],
+            }
+        ],
+    }
+    keeper = FakeKeeper({"/api/usage": (200, usage)})
+
+    result = call(keeper.tools(), "get_usage", RANGE)
+
+    assert not result.startswith("Keeper error:"), result
+    assert "09:59:25" in result, result
+    assert "no_history" in result, result
+    assert "unavailable" in result, result
+    # Usage reaches as far back as Home Assistant's recorder; Home Keeper keeps no copy.
+    assert "retained" not in result.lower(), result
 
 
 @pytest.mark.parametrize(
@@ -427,7 +466,7 @@ def test_usage_gives_a_switch_its_numbers_without_brightness_and_a_light_keeps_i
         "switch_ons": 11,
         "days": [{"date": "2026-10-11", "on_seconds": 46.0, "unknown_seconds": 31.0}],
         "hours": hours,
-        "unknown_intervals": [{"start": START, "end": END, "reason": "gap"}],
+        "unknown_intervals": [{"start": START, "end": END, "reason": "no_history"}],
     }
     usage["devices"] = [light, plug]
     keeper = FakeKeeper({"/api/usage": (status, usage)})
@@ -489,7 +528,7 @@ def test_usage_keeps_fractional_numbers_unrounded() -> None:
         days=[{"date": "2026-10-12", "on_seconds": 20.5, "unknown_seconds": 0.5}],
         hours=hours,
         unknown_intervals=[
-            {"start": "2026-10-12T10:00:09.500000+00:00", "end": END, "reason": "gap"}
+            {"start": "2026-10-12T10:00:09.500000+00:00", "end": END, "reason": "unavailable"}
         ],
     )
     keeper = FakeKeeper({"/api/usage": (200, usage)})

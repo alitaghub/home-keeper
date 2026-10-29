@@ -24,7 +24,6 @@ from support.api import (
     TOKEN,
     Payload,
     catalog_reader,
-    event,
     observation,
     select,
 )
@@ -111,24 +110,18 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
         revision = select(client, "bulb-b")
         client.post("/internal/health", json=health(clock[0]), headers=AUTH)
         client.post("/internal/baselines", json=observation(revision), headers=AUTH)
-        # Home Assistant's recorder holds bulb-a off, then the three changes below.
+        # Home Assistant's recorder holds bulb-a unavailable, then off, then the three changes
+        # below. Its history starts 10 s after the usage window does.
+        reader.record(
+            "bulb-a", history_row(DESK, NOW - timedelta(seconds=50), {"state": "unavailable"})
+        )
         reader.record("bulb-a", history_row(DESK, NOW - timedelta(seconds=40), {"state": "off"}))
-        for index, (old, new) in enumerate([("off", "on"), ("on", "off"), ("off", "on")], start=1):
+        for index, new in enumerate(["on", "off", "on"], start=1):
             at = NOW - timedelta(seconds=40 - 10 * index)
             state: Payload = (
                 {"state": new, "brightness": 50 * index} if new == "on" else {"state": new}
             )
             reader.record("bulb-a", history_row(DESK, at, state))
-            # Usage still reads the collector's recorded events.
-            payload = event(
-                revision,
-                identity=f"change-{index}",
-                event_time=at.isoformat(),
-                received_at=(at + timedelta(seconds=3)).isoformat(),
-                old={"state": old},
-                new=state,
-            )
-            assert client.post("/internal/events", json=payload, headers=AUTH).is_success
 
         # A whole-home gap that recovers with a snapshot.
         clock[0] = NOW + timedelta(seconds=5)
@@ -175,7 +168,8 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
         result["coverage"] = record(client.get("/api/coverage"))
         result["health"] = record(client.get("/api/health"))
         result["monitored"] = record(client.get("/api/monitored"))
-        # Covers the events, the recovered whole-home gap and the open bulb-a gap above.
+        # bulb-a: no history, then unavailable, then the changes. bulb-b, gone from Home
+        # Assistant, has no history.
         usage = usage_range(NOW - timedelta(minutes=1), clock[0])
         result["usage"] = record(client.get("/api/usage", params=usage))
 
@@ -212,6 +206,9 @@ def unreachable_responses(tmp_path: Path) -> dict[str, Recorded]:
                 client.put("/api/selection/room", json={"selected": True}, headers=BROWSER)
             ),
             "events_unreachable": record(client.get("/api/events")),
+            "usage_unreachable": record(
+                client.get("/api/usage", params=usage_range(NOW - timedelta(hours=1), NOW))
+            ),
             "deselect_unreachable": record(
                 client.put("/api/selection/bulb-b", json={"selected": False}, headers=BROWSER)
             ),

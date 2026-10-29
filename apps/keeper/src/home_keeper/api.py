@@ -31,11 +31,9 @@ from home_keeper.models import (
     Coverage,
     CoverageGap,
     CoverageReport,
-    CurrentReading,
     DeviceKind,
     DeviceObservation,
     DiscoveryRefresh,
-    EventRecord,
     EventsPage,
     Health,
     HealthPending,
@@ -54,7 +52,7 @@ from home_keeper.models import (
 from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
 from home_keeper.reader import Reader, ReaderUnavailable
 from home_keeper.recorder import Recorder, Rejected, update_current
-from home_keeper.store import Store, baseline_record, current_reading
+from home_keeper.store import Store, baseline_record
 from home_keeper.usage import device_usage
 
 UTC_ZONE = ZoneInfo("UTC")
@@ -495,28 +493,28 @@ def create_app(
                 outside_recorded_windows="unknown",
             )
 
-    @app.get("/api/usage", response_model=UsageReport)
+    @app.get("/api/usage", response_model=UsageReport, responses=needs_home_assistant)
     def usage(
         *,
         start: datetime,
         end: datetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
     ):
+        """On-time, switch-ons and brightness of selected devices in `[start, end)`, from
+        Home Assistant's history."""
         # A far-past offset can overflow the conversion to UTC.
         try:
             start = to_utc(start)
             end = to_utc(end)
+            # The row before `start` is the state at `start` and the predecessor of a change
+            # at exactly `start`.
+            history_start = start - BEFORE_START
         except (ValueError, OverflowError):
             raise HTTPException(422, "Invalid usage range") from None
         # Splitting by local day looks one day past `end`, which must stay a valid date.
         if start > end or end - start > timedelta(days=366) or end.year >= MAXYEAR:
             raise HTTPException(422, "Invalid usage range")
-        cutoff = retention_cutoff()
-        with store.transaction() as db:
-            # An expired heartbeat becomes a recorded gap before coverage is read.
-            get_health(db)
-        # A deferred read sees one consistent state. It only copies raw rows; parsing and
-        # computing happen after it closes. The store runs in WAL mode, so writers continue.
+        current = now().astimezone(UTC)
         with store.transaction("DEFERRED") as db:
             selected = store.selection(db).entity_ids
             # Unselected IDs are left out rather than reported as missing.
@@ -524,85 +522,34 @@ def create_app(
             stored_kinds: dict[str, DeviceKind | None] = {
                 device: Monitoring.device(db, device).kind for device in devices
             }
-            scope = ",".join("?" * len(devices))
-            # Evidence inside the window, plus each device's latest evidence before it.
-            snapshot_rows: list[sqlite3.Row] = db.execute(
-                # Only placeholders are interpolated; values are bound parameters.
-                "SELECT entity_id, data FROM baselines WHERE persisted_at>=? "  # noqa: S608 -- placeholders only
-                "AND julianday(json_extract(data, '$.received_at')) <= julianday(?) "
-                f"AND entity_id IN ({scope})",
-                (max(cutoff, start.isoformat()), end.isoformat(), *devices),
-            ).fetchall()
-            event_rows: list[sqlite3.Row] = db.execute(
-                "SELECT entity_id, data FROM events WHERE persisted_at>=? AND event_time>=? "  # noqa: S608 -- placeholders only
-                f"AND event_time<=? AND entity_id IN ({scope})",
-                (cutoff, start.isoformat(), end.isoformat(), *devices),
-            ).fetchall()
-            current_rows: list[sqlite3.Row] = []
-            for device in devices:
-                # Snapshots are stored in receipt order, so the newest persisted is the latest read.
-                snapshot_rows += db.execute(
-                    "SELECT entity_id, data FROM baselines WHERE entity_id=? AND persisted_at>=? "
-                    "AND persisted_at<? ORDER BY persisted_at DESC, rowid DESC LIMIT 1",
-                    (device, cutoff, start.isoformat()),
-                ).fetchall()
-                event_rows += db.execute(
-                    "SELECT entity_id, data FROM events WHERE entity_id=? AND persisted_at>=? "
-                    "AND event_time<? ORDER BY event_time DESC, id DESC LIMIT 1",
-                    (device, cutoff, start.isoformat()),
-                ).fetchall()
-                # The cache keeps a steady device's state after its only snapshot expires.
-                current_rows += db.execute(
-                    "SELECT entity_id, data FROM current_state WHERE entity_id=?", (device,)
-                ).fetchall()
-            # Every retained gap: one that recovered before the window still leaves the light
-            # unknown until new evidence arrives. Gaps are few, bounded by retention.
-            # Also each scope's latest gap even when it has expired: cached state from before it
-            # must not come back as known once the gap leaves retention.
-            gap_rows: list[sqlite3.Row] = db.execute(
-                "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=? "
-                "OR recovered_at=(SELECT MAX(recovered_at) FROM coverage AS latest "
-                "WHERE latest.scope=coverage.scope)",
-                (cutoff,),
-            ).fetchall()
-        snapshots = [(row[0], current_reading.validate_json(row[1])) for row in snapshot_rows]
-        snapshots += [(row[0], current_reading.validate_json(row[1])) for row in current_rows]
-        changes = [(row[0], EventRecord.model_validate_json(row[1])) for row in event_rows]
-        readings: dict[str, list[CurrentReading]] = {device: [] for device in devices}
-        for entity, reading in snapshots:
-            if entity in readings:
-                readings[entity].append(reading)
-        events: dict[str, list[EventRecord]] = {device: [] for device in devices}
-        for entity, event in changes:
-            if entity in events:
-                events[entity].append(event)
+        # Home Assistant has no history after now.
+        history_end = min(end, current)
+        history = (
+            reader.history(devices, history_start, history_end)
+            if devices and history_start < history_end
+            else {}
+        )
 
         def kind_of(device: str) -> DeviceKind:
-            # A device no stored kind names is still known by the readings in the window.
+            # A device no stored kind names is still known by its rows.
             if stored := stored_kinds[device]:
                 return stored
-            evidence = [*readings[device], *events[device]]
-            return "switch" if any(value.device_kind == "switch" for value in evidence) else "light"
+            rows = history.get(device, [])
+            return "switch" if any(row.reading.device_kind == "switch" for row in rows) else "light"
 
-        gaps = [CoverageGap.model_validate_json(row[0]) for row in gap_rows]
-        retained_since = datetime.fromisoformat(cutoff)
         return UsageReport(
             start=start.isoformat(),
             end=end.isoformat(),
             timezone=timezone.key,
-            retained_since=cutoff,
             devices=[
                 device_usage(
                     device,
                     kind_of(device),
                     start=start,
                     end=end,
-                    now=now().astimezone(UTC),
+                    now=current,
                     timezone=timezone,
-                    retained_since=retained_since,
-                    readings=readings[device],
-                    events=events[device],
-                    gaps=gaps,
+                    rows=history.get(device, []),
                 )
                 for device in devices
             ],

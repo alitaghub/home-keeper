@@ -204,10 +204,6 @@ ROUTES: dict[str, tuple[str, dict[str, str]]] = {
     "catalog": ("/api/catalog", {}),
     "monitored": ("/api/monitored", {}),
     "commands": ("/api/commands", {}),
-    "usage": (
-        "/api/usage",
-        {"start": (NOW - timedelta(hours=1)).isoformat(), "end": STARTED.isoformat()},
-    ),
 }
 
 type Contents = dict[str, list[tuple[object, ...]]]
@@ -317,12 +313,10 @@ def test_a_migrated_database_reads_back_as_before_with_every_kind_stored(
             for name, (route, params) in ROUTES.items()
         }
 
-    # The base response has no usage periods, so the comparison drops that additive field.
-    for device in bodies["usage"]["devices"]:
-        assert device.pop("periods") is not None
     before = json.loads(BEFORE.read_text())
-    # `/api/events` now reads Home Assistant's history; the events table is checked below.
-    del before["events"]
+    # `/api/events` and `/api/usage` now read Home Assistant's history; the events table is
+    # checked below.
+    del before["events"], before["usage"]
     assert without_changed_fields(bodies) == without_changed_fields(before)
     assert not SIDE_TABLES & set(contents(path)), "the side tables must be gone"
     assert metadata(path, "schema_version") is not None
