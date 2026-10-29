@@ -100,12 +100,9 @@ def use_transport(client: HomeAssistantConnector, handler: Handler) -> None:
 
 
 class StateServer:
-    """Answers `GET /api/states/{entity_id}` from `states`, 404 for any other entity, and
-    Home Assistant's reachability check `GET /api/` with `api_status`.
-
-    `reads` lists each requested entity id in order; `requests` lists every request as
-    (method, path).
-    """
+    """Answers `GET /api/states` and `GET /api/states/{entity_id}` from `states`, and
+    `GET /api/` with `api_status`. `reads` lists each single-entity read in order;
+    `requests` lists every request as (method, path)."""
 
     def __init__(self, states: Iterable[Frame] = ()) -> None:
         self.states = {state["entity_id"]: state for state in states}
@@ -119,6 +116,8 @@ class StateServer:
             if self.api_status != 200:
                 return httpx.Response(self.api_status, json={"message": "Unauthorized"})
             return httpx.Response(200, json={"message": "API running."})
+        if request.url.path == "/api/states":
+            return httpx.Response(200, json=list(self.states.values()))
         entity_id = request.url.path.removeprefix("/api/states/")
         self.reads.append(entity_id)
         if entity_id not in self.states:

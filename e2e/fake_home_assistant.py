@@ -37,7 +37,7 @@ REGISTRY: dict[str, list[dict[str, object]]] = {
         }
     ],
 }
-# light.fixture as `GET /api/states/light.fixture` reports it now.
+# light.fixture as `GET /api/states` reports it now.
 light: dict[str, Any] = {"entity_id": "light.fixture"}
 # light.fixture's recorder rows, oldest first, in the compressed form of
 # `history/history_during_period`: Unix-second times, `lu` always, `lc` left out when it
@@ -92,18 +92,22 @@ def http_response(_connection: ServerConnection, request: Request) -> Response |
             return Response(401, "Unauthorized", Headers(), b"")
         body = json.dumps({"message": "API running."}).encode()
         return Response(200, "OK", Headers({"Content-Type": "application/json"}), body)
-    if request.path.startswith("/api/states/"):
+    if request.path.startswith("/api/states"):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return Response(401, "Unauthorized", Headers(), b"")
-        if request.path == "/api/states/light.fixture":
+        # A room light: discovery reads its group markers and leaves it unsupported.
+        room = {
+            "entity_id": "light.other",
+            "state": "off",
+            "attributes": {"is_hue_group": True, "entity_id": ["light.fixture"]},
+        }
+        data: object
+        if request.path == "/api/states":
+            data = [light, room]
+        elif request.path == "/api/states/light.fixture":
             data = light
         elif request.path == "/api/states/light.other":
-            # A room light: discovery reads its group markers and leaves it unsupported.
-            data = {
-                "entity_id": "light.other",
-                "state": "off",
-                "attributes": {"is_hue_group": True, "entity_id": ["light.fixture"]},
-            }
+            data = room
         else:
             return Response(404, "Not Found", Headers(), b"")
         return Response(

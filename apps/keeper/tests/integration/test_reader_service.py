@@ -218,6 +218,22 @@ def test_states_reads_each_requested_device_now_and_marks_a_missing_one(
     assert again["states"]["ha:hue"]["reading"]["state"] == "off"
 
 
+def test_states_of_several_devices_take_one_home_assistant_read(
+    reader: TestClient, home: Home
+) -> None:
+    # Discovery reads each candidate's state once to spot groups; that is not a state read.
+    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+    home.server.requests.clear()
+
+    response = reader.get(
+        "/internal/states",
+        params=[("entity_id", "ha:hue"), ("entity_id", "ha:plug"), ("entity_id", "ha:gone")],
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    assert home.server.requests == [("GET", "/api/states")]
+
+
 def test_health_follows_home_assistants_reachability(reader: TestClient, home: Home) -> None:
     assert reader.get("/internal/health", headers=AUTH).json() == {"status": "healthy"}
     assert ("GET", "/api/") in home.server.requests
@@ -290,7 +306,7 @@ def test_the_reader_sends_home_assistant_only_its_fixed_reads(
     assert home.frames(), "the catalog was not read from the registries"
     for method, path in home.server.requests:
         assert method == "GET"
-        assert path == "/api/" or path.startswith("/api/states/"), path
+        assert path in ("/api/", "/api/states") or path.startswith("/api/states/"), path
         assert "services" not in path
     # No other HTTP method or route exists on the reader for a caller to reach Home Assistant.
     for response in (

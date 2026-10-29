@@ -125,7 +125,7 @@ sequenceDiagram
     A-->>D: New selection
     D->>A: GET /api/monitored
     A->>R: Current state
-    R->>H: GET /api/states/{entity_id}
+    R->>H: GET /api/states
     A-->>D: The light's state now
     D->>A: GET /api/events
     A->>R: History of the monitored devices

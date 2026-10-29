@@ -20,6 +20,7 @@ from support.home_assistant import (
 
 from home_keeper.home_assistant import (
     MAX_PAYLOAD,
+    STATES_MAX_PAYLOAD,
     ConnectorError,
     HomeAssistantConnector,
     Session,
@@ -271,15 +272,17 @@ def test_a_switch_reads_its_state_without_light_attributes(
         client,
         lambda request: httpx.Response(
             200,
-            json={
-                "entity_id": "switch.plug",
-                "state": "on",
-                "last_changed": "2026-10-01T10:00:00Z",
-                "attributes": {"brightness": 120, "color_mode": "brightness"},
-            },
+            json=[
+                {
+                    "entity_id": "switch.plug",
+                    "state": "on",
+                    "last_changed": "2026-10-01T10:00:00Z",
+                    "attributes": {"brightness": 120, "color_mode": "brightness"},
+                }
+            ],
         ),
     )
-    state = client.read_state("switch.plug")
+    state = client.read_states(["switch.plug"])["switch.plug"]
     assert isinstance(state, SwitchState)
     reading = state.model_dump(exclude_none=True)
     assert reading["device_kind"] == "switch"
@@ -341,7 +344,7 @@ def test_a_failed_candidate_state_read_fails_discovery_and_is_retried_next_pass(
     assert {entity.id: entity.reason for entity in catalog.entities}["ha:desk"] == GROUP
 
 
-def test_a_light_state_read_keeps_brightness_and_drops_private_attributes(
+def test_states_are_read_at_once_keeping_brightness_and_dropping_private_attributes(
     connector: Connector,
 ) -> None:
     client, _, _ = connector
@@ -351,20 +354,27 @@ def test_a_light_state_read_keeps_brightness_and_drops_private_attributes(
         calls.append(request)
         return httpx.Response(
             200,
-            json={
-                "entity_id": request.url.path.split("/")[-1],
-                "state": "on",
-                "last_changed": "2026-10-01T10:00:00Z",
-                "attributes": {"brightness": 120, "context": "PRIVATE_SENTINEL"},
-            },
+            json=[
+                {
+                    "entity_id": entity_id,
+                    "state": "on",
+                    "last_changed": "2026-10-01T10:00:00Z",
+                    "attributes": {"brightness": 120, "context": "PRIVATE_SENTINEL"},
+                }
+                for entity_id in ("light.bulb", "light.desk", "sensor.power")
+            ],
         )
 
     use_transport(client, handle)
-    state = client.read_state("light.bulb")
-    assert isinstance(state, LightState)
-    assert state.brightness == 120
-    assert "PRIVATE_SENTINEL" not in state.model_dump_json()
-    assert [(call.method, call.url.path) for call in calls] == [("GET", "/api/states/light.bulb")]
+    states = client.read_states(["light.bulb", "light.desk", "light.gone"])
+    assert set(states) == {"light.bulb", "light.desk", "light.gone"}
+    assert states["light.gone"] is None
+    for entity_id in ("light.bulb", "light.desk"):
+        state = states[entity_id]
+        assert isinstance(state, LightState)
+        assert state.brightness == 120
+        assert "PRIVATE_SENTINEL" not in state.model_dump_json()
+    assert [(call.method, call.url.path) for call in calls] == [("GET", "/api/states")]
 
 
 def test_a_malformed_entity_id_is_refused_without_a_request(connector: Connector) -> None:
@@ -378,7 +388,7 @@ def test_a_malformed_entity_id_is_refused_without_a_request(connector: Connector
     use_transport(client, handle)
     for entity_id in ("light.bulb/../../api/services", "sensor.power", "light.bulb?x=1"):
         with pytest.raises(ConnectorError) as error:
-            client.read_state(entity_id)
+            client.read_states(["light.bulb", entity_id])
         assert error.value.code == "configuration"
     assert calls == []
 
@@ -419,16 +429,11 @@ def test_a_missing_entity_reads_as_none_until_it_returns(
     connector: Connector,
 ) -> None:
     client, _, _ = connector
-    status = [404]
-    use_transport(
-        client,
-        lambda _request: httpx.Response(
-            status[0], json={"entity_id": "light.bulb", "state": "on", "attributes": {}}
-        ),
-    )
-    assert client.read_state("light.bulb") is None
-    status[0] = 200
-    state = client.read_state("light.bulb")
+    states: list[Frame] = []
+    use_transport(client, lambda _request: httpx.Response(200, json=states))
+    assert client.read_states(["light.bulb"]) == {"light.bulb": None}
+    states.append({"entity_id": "light.bulb", "state": "on", "attributes": {}})
+    state = client.read_states(["light.bulb"])["light.bulb"]
     assert state is not None
     assert state.state == "on"
 
@@ -452,13 +457,14 @@ def test_payload_limit_and_contradictory_state_rejected(
 ) -> None:
     client, _, _ = connector
     for response in (
-        httpx.Response(200, content=b"x" * (2 * 1024 * 1024 + 1)),
-        httpx.Response(200, json={"entity_id": "light.other", "state": "on"}),
-        httpx.Response(200, json={"entity_id": "light.bulb", "state": "secret-sentinel"}),
+        httpx.Response(200, content=b"x" * (STATES_MAX_PAYLOAD + 1)),
+        httpx.Response(200, json={"entity_id": "light.bulb", "state": "on"}),
+        httpx.Response(200, json=["light.bulb"]),
+        httpx.Response(200, json=[{"entity_id": "light.bulb", "state": "secret-sentinel"}]),
     ):
         use_transport(client, lambda _request, response=response: response)
         with pytest.raises(ConnectorError) as error:
-            client.read_state("light.bulb")
+            client.read_states(["light.bulb"])
         assert error.value.code == "invalid_data"
         assert "secret-sentinel" not in str(error.value)
 
@@ -471,26 +477,24 @@ def test_slow_stream_total_time_is_bounded(
 
     class Stream(httpx.SyncByteStream):
         def __iter__(self) -> Iterator[bytes]:
-            yield b'{"entity_id": "light.bulb",'
-            yield b'"state": "on"}'
+            yield b'[{"entity_id": "light.bulb",'
+            yield b'"state": "on"}]'
 
     clock = iter([0, 1, 6])
     monkeypatch.setattr("home_keeper.home_assistant.time.monotonic", lambda: next(clock))
     use_transport(client, lambda _request: httpx.Response(200, stream=Stream()))
     with pytest.raises(ConnectorError) as error:
-        client.read_state("light.bulb")
+        client.read_states(["light.bulb"])
     assert error.value.code == "timeout"
 
 
-@pytest.mark.parametrize("kind", ["oversized", "wrong_identity", "unsupported_state", "redirect"])
+@pytest.mark.parametrize("kind", ["oversized", "unsupported_state", "redirect"])
 def test_an_invalid_state_response_is_safe(
     adapter: HomeAssistantConnector, kind: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     payload: dict[str, object] = {"entity_id": "light.bulb", "state": "on", "attributes": {}}
     if kind == "oversized":
-        payload["untrusted"] = "review-ha-secret" + "x" * MAX_PAYLOAD
-    if kind == "wrong_identity":
-        payload["entity_id"] = "light.unapproved"
+        payload["untrusted"] = "review-ha-secret" + "x" * STATES_MAX_PAYLOAD
     if kind == "unsupported_state":
         payload["state"] = "review-ha-secret"
     calls: list[httpx.URL] = []
@@ -499,15 +503,15 @@ def test_an_invalid_state_response_is_safe(
         calls.append(request.url)
         return httpx.Response(
             302 if kind == "redirect" else 200,
-            json=payload,
+            json=[payload],
             headers={"Location": "http://admin.example/write"},
         )
 
     use_transport(adapter, response)
     with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorError) as error:
-        adapter.read_state("light.bulb")
+        adapter.read_states(["light.bulb"])
     assert len(calls) == 1
-    assert calls[0].path == "/api/states/light.bulb"
+    assert calls[0].path == "/api/states"
     assert "review-ha-secret" not in str(error.value)
     assert "review-ha-secret" not in caplog.text
 
@@ -520,7 +524,7 @@ def test_a_state_read_timeout_does_not_leak(
 
     use_transport(adapter, timeout)
     with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorError) as error:
-        adapter.read_state("light.bulb")
+        adapter.read_states(["light.bulb"])
     assert error.value.code == "timeout"
     assert "review-ha-secret" not in str(error.value)
     assert "review-ha-secret" not in caplog.text

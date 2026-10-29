@@ -22,10 +22,11 @@ def test_actual_websocket_discovery_and_rest_state_read(tmp_path: Path) -> None:
     transmitted: list[object] = []
 
     def process_request(_connection: ServerConnection, request: Request) -> Response | None:
-        if request.path.startswith("/api/states/"):
+        if request.path.startswith("/api/states"):
             transmitted.append(("GET", request.path))
             assert request.headers["Authorization"] == "Bearer actual-network-token"
-            body = json.dumps({"entity_id": "light.bulb", "state": "off", "attributes": {}})
+            state: dict[str, object] = {"entity_id": "light.bulb", "state": "off", "attributes": {}}
+            body = json.dumps(state if request.path == "/api/states/light.bulb" else [state])
             return Response(200, "OK", Headers({"Content-Type": "application/json"}), body.encode())
         return None
 
@@ -56,7 +57,7 @@ def test_actual_websocket_discovery_and_rest_state_read(tmp_path: Path) -> None:
         )
         try:
             assert connector.discover().entities[0].supported
-            state = connector.read_state("light.bulb")
+            state = connector.read_states(["light.bulb"])["light.bulb"]
             assert state is not None
             assert state.state == "off"
         finally:
@@ -70,7 +71,7 @@ def test_actual_websocket_discovery_and_rest_state_read(tmp_path: Path) -> None:
         "config/entity_registry/list",
         "config/device_registry/list",
         ("GET", "/api/states/light.bulb"),
-        ("GET", "/api/states/light.bulb"),
+        ("GET", "/api/states"),
     ]
 
 

@@ -31,6 +31,8 @@ from home_keeper.models import (
 MAX_PAYLOAD = 2 * 1024 * 1024
 # Weeks of a busy light's history outgrow one registry list.
 HISTORY_MAX_PAYLOAD = 16 * 1024 * 1024
+# Every entity's state in one answer, sensors included.
+STATES_MAX_PAYLOAD = 16 * 1024 * 1024
 MAX_REGISTRY_ROWS = 500
 MAX_SOURCE_ENTITY_ID_LENGTH = 128
 MAX_TOKEN_LENGTH = 4096
@@ -321,10 +323,14 @@ class HomeAssistantConnector:
         return group
 
     def _read_state(self, entity_id: str) -> tuple[int, bytes]:
-        """GET one entity's state: the status, and the body only for 200. Raises TimeoutError
-        when the body outlasts the timeout and ConnectorError when it exceeds MAX_PAYLOAD."""
+        """GET one entity's state: the status, and the body only for 200."""
+        return self._get(f"/api/states/{entity_id}", MAX_PAYLOAD)
+
+    def _get(self, path: str, max_size: int) -> tuple[int, bytes]:
+        """The status, and the body only for 200. Raises TimeoutError when the body outlasts
+        the timeout and ConnectorError when it exceeds `max_size`."""
         deadline = time.monotonic() + self._timeout
-        with self._http.stream("GET", f"/api/states/{entity_id}") as response:
+        with self._http.stream("GET", path) as response:
             if response.status_code != HTTPStatus.OK:
                 return response.status_code, b""
             payload = bytearray()
@@ -332,7 +338,7 @@ class HomeAssistantConnector:
                 if time.monotonic() >= deadline:
                     raise TimeoutError
                 payload.extend(chunk)
-                if len(payload) > MAX_PAYLOAD:
+                if len(payload) > max_size:
                     raise ConnectorError("invalid_data")
         return HTTPStatus.OK, bytes(payload)
 
@@ -341,27 +347,35 @@ class HomeAssistantConnector:
         """Each identity's Home Assistant entity ID, from the latest successful discovery."""
         return dict(self._entities)
 
-    def read_state(self, source_entity_id: str) -> LightState | SwitchState | None:
-        """The current state of a light or switch; None when Home Assistant has no such
-        entity. The reader serves the API, which checks the selection itself."""
-        if not _DEVICE_ID.fullmatch(source_entity_id):
+    def read_states(
+        self, source_entity_ids: Sequence[str]
+    ) -> dict[str, LightState | SwitchState | None]:
+        """The current state of each light or switch, from one read of every state; None
+        when Home Assistant has no such entity. The API checks the selection itself."""
+        wanted = set(source_entity_ids)
+        if not all(_DEVICE_ID.fullmatch(entity_id) for entity_id in wanted):
             raise ConnectorError("configuration")
         try:
-            status, payload = self._read_state(source_entity_id)
+            status, payload = self._get("/api/states", STATES_MAX_PAYLOAD)
             if status in {401, 403}:
                 raise ConnectorError("authentication")
-            if status == HTTPStatus.NOT_FOUND:
-                return None
             if status != HTTPStatus.OK:
                 raise ConnectorError("connection")
-            value = device_state(json.loads(payload), source_entity_id)
+            rows = json.loads(payload)
+            if not isinstance(rows, list):
+                raise TypeError("Not a list of states")
+            found: dict[str, LightState | SwitchState | None] = {}
+            for row in cast("list[object]", rows):
+                if not is_json_object(row):
+                    raise TypeError("Not a state")
+                entity_id = row.get("entity_id")
+                if isinstance(entity_id, str) and entity_id in wanted:
+                    found[entity_id] = device_state(row, entity_id)
         except ConnectorError:
             raise
         except (httpx.HTTPError, TimeoutError, ValueError, TypeError) as error:
             raise _read_failure(error) from None
-        if value is None:
-            raise ConnectorError("invalid_data")
-        return value
+        return {entity_id: found.get(entity_id) for entity_id in source_entity_ids}
 
     def check(self) -> None:
         """Return when Home Assistant's API answers and accepts the token."""

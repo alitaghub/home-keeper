@@ -140,20 +140,25 @@ class HomeAssistantBackend:
     def states(self, entity_ids: Sequence[Identity]) -> dict[Identity, LiveState | None]:
         entities, sources = self._discover()
         devices = {entity.id for entity in entities if entity.device_kind is not None}
-        connector = self._connection()
-        result: dict[Identity, LiveState | None] = {}
-        for entity_id in entity_ids:
-            source = sources.get(entity_id)
-            if source is None or entity_id not in devices:
-                # Home Assistant no longer has it, or it is no light or switch.
-                result[entity_id] = None
-                continue
+        # Home Assistant no longer has the others, or they are no light or switch.
+        requested = {
+            entity_id: source
+            for entity_id in entity_ids
+            if entity_id in devices and (source := sources.get(entity_id)) is not None
+        }
+        states: dict[str, LightState | SwitchState | None] = {}
+        if requested:
             try:
-                state = connector.read_state(source)
+                states = self._connection().read_states(sorted(set(requested.values())))
             except ConnectorError as error:
                 raise _unavailable(error) from None
-            result[entity_id] = None if state is None else live_state(source, state)
-        return result
+        return {
+            entity_id: live_state(source, state)
+            if (source := requested.get(entity_id)) is not None
+            and (state := states.get(source)) is not None
+            else None
+            for entity_id in entity_ids
+        }
 
     def history(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
