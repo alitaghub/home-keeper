@@ -145,7 +145,7 @@ The API refuses these before it sends anything. It records nothing for them.
 | 409    | code `not_supported`                      | The command has a `brightness_pct` and the device is a plug or switch. |
 | 409    | code `unavailable`                        | Home Assistant reports the device as `unavailable`.         |
 | 409    | code `already_in_state`                   | The device is already in that state, at that brightness.    |
-| 409    | code `busy`                               | Four commands are being sent and this one waited 3 seconds. |
+| 409    | code `busy`                               | Four commands are being sent and this one waited 3 seconds, or the checks and the wait took 8 seconds. |
 
 The API checks in the order of this table and answers the first refusal that
 applies.
@@ -157,8 +157,10 @@ instead.
 The API sends at most four commands at a time. A command that waits for a free
 send is checked again before it is sent: if the device stopped being monitored or
 control turned off meanwhile, it gets that refusal and nothing is sent. A command
-that waits more than 3 seconds gets `busy`, so it never switches a device after
-its sender has given up.
+that waits more than 3 seconds gets `busy`. A command also gets `busy` when its
+checks and its wait together take 8 seconds, for example when Home Assistant
+answers slowly. Either way it never switches a device after its sender has given
+up.
 
 ## Command history
 

@@ -799,6 +799,85 @@ async def test_queued_command_is_not_sent_after_its_device_stops_being_monitored
     assert house.audit() == [recorded(first[0])]
 
 
+async def test_device_that_stops_being_monitored_during_the_last_state_read_is_not_sent(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    reads = 0
+
+    def stop_monitoring_during_the_second_check() -> None:
+        # The second check runs with the send slot held and is the last before the send.
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            house.select(LIGHT, selected=False)
+
+    house.reader.on_read = stop_monitoring_during_the_second_check
+    assert await switch(house, LIGHT, ON) == refused("not_monitored")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+# The command deadline
+
+# Below the agent's 10-second request timeout.
+DEADLINE_SECONDS = 8.0
+
+
+def slow_catalog(house: Home, *seconds: float) -> None:
+    """Each catalog read takes the next of `seconds` on the test clock."""
+    delays = list(seconds)
+    catalog = house.reader.catalog
+
+    def slow() -> list[Entity]:
+        house.clock.now += timedelta(seconds=delays.pop(0) if delays else 0)
+        return catalog()
+
+    house.reader.catalog = slow  # pyright: ignore[reportAttributeAccessIssue] -- a slow Home Assistant
+
+
+@pytest.mark.parametrize(
+    "seconds",
+    [
+        pytest.param((DEADLINE_SECONDS + 1,), id="first check"),
+        # Each read is well inside the reader's timeout; together they pass the deadline.
+        pytest.param((DEADLINE_SECONDS / 2 + 1, DEADLINE_SECONDS / 2 + 1), id="second check"),
+    ],
+)
+async def test_command_whose_checks_outlast_the_deadline_is_refused_as_busy(
+    tmp_path: Path, seconds: tuple[float, ...]
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    slow_catalog(house, *seconds)
+    assert await switch(house, LIGHT, ON) == refused("busy")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+async def test_waiting_for_a_send_slot_ends_at_the_deadline(tmp_path: Path) -> None:
+    house = ready(tmp_path, LIGHT, slots=1, queue=5)
+    entered, release = hold_the_only_slot(house)
+    first: list[Result] = []
+
+    async def command() -> None:
+        first.append(await switch(house, LIGHT, ON))
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(command)
+        await anyio.to_thread.run_sync(entered.wait, 5)
+        # The queued command's first check leaves it a quarter second before the deadline.
+        slow_catalog(house, DEADLINE_SECONDS - 0.25)
+        started = anyio.current_time()
+        try:
+            queued = await switch(house, LIGHT, ON)
+        finally:
+            release.set()
+        waited = anyio.current_time() - started
+    assert queued == refused("busy")
+    assert waited < 2, f"waited {waited:.1f} s for the slot, past the deadline"
+    assert len(house.controller.sent) == 1
+
+
 # The command audit
 
 

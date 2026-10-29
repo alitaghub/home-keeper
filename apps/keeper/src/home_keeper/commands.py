@@ -1,9 +1,5 @@
 """Switches a monitored device through the controller and confirms the result by reading
-the device's state from Home Assistant after the send.
-
-Reads run in the shared thread pool and the controller send on its own few threads, so a
-slow send never takes every worker the API's other requests need.
-"""
+the device's state from Home Assistant after the send."""
 
 import math
 import sqlite3
@@ -27,6 +23,7 @@ from home_keeper.models import (
     CommandsPage,
     ControlStatus,
     DeviceKind,
+    Entity,
     Identity,
     LightCommand,
     LightReading,
@@ -53,6 +50,9 @@ class Refusal:
 
 
 type Declined = Refusal | UnknownEntity | UnsupportedEntity
+
+# Also the answer when the checks or the queue outlast the command's deadline.
+_BUSY = Refusal("busy", "Too many light commands are waiting. Try again")
 
 
 @dataclass(frozen=True)
@@ -106,14 +106,15 @@ class Commands:
         stale_seconds: float,
         poll_seconds: float = 0.5,
         sleep: Callable[[float], None] = time.sleep,
-        # Below the agent's 10-second request timeout, so a queued command never switches a
-        # device after its caller gave up.
         queue_seconds: float = 3.0,
+        # Below the agent's 10-second request timeout, so a command never switches a device
+        # after its caller gave up.
+        deadline_seconds: float = 8.0,
         slots: int = 4,
     ) -> None:
         """`wait_seconds`: how long, by `now`, to read the device's state after a send.
         `poll_seconds`: the pause between those reads, taken with `sleep`.
-        `stale_seconds`: how old the controller's heartbeat may be while control stays on."""
+        `deadline_seconds`: how long, by `now`, the checks and queue may take before the send."""
         self.store = store
         self.controller = controller
         self.reader = reader
@@ -123,6 +124,7 @@ class Commands:
         self.retention_days = retention_days
         self.wait_seconds = wait_seconds
         self.queue_seconds = queue_seconds
+        self.deadline_seconds = deadline_seconds
         self.stale_seconds = stale_seconds
         self._send_slots = CapacityLimiter(slots)
         # Controller sends can block for seconds, so they get their own few threads and
@@ -154,19 +156,26 @@ class Commands:
             )
 
     async def switch(self, entity_id: str, request: CommandRequest) -> CommandRecord | Declined:
+        deadline = self.now() + timedelta(seconds=self.deadline_seconds)
         checked = await anyio.to_thread.run_sync(self._accept, entity_id, request.command)
         if not isinstance(checked, _Accepted):
             return checked
-        with anyio.move_on_after(self.queue_seconds) as queue:
+        remaining = (deadline - self.now()).total_seconds()
+        if remaining <= 0:
+            return _BUSY
+        with anyio.move_on_after(min(self.queue_seconds, remaining)) as queue:
             await self._send_slots.acquire()
         if queue.cancelled_caught:
-            return Refusal("busy", "Too many light commands are waiting. Try again")
+            return _BUSY
         try:
             # Checked again with the slot held: while the command waited, the device may
             # have stopped being monitored, or control may have turned off.
             accepted = await anyio.to_thread.run_sync(self._accept, entity_id, request.command)
             if not isinstance(accepted, _Accepted):
                 return accepted
+            # Past the deadline the caller may have given up, so nothing is sent.
+            if self.now() >= deadline:
+                return _BUSY
             sent_at = self.now().astimezone(UTC)
             # From the forwarded command, so a switch's record holds a switch command.
             record = command_record.validate_python(
@@ -263,22 +272,30 @@ class Commands:
 
     def _accept(self, entity_id: str, command: LightCommand) -> _Accepted | Declined:  # noqa: PLR0911 -- one return per ordered check
         # Every refusal happens before anything is sent or stored.
+        entity: Entity | None = None
+        live: LiveState | None = None
+        try:
+            entity = next((e for e in self.reader.catalog() if e.id == entity_id), None)
+        except ReaderUnavailable:
+            pass
+        else:
+            if entity is None:
+                return UnknownEntity()
+            if not entity.supported:
+                return UnsupportedEntity()
+            try:
+                live = self.reader.states([entity_id]).get(entity_id)
+            except ReaderUnavailable:
+                live = None
+        # Read after Home Assistant answers, so a Stop monitoring or control turning off
+        # during those reads still refuses the command.
         with self.store.transaction("DEFERRED") as db:
             selected = db.execute(
                 "SELECT device_kind FROM selection WHERE id=?", (entity_id,)
             ).fetchone()
             control_on = self._status(db).state == "on"
         kind = stored_kind.validate_python(selected[0]) if selected else None
-        try:
-            entity = next((e for e in self.reader.catalog() if e.id == entity_id), None)
-        except ReaderUnavailable:
-            reachable = False
-        else:
-            reachable = True
-            if entity is None:
-                return UnknownEntity()
-            if not entity.supported:
-                return UnsupportedEntity()
+        if entity is not None:
             kind = entity.device_kind or kind
         # Refusal messages call a plug or switch a device.
         noun = "device" if kind == "switch" else "light"
@@ -286,12 +303,6 @@ class Commands:
             return Refusal("control_off", "Light control is off")
         if selected is None:
             return Refusal("not_monitored", f"Monitor this {noun} before switching it")
-        live: LiveState | None = None
-        if reachable:
-            try:
-                live = self.reader.states([entity_id]).get(entity_id)
-            except ReaderUnavailable:
-                live = None
         if live is None or live.reading.state not in ("on", "off", "unavailable"):
             return Refusal("state_unknown", f"The {noun}'s current state is unknown")
         reading = live.reading
