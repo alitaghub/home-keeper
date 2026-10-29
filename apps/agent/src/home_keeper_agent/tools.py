@@ -40,6 +40,16 @@ from home_keeper_agent.keeper import (
 from home_keeper_light_command import matches_brightness
 
 EVENT_LIMIT = 100
+# A reading's color fields, which a change shows only when one of them changed.
+COLOR_FIELDS = (
+    "color_mode",
+    "color_temp_kelvin",
+    "hs_color",
+    "xy_color",
+    "rgb_color",
+    "rgbw_color",
+    "rgbww_color",
+)
 COMMAND_TOOLS = ("turn_on", "turn_off")
 NOT_ALLOWED = "Not sent: you are not allowed to control lights."
 
@@ -73,12 +83,24 @@ def percent(brightness: float) -> int:
     return math.floor(Fraction(brightness) * 100 / 255 + Fraction(1, 2))
 
 
-def _reading(reading: Reading | None) -> str:
+def _reading(reading: Reading | None, colors: Sequence[str] = ()) -> str:
+    """The state and brightness, then each of the `colors` fields."""
     if reading is None:
         return "state unknown"
-    if reading.brightness is None:
-        return reading.state
-    return f"{reading.state} (brightness {percent(reading.brightness)}%)"
+    details = [] if reading.brightness is None else [f"brightness {percent(reading.brightness)}%"]
+    for field in colors:
+        value: object = getattr(reading, field)
+        if isinstance(value, tuple):
+            value = ", ".join(number(float(part)) for part in value)  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType] -- color tuples hold numbers
+        details.append(f"{field.replace('_', ' ')} {'none' if value is None else value}")
+    return f"{reading.state} ({', '.join(details)})" if details else reading.state
+
+
+def _change(old: Reading, new: Reading) -> str:
+    """Old and new readings; a color change also shows the color mode and what changed."""
+    changed = [field for field in COLOR_FIELDS if getattr(old, field) != getattr(new, field)]
+    colors = ["color_mode", *(f for f in changed if f != "color_mode")] if changed else []
+    return f"{_reading(old, colors)} -> {_reading(new, colors)}"
 
 
 logger = logging.getLogger(__name__)
@@ -164,7 +186,7 @@ def format_events(page: EventsPage) -> str:
         "back it goes depends on Home Assistant's recorder settings:"
     ]
     lines.extend(
-        f"- {event.time} {event.entity_id}: {_reading(event.old)} -> {_reading(event.new)}"
+        f"- {event.time} {event.entity_id}: {_change(event.old, event.new)}"
         for event in page.events
     )
     if page.next_cursor is not None:

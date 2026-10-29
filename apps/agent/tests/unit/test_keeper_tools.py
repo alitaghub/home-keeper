@@ -259,6 +259,33 @@ def test_events_list_each_change_at_home_assistants_time() -> None:
     assert "more events exist" not in result.lower(), result
 
 
+def test_a_color_change_shows_the_color_mode_and_the_color_that_changed() -> None:
+    color: dict[str, object] = {"state": "on", "brightness": 150, "color_mode": "xy"}
+    page = {
+        "events": [
+            change(
+                "2026-10-12T09:59:55Z",
+                color | {"xy_color": [0.3, 0.32]},
+                color | {"xy_color": [0.45, 0.41]},
+            ),
+            change("2026-10-12T09:59:50Z", color, color | {"state": "off"}),
+        ],
+        "next_cursor": None,
+    }
+    keeper = FakeKeeper({"/api/events": (200, page)})
+
+    result = call(keeper.tools(), "get_events", RANGE)
+
+    recolored, switched_off = (line for line in result.splitlines() if "bulb-a" in line)
+    old, new = recolored.split(" -> ")
+    assert "color mode xy" in old, recolored
+    assert "xy color 0.3, 0.32" in old, recolored
+    assert "color mode xy" in new, recolored
+    assert "xy color 0.45, 0.41" in new, recolored
+    # A change of state alone does not repeat the unchanged color.
+    assert "color" not in switched_off, switched_off
+
+
 @pytest.mark.parametrize(
     ("average", "percent"),
     [(255.0, 100), (142.0, 56), (128.5, 50), (100.0, 39), (1.5, 1), (0.5, 0)],

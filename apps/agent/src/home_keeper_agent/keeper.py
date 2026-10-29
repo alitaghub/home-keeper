@@ -24,8 +24,15 @@ DeviceKind = Literal["light", "switch"] | None
 
 class Reading(Wire):
     state: str
-    # Plugs and switches have no brightness.
+    # Plugs and switches have no brightness or color.
     brightness: int | None = None
+    color_mode: str | None = None
+    color_temp_kelvin: int | None = None
+    hs_color: tuple[float, float] | None = None
+    xy_color: tuple[float, float] | None = None
+    rgb_color: tuple[int, int, int] | None = None
+    rgbw_color: tuple[int, int, int, int] | None = None
+    rgbww_color: tuple[int, int, int, int, int] | None = None
 
 
 class MonitoredLight(Wire):
