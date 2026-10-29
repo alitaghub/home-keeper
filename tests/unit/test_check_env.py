@@ -62,7 +62,7 @@ def test_override_tags_parse_as_their_plain_value() -> None:
     compose = (
         COMPOSE
         + """
-  collector:
+  reader:
     environment:
       HOME_KEEPER_HA_URL: ${HOME_KEEPER_HA_URL:?Set the origin}
     volumes: !override

@@ -45,6 +45,14 @@ def test_agent_registers_the_keeper_tools_and_no_shell_or_subagent() -> None:
     assert not names & {"execute", "task"}
 
 
+def test_the_agent_offers_no_coverage_or_discovery_refresh_tool() -> None:
+    agent = build_agent(ScriptedChatModel(responses=[AIMessage("unused")]), FakeKeeper().client())
+
+    tool_node = agent.nodes["tools"].bound
+    assert isinstance(tool_node, ToolNode)
+    assert not set(tool_node.tools_by_name) & {"get_coverage", "refresh_discovery"}
+
+
 def test_scripted_tool_calls_reach_the_keeper_and_the_final_messages() -> None:
     keeper = FakeKeeper(
         {
@@ -128,18 +136,6 @@ def test_selection_change_waits_for_approval_and_reject_changes_nothing(
     assert (put.method, put.url.path) == ("PUT", "/api/selection/bulb-a")
     assert put.headers["X-Home-Keeper"] == "1"
     assert json.loads(put.content) == {"selected": selected}
-
-
-def test_refresh_discovery_runs_without_approval() -> None:
-    keeper = FakeKeeper({"/api/discovery/refresh": snapshot("discovery_refresh")})
-    call: ToolCall = {"name": "refresh_discovery", "args": {}, "id": "call-refresh"}
-
-    agent = agent_after_one_call(keeper, call)
-
-    assert agent.get_state(THREAD).interrupts == ()
-    assert [(request.method, request.url.path) for request in keeper.requests] == [
-        ("POST", "/api/discovery/refresh")
-    ]
 
 
 class RecordingChatModel(ScriptedChatModel):

@@ -21,9 +21,7 @@ from home_keeper_agent.keeper import (
     CommandRecord,
     CommandRequest,
     Control,
-    CoverageReport,
     DeviceUsage,
-    DiscoveryRefresh,
     EventsPage,
     Health,
     KeeperClient,
@@ -171,23 +169,6 @@ def format_events(page: EventsPage) -> str:
     )
     if page.next_cursor is not None:
         lines.append(f"More events exist than the {EVENT_LIMIT} shown; narrow the time range.")
-    return "\n".join(lines)
-
-
-def format_coverage(report: CoverageReport) -> str:
-    lines = [
-        f"Collection is {report.state}, last confirmed {report.last_confirmed_at or 'never'}, "
-        f"data retained since {report.retained_since}.",
-        f"{len(report.gaps)} gap(s) where recorded data is unknown:"
-        if report.gaps
-        else "No gaps recorded.",
-    ]
-    for gap in report.gaps:
-        start = gap.last_confirmed_at or gap.detected_at
-        end = gap.recovered_at or "now (still open)"
-        scope = ", ".join(gap.entity_ids) or "all lights"
-        note = ", start uncertain" if gap.uncertain_start else ""
-        lines.append(f"- {scope}: unknown from {start} to {end} ({gap.reason}{note})")
     return "\n".join(lines)
 
 
@@ -378,14 +359,6 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         )
 
     @tool
-    def get_coverage() -> str:
-        """Report collection gaps: periods when the keeper could not record, so data is
-        unknown."""
-        return _guard(
-            lambda: format_coverage(client.request("GET", "/api/coverage", CoverageReport))
-        )
-
-    @tool
     def get_health() -> str:
         """Report whether Home Assistant can be reached right now, and why not."""
         return _guard(lambda: format_health(client.request("GET", "/api/health", Health)))
@@ -402,17 +375,6 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         selection = client.request("PUT", path, Selection, body={"selected": selected})
         verb = "Now monitoring" if selected else "Stopped monitoring"
         return f"{verb} {_name(entity_id)}. {len(selection.entity_ids)} device(s) monitored."
-
-    @tool
-    def refresh_discovery() -> str:
-        """Ask the collector to rediscover devices in Home Assistant, for example after a new
-        lamp was added. Records nothing by itself."""
-
-        def render() -> str:
-            client.request("POST", "/api/discovery/refresh", DiscoveryRefresh)
-            return "Discovery refresh requested. Call list_devices shortly to see the result."
-
-        return _guard(render)
 
     @tool
     def monitor(entity_id: str) -> str:
@@ -474,10 +436,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         list_monitored,
         get_usage,
         get_events,
-        get_coverage,
         get_health,
         list_devices,
-        refresh_discovery,
         monitor,
         stop_monitoring,
         turn_on,

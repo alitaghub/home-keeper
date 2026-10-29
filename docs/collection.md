@@ -1,75 +1,64 @@
-# Collection, evidence and gaps
+# History and usage
 
-What the collector records, what that evidence does and does not prove, and how
-interruptions show up. Commands use the home stack (`compose.yaml`). For the
-demo, add `-f compose.demo.yaml`. For your own Home Assistant, use
-`-f compose.yaml -f compose.external.yaml` as described in
-[home-assistant.md](home-assistant.md#use-your-own-home-assistant).
+Where Home Keeper's history and usage numbers come from, what they do and do not
+prove, and what happens when Home Assistant cannot be reached. Commands use the
+home stack (`compose.yaml`). For the demo, add `-f compose.demo.yaml`. For your
+own Home Assistant, use `-f compose.yaml -f compose.external.yaml` as described
+in [home-assistant.md](home-assistant.md#use-your-own-home-assistant).
 
-## Collection and evidence limits
+## The reader and Home Assistant's recorder
 
-The collector refreshes discovery and polls selected current states in each
-collection pass. Live mode also subscribes to Home Assistant state-change events
-while at least one light, plug or switch is selected. The trusted connector discards unselected
-events before forwarding them to the API. An empty selection opens no event
-subscription. It waits ten seconds between passes by default. Slow requests
-can lengthen the interval. Change the interval without storing a secret:
+Home Assistant's [recorder](https://www.home-assistant.io/integrations/recorder/)
+already stores the history of every device. Home Keeper reads that history
+instead of keeping its own copy. The **reader** service holds the Home Assistant
+token and answers the API's reads on request: the device list, the state each
+device reports now, its history in a time window, and whether Home Assistant
+answers. The reader keeps no state. It caches the device list for up to 10
+seconds and never caches a state or history.
 
-```sh
-HOME_KEEPER_RECONCILIATION_SECONDS=30 docker compose up --build --wait
-```
+The API asks the reader each time the dashboard or the agent needs data. The
+dashboard polls every 3 seconds, so the **Home** tab shows what Home Assistant
+reports now, not a copy that can go stale.
 
-For the demo, run `HOME_KEEPER_RECONCILIATION_SECONDS=30 docker compose -f compose.demo.yaml up --build --wait`.
-Use a whole number of seconds from 1 to 3600. Each service checks its settings
-at startup. A wrong value stops it, and `docker compose logs` names the variable.
-Freshness becomes stale after twice the interval
-or a reported collector failure. Authentication, connection and certificate
-errors appear as safe status messages. A failed refresh retains the previous
-catalog marked stale. A missing selected entity gets its own collection gap while healthy selected lights
-keep their event subscription. It remains selected,
-with unknown or stale evidence. This does not prove the bulb is disconnected.
+Home Keeper's own database holds only the devices you monitor, the command log
+(see [control.md](control.md)) and a few internal values.
 
-Collection passes have a deadline of at least 30 seconds, scaled by five seconds
-per selected light plus ten seconds. Buffered changes are persisted between
-reads, with healthy heartbeats during long successful passes. A newer completed
-HTTP read can correct current state after Home Assistant clock rollback; events
-captured during that read retain precedence when newer.
+## When Home Assistant cannot be reached
 
-### Snapshots
+When the reader or Home Assistant does not answer, every tab shows a "Can't reach
+Home Assistant" banner with a short reason, such as a rejected token or no
+answer. Monitored devices stay listed with their state unknown, and the switch
+buttons are off. The device list on **Setup**, History and usage cannot load until
+Home Assistant answers again. You can still stop monitoring a device.
+`GET /api/health` reports `healthy` or `unreachable` with a fixed error code; the
+other routes that need Home Assistant answer 503 with the same code and a safe
+message, never upstream text, addresses or tokens.
 
-Each accepted snapshot records its stable ID, registry identity, current entity
-ID, source, state, availability, receipt time and server-owned persistence time.
-Source change, update and report timestamps remain separate. Initial baselines
-and polling reconciliation snapshots update the current state, but do not create
-change entries. Unchanged polling updates collection confirmation. Freshness
-means Home Assistant answered recently, not that the bulb itself answered then.
+Healthy means Home Assistant answered the reader. It does not prove that a bulb
+itself answered Home Assistant.
 
-Baseline history uses `limit` (1–100, default 50) and an integer `cursor` from
-`next_cursor`; pages contain newest snapshots first.
+## Monitoring is the only filter
 
-### Recorded changes
+History, usage and the agent cover only the devices you monitor now. A device
+you stop monitoring disappears from History, even for the time you monitored it.
+Monitoring it again shows all the history Home Assistant has for it, including
+the time it was not monitored.
+
+## Recorded changes
 
 The **Recorded changes** list on the **History** tab shows the changes Home
-Assistant's recorder stored for the devices monitored now. Home Keeper keeps no
-copy: each request reads Home Assistant's history through the reader with
+Assistant's recorder stored for the monitored devices. Each request reads Home
+Assistant's history through the reader with
 [`history/history_during_period`](https://developers.home-assistant.io/docs/api/websocket/),
 with `significant_changes_only` off so brightness and color changes are included.
 A change is two consecutive history rows whose state, availability, brightness or
 color differ. Each row says the change in words, such as "Desk lamp turned on at
 40%", at Home Assistant's time. Its **Details** show the source entity, the stable
-registry identity, the old and new values and that time. How far back History
-goes depends on Home Assistant's recorder settings. A device that is not monitored
-now has no History, even for the time it was monitored; monitoring it again shows
-all the history Home Assistant has for it.
+registry identity, the old and new values and that time.
 
 The reader keeps only approved light fields. For a plug or switch it keeps only
 the on/off state and availability, so a plug that reports a brightness never shows
 one. It drops unrelated attributes, account identifiers and raw logs.
-
-Usage still reads the changes the collector recorded. Databases from earlier
-releases left a light's `device_kind` out of its rows. The first start after the
-upgrade backs such a database up to `<database>.pre-forward-only.bak` beside it,
-then migrates it once.
 
 Allowed color fields are `color_mode`, `color_temp_kelvin`, `hs_color`, `xy_color`,
 `rgb_color`, `rgbw_color` and `rgbww_color`. Brightness uses integers from 0 to
@@ -87,32 +76,19 @@ which defaults to now. It returns `events`, newest first, and `next_cursor`. The
 cursor is opaque and keeps the first page's window, so later pages do not shift
 when new changes arrive. When Home Assistant cannot be read, it answers 503.
 
-### Retention
+An empty list means Home Assistant recorded no change in the window, not that
+nothing happened.
 
-Retention defaults to 30 days. Set a positive number of days on the API service:
+## Usage numbers
 
-```sh
-HOME_KEEPER_RETENTION_DAYS=7 docker compose up --build --wait
-```
-
-For the demo, add `-f compose.demo.yaml`. Retention uses the API
-persistence time. Requests trigger cleanup at most once per minute. History reads apply the cutoff
-immediately; expired rows can remain on disk until the next cleanup request.
-Active selections and their latest known state stay available in a separate
-current-state cache. That cache does not establish recent device availability.
-Expired current-state caches for removed selections are deleted too. Recorded
-light commands (see [control.md](control.md)) expire with the same retention. An
-empty timeline means no retained changes were recorded, not that nothing changed.
-
-### Usage numbers
-
-The read-only `GET /api/usage` endpoint reports, per selected light, plug or
+The read-only `GET /api/usage` endpoint reports, per monitored light, plug or
 switch, how long it was on and how often it was switched on, split by local day
 and local hour of day. Each entry in `devices` names its `device_kind`. A light
 also carries its average brightness while on; a plug or switch has no
 brightness field. The endpoint needs timezone-aware `start` and `end`
 timestamps. Repeat `entity_id` to limit the report to some devices; without it,
-the report covers every selected device. Unselected IDs are left out.
+the report covers every monitored device. Devices that are not monitored are left
+out.
 
 Days and hours use the API's time zone, UTC by default. Set an IANA name on the
 API service; an unknown name stops the API at startup:
@@ -121,16 +97,15 @@ API service; an unknown name stops the API at startup:
 HOME_KEEPER_TIMEZONE=Europe/Copenhagen docker compose up --build --wait
 ```
 
-The numbers come from Home Assistant's recorded history and only count what it
-shows. If Home Assistant cannot be read, the endpoint answers 503 with a safe
-error.
+The numbers come from Home Assistant's history and only count what it shows. If
+Home Assistant cannot be read, the endpoint answers 503 with a safe error.
 
 - Each history row counts from the moment Home Assistant updated it until the
   next row. A light on before `start` counts from `start`.
 - Only recorded off-to-on changes count as switch-ons. A switch-on at exactly
   `start` counts in that window and not in the window that ends there.
 - Time before a device's first row in the window, and time after now, is
-  unknown with reason `no_history`. A selected device with no history in the
+  unknown with reason `no_history`. A monitored device with no history in the
   window stays in the report with the whole window unknown.
 - Time when Home Assistant reports a device as `unavailable` or `unknown` is
   unknown with reason `unavailable`.
@@ -143,70 +118,49 @@ error.
   `unknown_intervals` cover the whole range without overlap. A row that repeats
   the same state does not start a new period.
 
-How far back usage can go depends on Home Assistant's recorder settings.
+## Retention
 
-### What Home Assistant can and cannot tell us
+How far back History and usage go is a Home Assistant setting: its recorder
+keeps 10 days by default.
+[home-assistant.md](home-assistant.md#history-retention) shows how to keep more.
 
-Home Assistant's [Hue integration](https://www.home-assistant.io/integrations/hue/)
-receives pushed updates from Hue V2 bridges and polls V1 bridges. Our event stream
-reports what Home Assistant observed. There is no Recorder history import,
-historical backfill, automation attribution or cause inference. Earlier events
-and changes during a connection interruption may be absent. Polling snapshots
-can reconcile the current state but cannot reconstruct those missing changes.
-Collection gaps and recovery are recorded locally.
-
-## Collection gaps and recovery
-
-The **Collection gaps** list on the **History** tab records interruptions separately from a bulb
-reporting `unavailable`. Losing the connector does not create unavailable events
-for every light. While a gap is open, every tab shows a warning that links to
-History. Each gap has an evidence ID, selected entity scope, last
-confirmed collection, detection time and eventual recovery time. The exact start
-is uncertain. A restart records a gap from the last persisted collection point.
-A missed heartbeat is detected when the API is read after twice the configured
-collection interval. If the API cannot accept a failure record, missing heartbeats
-or the next application startup still expose interrupted collection.
-
-On reconnect, the live collector refreshes the registry and current selection,
-installs the selected event subscription, and reads current snapshots. A bounded
-reader holds events arriving during those reads. It saves snapshots and events
-before reporting recovery. A change that arrives after a read returns but before
-its snapshot is saved stays the current state; the older snapshot does not
-replace it and does not fail the pass. Removing or adding a selection
-invalidates an older collector revision, including a delayed recovery signal. Renamed identities keep
-history; a replacement entity never inherits permission.
-
-Recovery snapshots link to gap evidence and mark transition time as unknown.
-For example, if the saved state was off and the recovered state is on, the app
-shows the new snapshot without inventing an off-to-on event during the gap.
-A normal polling snapshot that contradicts recorded state also marks incomplete
-collection. Genuine Home Assistant events remain separate timeline entries.
-
-The recovery buffer is limited to 256 projected events and 1 MiB. Overflow,
-invalid data or failed ingestion interrupts collection and requires a new
-subscription and fresh snapshots. Transient retries use exponential delays
-capped at 60 seconds. Authentication or configuration failures stop the live
-collector. Fix the local configuration and restart it. A successful connection
-or heartbeat alone does not close a gap.
-
-The read-only `GET /api/coverage?limit=20` endpoint returns at most 100 gaps,
-current collection status, last confirmation and retention cutoff. Closed gaps
-expire after the retention period measured from recovery. Active gaps remain until recovery. History outside
-recorded collection windows remains unknown; no view claims uninterrupted history.
-
-### Test a gap without hardware
-
-Start the demo, select a light and wait for fresh evidence:
+Home Keeper's own retention applies only to the command log. It defaults to 30
+days. Set a positive number of days on the API service:
 
 ```sh
-docker compose -f compose.demo.yaml stop collector
-# Leave it stopped for more than 20 seconds at the default interval.
-# Read the dashboard: collection should become stale and show a gap.
-docker compose -f compose.demo.yaml start collector
-# After the next collection pass, the gap should show recovery.
+HOME_KEEPER_RETENTION_DAYS=7 docker compose up --build --wait
 ```
 
-`docker compose -f compose.demo.yaml restart api` verifies persisted restart
-gaps. For the home stack, drop `-f compose.demo.yaml`. The synthetic home resets its sequence
-when the collector starts; that reset is a recovery snapshot, not inferred
-historical device activity.
+For the demo, add `-f compose.demo.yaml`. Retention uses the time the API sent
+the command. Requests trigger cleanup at most once per minute; the command list
+applies the cutoff at once.
+
+## What Home Assistant can and cannot tell us
+
+Home Assistant's [Hue integration](https://www.home-assistant.io/integrations/hue/)
+receives pushed updates from Hue V2 bridges and polls V1 bridges. History shows
+what Home Assistant recorded. There is no automation attribution or cause
+inference. Changes Home Assistant missed, for example while it was stopped or
+while a bridge was offline, are absent, and Home Keeper cannot reconstruct them.
+
+## Upgrading from a release with its own copy
+
+Earlier releases copied device history into Home Keeper's own database. On the
+first start of this release, Home Keeper deletes that database file, with its
+`-wal` and `-shm` files, and creates a new empty one. The API logs one warning
+line that says so. Select your devices again once; History still comes from Home
+Assistant. The old command log is gone.
+
+## Test an unreachable Home Assistant without hardware
+
+Start the demo and monitor a light, then stop the reader:
+
+```sh
+docker compose -f compose.demo.yaml stop reader
+# Every tab shows "Can't reach Home Assistant"; the light's state is unknown.
+docker compose -f compose.demo.yaml start reader
+# Within a few seconds the banner goes away and the state returns.
+```
+
+For the home stack, drop `-f compose.demo.yaml`, or stop `homeassistant` instead
+of the reader.

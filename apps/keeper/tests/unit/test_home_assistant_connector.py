@@ -24,7 +24,7 @@ from home_keeper.home_assistant import (
     HomeAssistantConnector,
     Session,
 )
-from home_keeper.models import Observation
+from home_keeper.models import LightState, SwitchState
 
 type Install = Callable[..., FakeSocket]
 type Connector = tuple[HomeAssistantConnector, Install, StateServer]
@@ -66,7 +66,6 @@ def adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[HomeAss
     client = HomeAssistantConnector("http://ha.example:8123", secret)
     use_transport(client, StateServer())
     client.discover()
-    client.approve({"ha:registry1": 1})
     yield client
     client.close()
 
@@ -207,9 +206,6 @@ def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_n
         "ha:disabled": (False, DISABLED, "light"),
         "ha:sensor": (False, NOT_SUPPORTED, None),
     }
-    client.approve({"ha:zha": 1, "ha:stateless": 1})
-    with pytest.raises(ConnectorError):
-        client.approve({"ha:room": 1})
 
 
 def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose_ones_are_not(
@@ -265,22 +261,12 @@ def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose
         "ha:group_setting": (False, SETTING, "switch"),
         "ha:sensor": (False, NOT_SUPPORTED, None),
     }
-    client.approve({"ha:plug": 1})
-    for unsupported in ("ha:config", "ha:loose", "ha:members", "ha:sensor"):
-        with pytest.raises(ConnectorError):
-            client.approve({unsupported: 1})
 
 
-def test_a_selected_switch_reads_its_state_without_light_attributes(
+def test_a_switch_reads_its_state_without_light_attributes(
     connector: Connector,
 ) -> None:
-    client, install, _ = connector
-    install(
-        [registry_entry("plug", "switch.plug", platform="zha", translation_key=None)],
-        [{"id": "device1", "name": "Smart plug"}],
-    )
-    client.discover()
-    client.approve({"ha:plug": 4})
+    client, _, _ = connector
     use_transport(
         client,
         lambda request: httpx.Response(
@@ -293,7 +279,9 @@ def test_a_selected_switch_reads_its_state_without_light_attributes(
             },
         ),
     )
-    reading = client.read_selected("ha:plug", 4).model_dump(exclude_none=True)
+    state = client.read_state("switch.plug")
+    assert isinstance(state, SwitchState)
+    reading = state.model_dump(exclude_none=True)
     assert reading["device_kind"] == "switch"
     assert reading["state"] == "on"
     assert reading["availability"] == "available"
@@ -336,17 +324,12 @@ def test_a_failed_candidate_state_read_fails_discovery_and_is_retried_next_pass(
 
     client, install, server = connector
     client.discover()
-    client.approve({"ha:registry1": 1})
     install([registry_entry(), registry_entry("desk", "light.desk")])
     use_transport(client, reply)
     with pytest.raises(ConnectorError) as failure:
         client.discover()
     assert failure.value.code == code
     assert "secret-sentinel" not in str(failure.value)
-    with pytest.raises(ConnectorError):
-        client.approve({"ha:registry1": 1})
-    with pytest.raises(ConnectorError):
-        client.read_selected("ha:registry1", 1)
     # The failed answer was not kept: the next pass reads the candidate again.
     server.reads.clear()
     use_transport(client, server)
@@ -358,12 +341,10 @@ def test_a_failed_candidate_state_read_fails_discovery_and_is_retried_next_pass(
     assert {entity.id: entity.reason for entity in catalog.entities}["ha:desk"] == GROUP
 
 
-def test_selected_reads_and_rename_identity(
+def test_a_light_state_read_keeps_brightness_and_drops_private_attributes(
     connector: Connector,
 ) -> None:
-    client, install, _ = connector
-    client.discover()
-    client.approve({"ha:registry1": 7})
+    client, _, _ = connector
     calls: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -379,41 +360,40 @@ def test_selected_reads_and_rename_identity(
         )
 
     use_transport(client, handle)
-    with pytest.raises(ConnectorError):
-        client.read_selected("ha:unapproved", 7)
-    with pytest.raises(ConnectorError):
-        client.read_selected("ha:registry1", 8)
-    assert not calls
-    observation = client.read_selected("ha:registry1", 7)
-    assert isinstance(observation, Observation)
-    assert observation.entity_id == "ha:registry1"
-    assert observation.brightness == 120
-    assert "PRIVATE_SENTINEL" not in observation.model_dump_json()
-    install([registry_entry(entity_id="light.renamed"), registry_entry("replacement")])
-    client.discover()
-    client.approve({"ha:registry1": 7})
-    renamed = client.read_selected("ha:registry1", 7)
-    assert renamed.source_entity_id == "light.renamed"
-    assert calls[-1].url.path == "/api/states/light.renamed"
-    with pytest.raises(ConnectorError):
-        client.read_selected("ha:replacement", 7)
-    assert all(call.method == "GET" for call in calls)
+    state = client.read_state("light.bulb")
+    assert isinstance(state, LightState)
+    assert state.brightness == 120
+    assert "PRIVATE_SENTINEL" not in state.model_dump_json()
+    assert [(call.method, call.url.path) for call in calls] == [("GET", "/api/states/light.bulb")]
 
 
-def test_failed_discovery_revokes_read_permission_and_redacts(
+def test_a_malformed_entity_id_is_refused_without_a_request(connector: Connector) -> None:
+    client, _, _ = connector
+    calls: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"entity_id": "light.bulb", "state": "on"})
+
+    use_transport(client, handle)
+    for entity_id in ("light.bulb/../../api/services", "sensor.power", "light.bulb?x=1"):
+        with pytest.raises(ConnectorError) as error:
+            client.read_state(entity_id)
+        assert error.value.code == "configuration"
+    assert calls == []
+
+
+def test_failed_discovery_authentication_is_redacted(
     connector: Connector,
 ) -> None:
     client, install, _ = connector
     client.discover()
-    client.approve({"ha:registry1": 1})
     socket = install([])
     socket.messages[1] = {"type": "auth_invalid", "message": "secret-sentinel"}
     with pytest.raises(ConnectorError) as failure:
         client.discover()
     assert failure.value.code == "authentication"
     assert "secret-sentinel" not in str(failure.value)
-    with pytest.raises(ConnectorError):
-        client.read_selected("ha:registry1", 1)
 
 
 @pytest.mark.parametrize(
@@ -435,12 +415,10 @@ def test_invalid_origin_safe(origin: str, tmp_path: Path) -> None:
     assert "secret" not in str(error.value)
 
 
-def test_missing_failed_reads_and_recovery(
+def test_a_missing_entity_reads_as_none_until_it_returns(
     connector: Connector,
 ) -> None:
     client, _, _ = connector
-    client.discover()
-    client.approve({"ha:registry1": 1})
     status = [404]
     use_transport(
         client,
@@ -448,11 +426,11 @@ def test_missing_failed_reads_and_recovery(
             status[0], json={"entity_id": "light.bulb", "state": "on", "attributes": {}}
         ),
     )
-    with pytest.raises(ConnectorError) as error:
-        client.read_selected("ha:registry1", 1)
-    assert error.value.code == "missing"
+    assert client.read_state("light.bulb") is None
     status[0] = 200
-    assert client.read_selected("ha:registry1", 1).state == "on"
+    state = client.read_state("light.bulb")
+    assert state is not None
+    assert state.state == "on"
 
 
 def test_names_redact_credentials_and_write_helper_rejected(
@@ -473,8 +451,6 @@ def test_payload_limit_and_contradictory_state_rejected(
     connector: Connector,
 ) -> None:
     client, _, _ = connector
-    client.discover()
-    client.approve({"ha:registry1": 1})
     for response in (
         httpx.Response(200, content=b"x" * (2 * 1024 * 1024 + 1)),
         httpx.Response(200, json={"entity_id": "light.other", "state": "on"}),
@@ -482,7 +458,7 @@ def test_payload_limit_and_contradictory_state_rejected(
     ):
         use_transport(client, lambda _request, response=response: response)
         with pytest.raises(ConnectorError) as error:
-            client.read_selected("ha:registry1", 1)
+            client.read_state("light.bulb")
         assert error.value.code == "invalid_data"
         assert "secret-sentinel" not in str(error.value)
 
@@ -492,8 +468,6 @@ def test_slow_stream_total_time_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _, _ = connector
-    client.discover()
-    client.approve({"ha:registry1": 1})
 
     class Stream(httpx.SyncByteStream):
         def __iter__(self) -> Iterator[bytes]:
@@ -504,12 +478,12 @@ def test_slow_stream_total_time_is_bounded(
     monkeypatch.setattr("home_keeper.home_assistant.time.monotonic", lambda: next(clock))
     use_transport(client, lambda _request: httpx.Response(200, stream=Stream()))
     with pytest.raises(ConnectorError) as error:
-        client.read_selected("ha:registry1", 1)
+        client.read_state("light.bulb")
     assert error.value.code == "timeout"
 
 
 @pytest.mark.parametrize("kind", ["oversized", "wrong_identity", "unsupported_state", "redirect"])
-def test_invalid_selected_response_is_safe(
+def test_an_invalid_state_response_is_safe(
     adapter: HomeAssistantConnector, kind: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     payload: dict[str, object] = {"entity_id": "light.bulb", "state": "on", "attributes": {}}
@@ -531,33 +505,25 @@ def test_invalid_selected_response_is_safe(
 
     use_transport(adapter, response)
     with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorError) as error:
-        adapter.read_selected("ha:registry1", 1)
+        adapter.read_state("light.bulb")
     assert len(calls) == 1
     assert calls[0].path == "/api/states/light.bulb"
     assert "review-ha-secret" not in str(error.value)
     assert "review-ha-secret" not in caplog.text
 
 
-def test_timeout_and_discovery_revoke_do_not_leak(
-    adapter: HomeAssistantConnector,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+def test_a_state_read_timeout_does_not_leak(
+    adapter: HomeAssistantConnector, caplog: pytest.LogCaptureFixture
 ) -> None:
     def timeout(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("review-ha-secret", request=request)
 
     use_transport(adapter, timeout)
     with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorError) as error:
-        adapter.read_selected("ha:registry1", 1)
+        adapter.read_state("light.bulb")
     assert error.value.code == "timeout"
     assert "review-ha-secret" not in str(error.value)
     assert "review-ha-secret" not in caplog.text
-    install_socket(monkeypatch, FakeSocket([registry_entry("replacement")]))
-    adapter.discover()
-    with pytest.raises(ConnectorError):
-        adapter.approve({"ha:registry1": 1})
-    with pytest.raises(ConnectorError):
-        adapter.read_selected("ha:registry1", 1)
 
 
 def test_registry_payload_limit_before_projection(

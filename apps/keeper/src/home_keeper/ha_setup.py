@@ -1,5 +1,5 @@
 """One-shot setup for the bundled Home Assistant: onboarding without a browser, then a
-long-lived owner token for the collector and one for a non-admin control user.
+long-lived owner token for the reader and one for a non-admin control user.
 """
 
 import json
@@ -137,7 +137,7 @@ class Setup:
         self.client_id = f"{self.origin}/"
         self.token_file = token_file
         self.login_file = login_file
-        # None skips the control user, for callers that only need the collector's token.
+        # None skips the control user, for callers that only need the reader's token.
         self.control_token_file = control_token_file
         self.http = httpx.Client(
             base_url=self.origin,
@@ -153,11 +153,11 @@ class Setup:
                 raise SetupError(
                     "Home Assistant rejected the stored Home Keeper token. " + RESET_HINT
                 )
-            collector_token = self.token_file.read_text().strip()
+            reader_token = self.token_file.read_text().strip()
             if self.control_token_file is None:
                 logging.info("Home Assistant already set up; stored token is valid")
             elif not self.control_token_file.exists():
-                self.provision_control(collector_token)
+                self.provision_control(reader_token)
             elif self.token_accepted(self.control_token_file):
                 logging.info("Home Assistant already set up; stored tokens are valid")
             else:
@@ -176,10 +176,10 @@ class Setup:
         login = Login(username=OWNER_USERNAME, password=secrets.token_urlsafe(18))
         # Stored before the account exists, so a crash cannot leave an owner nobody can log in as.
         write_private(self.login_file, login.model_dump_json())
-        collector_token = self.create_long_lived_token(self.onboard(login))
-        write_private(self.token_file, collector_token)
+        reader_token = self.create_long_lived_token(self.onboard(login))
+        write_private(self.token_file, reader_token)
         if self.control_token_file is not None:
-            self.provision_control(collector_token)
+            self.provision_control(reader_token)
         logging.info(
             "Home Assistant is ready. Show the login: "
             "docker compose run --rm --no-deps ha-setup login"
@@ -258,7 +258,7 @@ class Setup:
 
     def provision_control(self, owner_token: str) -> None:
         """Create the control user and its token. Control is optional, so a failure only turns
-        it off: the collector waits for setup to succeed, and collection must still start."""
+        it off: the reader waits for setup to succeed, and must still start."""
         logging.info("Creating the Home Keeper control user")
         try:
             self.create_control_token(owner_token)

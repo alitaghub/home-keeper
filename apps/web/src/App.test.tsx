@@ -352,45 +352,13 @@ describe("dashboard behavior", () => {
     expect(byId("changes-heading").closest("section")).not.toHaveTextContent(COPY_EVIDENCE);
   });
 
-  it("tells an open collection gap from a recovered one", async () => {
+  it("has no collection gaps section, since Home Assistant keeps the history", async () => {
     startOn("history");
-    const { api } = renderDashboard({ "GET /api/coverage": fixtures.coverage });
+    renderDashboard({ "GET /api/events": fixtures.eventsPage1 });
 
-    await waitFor(() =>
-      expect(byId("coverage-status")).toHaveTextContent(
-        `Current collection: interrupted. Last confirmed: ${localTime(fixtures.coverage.last_confirmed_at)}. History outside recorded collection windows is unknown.`,
-      ),
-    );
-    const open = within(byId(`gap-${fixtures.openGap.id}`));
-    expect(open.getByText("Collection interrupted")).toBeInTheDocument();
-    expect(open.getByText("Snapshot differed from recorded state")).toBeInTheDocument();
-    expect(open.getByText("Recovery pending. Current evidence may be stale.")).toBeInTheDocument();
-    expect(
-      open.getByText(
-        `Possible missing history since: ${localTime(fixtures.openGap.last_confirmed_at)}. The exact start is unknown.`,
-      ),
-    ).toBeInTheDocument();
-
-    const recovered = within(byId(`gap-${fixtures.recoveredGap.id}`));
-    expect(recovered.getByText("Collection resumed")).toBeInTheDocument();
-    expect(recovered.getByText("Connector connection lost")).toBeInTheDocument();
-    expect(
-      recovered.getByText(`Recovery completed: ${localTime(fixtures.recoveredGap.recovered_at)}`),
-    ).toBeInTheDocument();
-    expect(
-      recovered.getByText("Source: demo · Entities: light.hue_desk, light.hue_reading"),
-    ).toBeInTheDocument();
-
-    api.reply("GET /api/coverage", fixtures.emptyCoverage);
-    await nextPoll();
-    await waitFor(() =>
-      expect(
-        within(byId("coverage")).getByText(
-          "No retained interruption records. This does not prove continuous history.",
-        ),
-      ).toBeInTheDocument(),
-    );
-    expect(document.getElementById(`gap-${fixtures.openGap.id}`)).toBeNull();
+    await waitFor(() => expect(changeRows()).toHaveLength(2));
+    expect(screen.queryByRole("heading", { name: "Collection gaps" })).toBeNull();
+    expect(document.body).not.toHaveTextContent(/Collection gaps|Current collection/);
   });
 
   it("says Home Keeper is unreachable when the main load fails, and recovers", async () => {
@@ -464,13 +432,11 @@ describe("dashboard behavior", () => {
       "GET /api/selection",
       "GET /api/monitored",
       "GET /api/health",
-      "GET /api/coverage",
       "GET /api/events",
     ] as const;
     await waitFor(() => {
       for (const route of routes) expect(api.callsTo(route)).toHaveLength(1);
     });
-    expect(api.callsTo("GET /api/coverage")[0]?.url.searchParams.get("limit")).toBe("20");
 
     await act(() => vi.advanceTimersByTimeAsync(2500));
     expect(api.callsTo("GET /api/catalog")).toHaveLength(1);
@@ -490,8 +456,8 @@ describe("light control from the dashboard", () => {
   function renderControl(
     options: {
       control?: Schemas["ControlStatus"];
-      state?: Schemas["LightBaseline"]["state"];
-      availability?: Schemas["LightBaseline"]["availability"];
+      state?: Schemas["LightReading"]["state"];
+      availability?: Schemas["LightReading"]["availability"];
       light?: Schemas["Entity"];
       outcome?: Schemas["CommandsPage"]["commands"][number]["outcome"];
     } = {},
@@ -525,7 +491,7 @@ describe("light control from the dashboard", () => {
     expect(screen.getByText("READ ONLY")).toBeInTheDocument();
     expect(screen.queryByText("CONTROL ON")).toBeNull();
     expect(byId("source-notice")).toHaveTextContent(
-      "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records.",
+      "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only reads.",
     );
     expect(byId("source-notice")).not.toHaveTextContent(CONTROL_NOTICE);
   });
@@ -564,7 +530,7 @@ describe("light control from the dashboard", () => {
     await monitored().findByRole("button", { name: "Turn on Desk lamp" });
 
     expect(byId("source-notice")).toHaveTextContent(
-      "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights.",
+      "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is on for monitored lights.",
     );
     expect(byId("source-notice")).not.toHaveTextContent("Light control is off");
   });
@@ -574,7 +540,7 @@ describe("light control from the dashboard", () => {
     await monitored().findByRole("button", { name: "Turn on Desk lamp" });
 
     expect(document.querySelector("footer")).toHaveTextContent(
-      "Stored on this machine · Change records are evidence, not explanations of cause",
+      "History comes from Home Assistant · Changes show what happened, not why",
     );
   });
 
@@ -850,7 +816,7 @@ describe("light control from the dashboard", () => {
       expect(screen.getByText("READ ONLY")).toBeInTheDocument();
       expect(screen.queryByText("CONTROL ON")).toBeNull();
       expect(byId("source-notice").textContent).toBe(
-        "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records.",
+        "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only reads.",
       );
     },
   );
@@ -1453,8 +1419,8 @@ describe("plug control from the dashboard", () => {
   function renderPlug(
     options: {
       control?: Schemas["ControlStatus"];
-      state?: Schemas["SwitchBaseline"]["state"];
-      availability?: Schemas["SwitchBaseline"]["availability"];
+      state?: Schemas["SwitchReading"]["state"];
+      availability?: Schemas["SwitchReading"]["availability"];
     } = {},
   ) {
     return renderDashboard({

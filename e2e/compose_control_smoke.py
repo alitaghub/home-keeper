@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +47,7 @@ def compose(
             *profile,
             *args,
         ],
-        env=os.environ
-        | {"HOME_KEEPER_PORT": HOME_KEEPER_PORT, "HOME_KEEPER_RECONCILIATION_SECONDS": "3"},
+        env=os.environ | {"HOME_KEEPER_PORT": HOME_KEEPER_PORT},
         cwd=REPO,
         check=check,
         capture_output=True,
@@ -123,6 +123,30 @@ def assert_observed(
         assert abs(shown["brightness"] - BRIGHTNESS_37) <= 2, shown
 
 
+def assert_in_history(
+    client: httpx.Client, action: dict[str, object], record: dict[str, Any], entity: str = LIGHT
+) -> None:
+    """The commanded change shows in the device's history, which the API reads from the demo
+    home's recorder."""
+    since = datetime.fromisoformat(record["sent_at"]) - timedelta(seconds=5)
+
+    def commanded(change: dict[str, Any]) -> bool:
+        new: dict[str, Any] = change["new"] or {}
+        if new.get("state") != action["action"]:
+            return False
+        brightness: int = new.get("brightness", -10)
+        return action is not ON_37 or abs(brightness - BRIGHTNESS_37) <= 2
+
+    def shown() -> bool:
+        response = client.get(
+            "/api/events", params={"entity_id": entity, "start": since.isoformat()}
+        )
+        assert response.status_code == 200, response.text
+        return any(commanded(change) for change in response.json()["events"])
+
+    wait_until(f"the commanded {action['action']} in the history of {entity}", shown, timeout=30)
+
+
 def main() -> None:
     started = time.monotonic()
     try:
@@ -159,9 +183,11 @@ def main() -> None:
 
             first_action, first = switch(client)
             assert_observed(client, first_action, first)
+            assert_in_history(client, first_action, first)
             second_action, second = switch(client)
             assert second_action != first_action
             assert_observed(client, second_action, second)
+            assert_in_history(client, second_action, second)
             audit = client.get("/api/commands").json()["commands"]
             assert [record["id"] for record in audit] == [second["id"], first["id"]]
             assert {record["sender"]["kind"] for record in audit} == {"dashboard"}
@@ -182,6 +208,7 @@ def main() -> None:
             for _ in range(2):
                 plug_action, plug_record = switch(client, PLUG, ON)
                 assert_observed(client, plug_action, plug_record, PLUG)
+                assert_in_history(client, plug_action, plug_record, PLUG)
                 plug_actions.append(plug_action)
             assert plug_actions[0] != plug_actions[1]
             plug_audit = [

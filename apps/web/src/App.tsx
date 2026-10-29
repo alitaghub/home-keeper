@@ -9,7 +9,6 @@ import {
 } from "./api/client";
 import { Catalog, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
-import { Coverage } from "./components/Coverage";
 import { HistoryDialog } from "./components/History";
 import { type DeviceCommand, Monitored } from "./components/Monitored";
 import { Timeline } from "./components/Timeline";
@@ -98,7 +97,6 @@ type Snapshot = {
   selection: Schemas["Selection"];
   monitored: Schemas["MonitoredEntities"];
   health: Schemas["HealthStatus"];
-  coverage: Schemas["CoverageReport"];
 };
 
 // Polls overlap when a response is slow. Each load takes a number, and a result
@@ -141,16 +139,15 @@ export function App() {
       () => isLatest("control") && setControl("off"),
     );
     try {
-      const [catalog, selection, monitored, health, coverage] = await Promise.all([
+      const [catalog, selection, monitored, health] = await Promise.all([
         // The catalog answers 503 while Home Assistant cannot be read; the rest still load.
         unwrap(api.GET("/api/catalog")).catch(() => null),
         unwrap(api.GET("/api/selection")),
         unwrap(api.GET("/api/monitored")),
         unwrap(api.GET("/api/health")),
-        unwrap(api.GET("/api/coverage", { params: { query: { limit: 20 } } })),
       ]);
       if (!isLatest("snapshot")) return;
-      setSnapshot({ catalog, selection, monitored, health, coverage });
+      setSnapshot({ catalog, selection, monitored, health });
       setMessage("");
       await Promise.all([
         showingOlder.current ? null : loadTimeline(),
@@ -374,10 +371,6 @@ export function App() {
               Missing entries do not prove nothing changed. Times use your browser's local timezone.
             </p>
           </section>
-          <section className="panel" aria-labelledby="coverage-heading">
-            <h3 id="coverage-heading">Collection gaps</h3>
-            <Coverage coverage={snapshot?.coverage ?? null} />
-          </section>
         </section>
 
         <section {...panel("setup")}>
@@ -389,11 +382,11 @@ export function App() {
               ? "Waiting for Home Assistant."
               : live
                 ? controlOn
-                  ? "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights."
-                  : "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is off: Home Keeper only records."
+                  ? "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is on for monitored lights."
+                  : "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is off: Home Keeper only reads."
                 : controlOn
                   ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
-                  : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records."}
+                  : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only reads."}
           </p>
           <p id="catalog-status" className="history-status" role="status" aria-live="polite">
             {snapshot && !snapshot.catalog
@@ -420,7 +413,7 @@ export function App() {
             <section>
               <span>Monitoring</span>
               <strong id="selected-count">{snapshot?.selection.entity_ids.length ?? 0}</strong>
-              <small>You choose what gets recorded</small>
+              <small>You choose what Home Keeper shows</small>
             </section>
           </div>
           <section className="panel" aria-labelledby="choose-heading">
@@ -441,9 +434,7 @@ export function App() {
             onClose={() => setHistoryFor(null)}
           />
         )}
-        <footer>
-          Stored on this machine · Change records are evidence, not explanations of cause
-        </footer>
+        <footer>History comes from Home Assistant · Changes show what happened, not why</footer>
       </main>
     </>
   );

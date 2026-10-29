@@ -22,7 +22,8 @@ This starts four services:
 - `ha-setup`: a one-shot container that sets up Home Assistant, then exits.
 - `api`: the Home Keeper API and dashboard, published on <http://127.0.0.1:8000>
   (set `HOME_KEEPER_PORT` to change the port).
-- `collector`: the live collector that reads Home Assistant.
+- `reader`: reads devices, their states and their history from Home Assistant
+  for the API. It publishes no port.
 
 With `--profile control`, a fifth service, `controller`, switches monitored
 lights, plugs and switches. See [Switch lights](#switch-lights).
@@ -35,12 +36,12 @@ clicks:
 1. It creates the owner user `owner` with a random password.
 2. It finishes onboarding. Analytics stays disabled. Location, time zone and
    units keep Home Assistant's defaults; change them in Home Assistant.
-3. It creates a long-lived token for the collector and stores it in the
+3. It creates a long-lived token for the reader and stores it in the
    `ha-token` volume with mode `600`. Besides `ha-setup`, which writes and
-   checks it, only the collector mounts that volume, read-only.
+   checks it, only the reader mounts that volume, read-only.
 4. It stores the owner login with mode `600` in the `ha-owner` volume. Only
    `ha-setup` mounts that volume.
-5. With the owner's collector token, it creates the user "Home Keeper control"
+5. With the reader's owner token, it creates the user "Home Keeper control"
    (username `home-keeper-control`) in Home Assistant's non-admin **Users**
    group, with a random password it does not keep. It creates a long-lived token for that user and stores it in
    the `ha-control-token` volume with mode `600`. Only `ha-setup` and the
@@ -61,24 +62,24 @@ copy then goes stale, but setup does not need it again.
 `ha-setup` runs on every `up`:
 
 - Both tokens are stored and valid: it keeps the existing setup.
-- The collector's token is stored but the control token is not, as in an
+- The reader's token is stored but the control token is not, as in an
   install from before light control: it creates the control user and its token
-  with the collector's token. It does not need the owner password. A control
+  with the reader's token. It does not need the owner password. A control
   user left without a stored token, for example by an interrupted run, is
   replaced. If Home Assistant refuses, for example because another account uses
-  the username `home-keeper-control`, setup still succeeds and collection
+  the username `home-keeper-control`, setup still succeeds and the reader
   starts. Setup logs that light control is off and tries again on the next `up`.
 - Home Assistant rejects the stored control token (for example, you revoked
-  it): setup still succeeds and collection starts. Setup logs that light control
+  it): setup still succeeds and the reader starts. Setup logs that light control
   is off and changes nothing. To turn control on again, delete the control token
   file and run `up`:
   `docker compose run --rm --no-deps --entrypoint rm ha-setup /ha-control-token/token`.
   The running controller reads the new token, so control turns on within 30
   seconds without a restart.
 - Home Assistant is not onboarded yet: it onboards it.
-- Home Assistant is onboarded but no collector token is stored, or Home
-  Assistant rejects the collector token (for example, you revoked it): `up` fails. Reset with
-  `docker compose down --volumes`, which also deletes Home Keeper history, or use
+- Home Assistant is onboarded but no reader token is stored, or Home
+  Assistant rejects the reader token (for example, you revoked it): `up` fails. Reset with
+  `docker compose down --volumes`, which also deletes Home Assistant and its history, or use
   [your own Home Assistant](#use-your-own-home-assistant) with a token you create.
 
 Setup waits up to five minutes for Home Assistant to start. It logs when it
@@ -95,7 +96,7 @@ times out. Check it with `docker compose logs ha-setup`.
 4. Open <http://127.0.0.1:8000>. The **Setup** tab lists the devices Home Assistant has now.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
-supports. Home Keeper records any single light, smart plug or switch from any
+supports. Home Keeper can monitor any single light, smart plug or switch from any
 brand. Groups, rooms and other entities appear under **Show other entities**. When no supported device exists
 yet, the dashboard links to the Home Assistant integrations page.
 
@@ -119,18 +120,39 @@ docker compose --profile control up --build --wait
 ```
 
 The controller uses the control user's token, never the owner's. To stop
-control without stopping collection, stop the controller, or delete the
+control without stopping the reader, stop the controller, or delete the
 "Home Keeper control" user's token in Home Assistant under that user's
 profile. [control.md](control.md) covers the commands.
 
 ### Stop and reset
 
 ```sh
-# Stop, keeping Home Assistant, its token and Home Keeper history:
+# Stop, keeping Home Assistant with its history, its token and your monitored devices:
 docker compose down
 # Delete everything, including your Home Assistant setup:
 docker compose down --volumes
 ```
+
+## History retention
+
+Home Keeper's History and usage numbers come from Home Assistant's
+[recorder](https://www.home-assistant.io/integrations/recorder/). It keeps 10
+days of history by default, so History cannot reach further back. To keep more,
+set `purge_keep_days` in Home Assistant's `configuration.yaml`:
+
+```yaml
+recorder:
+  purge_keep_days: 30
+```
+
+Restart Home Assistant for the change to take effect. A longer history makes
+Home Assistant's database larger. With the bundled Home Assistant, the file is
+in the `home-assistant-config` volume; edit it in a shell in the container, for
+example `docker compose exec homeassistant vi /config/configuration.yaml`, then
+`docker compose restart homeassistant`.
+
+Home Keeper keeps no copy of device history, so this one setting decides how far
+back History and usage go.
 
 ## Use your own Home Assistant
 
@@ -143,9 +165,9 @@ running Docker. Read [networking.md](networking.md) before you pick the address.
 Create a dedicated Home Assistant user with permission to read the required
 registries and selected entities, then generate a long-lived access token from
 that user's profile. Home Assistant tokens do not provide a per-token read-only
-entity scope. Treat the token as a powerful credential. The connector restricts
-its own operations to fixed discovery, selected-state reads and a read-only
-state-change subscription.
+entity scope. Treat the token as a powerful credential. The reader restricts
+its own operations to fixed discovery, state reads and history reads of the
+devices the API asks for, and a reachability check.
 
 Save the token alone in a local file outside this repository. Do not put it in
 `.env`, a URL, a shell command argument, the dashboard, or a Compose environment
@@ -176,8 +198,8 @@ docker compose -f compose.yaml -f compose.external.yaml up --build --wait
 You can put these lines in `.env` instead, without `export`; `.env.example` lists them.
 Use your actual Home Assistant origin, without credentials, a query string or an
 API path. The address above is an example. HTTPS certificate verification stays
-on. Install a certificate trusted by the container; invalid certificates fail
-collection. HTTP is supported for a trusted local network, but does not encrypt
+on. Install a certificate trusted by the container; with an invalid certificate,
+Home Keeper reports Home Assistant as unreachable. HTTP is supported for a trusted local network, but does not encrypt
 the token in transit.
 
 Use both Compose files for every command, for example
@@ -186,7 +208,7 @@ Use both Compose files for every command, for example
 ### Turn on light control
 
 Light control needs its own token, for a second Home Assistant user that is not
-an administrator. Then you can revoke control without breaking collection, and
+an administrator. Then you can revoke control without breaking the reader, and
 Home Assistant's logbook names that user for every command.
 
 1. In Home Assistant, open **Settings → People → Users** (turn on advanced mode
@@ -195,7 +217,7 @@ Home Assistant's logbook names that user for every command.
 2. Log in as that user, open its profile, and on the **Security** tab create a
    long-lived access token.
 3. Save the token alone in a file outside this repository, with the same care
-   and permissions as the collector's token above.
+   and permissions as the reader's token above.
 4. Start with the `control` profile:
 
 ```sh
@@ -228,7 +250,7 @@ A light or switch is a group when it comes from the
 state lists member entities in an `entity_id` attribute, or when an attribute such
 as `is_hue_group` or `is_deconz_group` is true. A Hue room is one example. The
 catalog marks each light and switch with its `device_kind`: `light` or `switch`.
-The dashboard gives the reason for each entity it cannot record:
+The dashboard gives the reason for each entity it cannot monitor:
 
 - **Groups and rooms are not recorded**: a group or room light or switch.
 - **Disabled in Home Assistant**: the entity is disabled there.
@@ -239,15 +261,16 @@ The dashboard gives the reason for each entity it cannot record:
 - **Only lights, plugs and switches are supported**: any other entity, such as a
   sensor.
 
-A plug or switch records its on/off state and availability only. Home Keeper
-keeps no light attributes for it. With the `control` profile it can switch it
+For a plug or switch, Home Keeper shows its on/off state and availability only,
+with no light attributes. With the `control` profile it can switch it
 on or off.
 
 A candidate with no state yet is not a group. If a candidate's state read fails
 or returns malformed data, discovery fails rather than guessing, and the next
-pass reads it again.
+read tries again.
 
-Select a light, plug or switch to record its first state. Devices you add to Home Assistant
+Select a light, plug or switch to monitor it. Its current state and all the
+history Home Assistant has for it appear at once. Devices you add to Home Assistant
 appear on the **Setup** tab within seconds, without changing configuration or
 restarting. Stable entity registry identity keeps selection and history across
 an entity name change. A new registry entry reusing an old entity ID does not
@@ -257,8 +280,8 @@ inherit approval.
 
 The home stack and the demo use separate Compose projects and volumes. The home
 stack runs as project `home-keeper` and the demo as `home-keeper-demo`, whatever
-the checkout folder is called. The API rejects a database containing
-another source. Stop one stack before starting the other, because both publish
+the checkout folder is called. The API rejects a database written for the
+other source. Stop one stack before starting the other, because both publish
 the same localhost port.
 
 ## Check it with a real light
@@ -267,19 +290,16 @@ Test one single light end to end. The steps use a Hue light as the example:
 
 1. Confirm the bulb appears and responds in Home Assistant.
 2. Open Home Keeper, check the **HOME ASSISTANT** label, and select the bulb.
-   Wait for fresh evidence and a first baseline.
+   Confirm the **Home** tab shows the state Home Assistant shows.
 3. Change on/off and brightness in the Hue app. Leave each setting for about 20
-   seconds. Confirm the changes appear on the **History** tab.
-4. Stop the live collector and wait more than twice the collection interval.
-   Confirm the evidence turns stale and a collection gap opens. Change the bulb
-   while collection is stopped.
-5. Start the collector again. Confirm a recovery snapshot and a closed gap. The
-   app must not invent the change that happened while it was stopped.
-6. Restart the API. Confirm selections and history remain, and that a restart
-   gap opens and then closes.
-
-[collection.md](collection.md#test-a-gap-without-hardware) has the commands for
-steps 4 to 6. For the home stack, drop `-f compose.demo.yaml` from each.
+   seconds. Confirm the changes appear on the **History** tab, at the same times
+   as in Home Assistant's own history.
+4. Stop Home Assistant with `docker compose stop homeassistant`. Confirm every
+   tab shows "Can't reach Home Assistant" and the bulb's state is unknown.
+5. Start it again with `docker compose start homeassistant`. Confirm the banner
+   goes away and the state returns.
+6. Restart the API with `docker compose restart api`. Confirm your selection
+   remains and History still shows the changes from step 3.
 
 When you report a failure, share the dashboard's error message and your Home
 Assistant version. Never share the token or raw registry payloads.

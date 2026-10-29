@@ -35,7 +35,7 @@ seconds of Home Assistant accepting the token again.
 ## Switch a light from the dashboard
 
 While control is `on`, the **Home** tab's status line shows `CONTROL ON`
-instead of `READ ONLY`. Each monitored light that is available and recorded
+instead of `READ ONLY`. Each monitored light that Home Assistant reports
 `on` or `off` gets a button and a brightness slider: **Turn off** for a light
 that is on, **Turn on** for a light that is off. A pending, unknown or
 unavailable light gets neither. With control `off`, the dashboard shows no
@@ -47,8 +47,8 @@ by the same rules, with no slider: a plug or switch has no brightness.
 
 The slider sends `on` at the chosen percent once it stops moving for 0.4
 seconds, so a drag sends one command. Moving the slider of a light that is off
-turns it on at that brightness. Like the button, it returns to the recorded
-brightness after the command. Clicking the button before the slider settles
+turns it on at that brightness. Like the button, it returns to the brightness
+Home Assistant reports after the command. Clicking the button before the slider settles
 drops the slider move.
 
 One click sends the command, with no confirmation and sender `dashboard`. The
@@ -71,7 +71,7 @@ in that state`, and the dashboard reloads. For a plug or switch the message says
 `device` instead of `light`. Any other error shows "Request failed.
 Please retry."
 
-The message stays for 15 seconds, or until you send the next command. Collection
+The message stays for 15 seconds, or until you send the next command. Connection
 status messages appear beside it and do not replace it.
 
 The button always follows the state Home Assistant reports, not the requested one.
@@ -127,7 +127,7 @@ API was restarted during shows `interrupted`: it may or may not have switched
 the device. Commands recorded before plugs could be switched carry
 `device_kind` `light`.
 
-A reading received before the send never counts. With a brightness, a recorded
+A reading taken before the send never counts. With a brightness, a reported
 brightness within 2 of `percent × 255 / 100`, rounded half up, counts as a match: 30% is
 `77`, so `75` to `79` match.
 
@@ -143,7 +143,7 @@ The API refuses these before it sends anything. It records nothing for them.
 | 409    | code `not_monitored`                      | You do not monitor the device. Monitor it first.            |
 | 409    | code `state_unknown`                      | Home Assistant cannot be reached or has no such entity, or the state is `unknown`. |
 | 409    | code `not_supported`                      | The command has a `brightness_pct` and the device is a plug or switch. |
-| 409    | code `unavailable`                        | The device's recorded state is `unavailable`.               |
+| 409    | code `unavailable`                        | Home Assistant reports the device as `unavailable`.         |
 | 409    | code `already_in_state`                   | The device is already in that state, at that brightness.    |
 | 409    | code `busy`                               | Four commands are being sent and this one waited 3 seconds. |
 
@@ -163,10 +163,11 @@ its sender has given up.
 ## Command history
 
 `GET /api/commands` lists recorded commands, newest first: time, device and
-its `device_kind`, command, sender, outcome and the matching event. It takes `start`, `end`,
-`limit` (1 to 500, default 50) and `cursor`, and pages like `/api/events`.
-Commands expire with the same retention as events; see
-[collection.md](collection.md#retention).
+its `device_kind`, command, sender and outcome. It takes `start`, `end`,
+`limit` (1 to 500, default 50) and `cursor`. Commands are Home Keeper's own
+records: they expire after `HOME_KEEPER_RETENTION_DAYS`, 30 days by default; see
+[collection.md](collection.md#retention). The device change a command caused
+shows in History like any other change Home Assistant recorded.
 
 ### Command history in the dashboard
 

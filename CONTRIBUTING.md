@@ -65,7 +65,7 @@ shell differ.
 ### Pull request titles
 
 PR titles follow [Conventional Commits](https://www.conventionalcommits.org/),
-for example `fix(keeper): keep gaps open after a failed heartbeat`. The
+for example `fix(keeper): answer 503 when the reader times out`. The
 `PR title` workflow checks this. Allowed types:
 
 `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`,

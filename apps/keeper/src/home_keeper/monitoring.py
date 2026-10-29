@@ -1,15 +1,11 @@
 """The selection: which devices the user monitors, and what Home Assistant reports for each.
 
-Selecting a device checks Home Assistant's catalog through the reader. `device` and
-`admits` serve the collector ingest routes: they read inside the caller's transaction, so a
-recorder can check a device and act on it with no select slipping in between.
+Selecting a device checks Home Assistant's catalog through the reader.
 """
 
-import sqlite3
 from dataclasses import dataclass
 
 from home_keeper.models import (
-    CurrentReading,
     DeviceKind,
     Entity,
     MonitoredEntities,
@@ -32,18 +28,6 @@ class UnsupportedEntity:
     pass
 
 
-@dataclass(frozen=True)
-class Device:
-    """What Home Keeper knows of one device, monitored or not."""
-
-    entity_id: str
-    # None once the device has left discovery.
-    entity: Entity | None
-    monitored: bool
-    kind: DeviceKind | None
-    reading: CurrentReading | None
-
-
 class Monitoring:
     def __init__(self, store: Store, reader: Reader) -> None:
         self.store = store
@@ -51,7 +35,7 @@ class Monitoring:
 
     def selection(self) -> Selection:
         with self.store.transaction("DEFERRED") as db:
-            return Selection(entity_ids=self.store.selection(db).entity_ids)
+            return Selection(entity_ids=self.store.selected(db))
 
     def select(
         self, entity_id: str, *, selected: bool
@@ -69,31 +53,25 @@ class Monitoring:
             kind = entity.device_kind
         store = self.store
         with store.transaction() as db:
-            current = store.selection(db)
-            if selected != (entity_id in current.entity_ids):
-                if selected:
-                    db.execute(
-                        "INSERT INTO selection(id, device_kind) VALUES(?, ?)", (entity_id, kind)
-                    )
-                    # The collector ingest routes still record into these until they go.
-                    db.execute("DELETE FROM confirmed WHERE entity_id=?", (entity_id,))
-                    db.execute("DELETE FROM current_state WHERE entity_id=?", (entity_id,))
-                else:
-                    db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
+            if selected:
                 db.execute(
-                    "UPDATE metadata SET value=? WHERE key='revision'",
-                    (str(current.revision + 1),),
+                    "INSERT OR IGNORE INTO selection(id, device_kind) VALUES(?, ?)",
+                    (entity_id, kind),
                 )
-            return Selection(entity_ids=store.selection(db).entity_ids)
+            else:
+                db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
+            return Selection(entity_ids=store.selected(db))
+
+    def kinds(self) -> dict[str, DeviceKind | None]:
+        """Each monitored device with the kind it was selected as, in ID order."""
+        with self.store.transaction("DEFERRED") as db:
+            rows = db.execute("SELECT id, device_kind FROM selection ORDER BY id").fetchall()
+        return {row[0]: stored_kind.validate_python(row[1]) for row in rows}
 
     def devices(self) -> MonitoredEntities:
         """Every monitored device with what Home Assistant reports for it now. While Home
         Assistant cannot be read, each device is listed by its ID with no state."""
-        with self.store.transaction("DEFERRED") as db:
-            rows = db.execute("SELECT id, device_kind FROM selection ORDER BY id").fetchall()
-        kinds: dict[str, DeviceKind | None] = {
-            row[0]: stored_kind.validate_python(row[1]) for row in rows
-        }
+        kinds = self.kinds()
         try:
             catalog = {entity.id: entity for entity in self.reader.catalog()}
             states = self.reader.states(list(kinds))
@@ -137,37 +115,3 @@ class Monitoring:
                 )
             )
         return MonitoredEntities(entities=results)
-
-    @staticmethod
-    def device(db: sqlite3.Connection, entity_id: str) -> Device:
-        entity = Store.entity(db, entity_id)
-        reading = Store.current(db, entity_id)
-        selected = db.execute(
-            "SELECT device_kind FROM selection WHERE id=?", (entity_id,)
-        ).fetchone()
-        # Discovery names the kind of every supported device; a catalog entry without one
-        # falls back to the newest reading, then to the kind the device was selected as.
-        kind = (
-            (entity.device_kind if entity else None)
-            or (reading.device_kind if reading else None)
-            or (stored_kind.validate_python(selected[0]) if selected else None)
-        )
-        return Device(
-            entity_id=entity_id,
-            entity=entity,
-            monitored=selected is not None,
-            kind=kind,
-            reading=reading,
-        )
-
-    @staticmethod
-    def admits(db: sqlite3.Connection, entity_id: str, revision: int) -> bool:
-        """Whether a reading taken under selection `revision` may still be recorded."""
-        selection = Store.selection(db)
-        entity = Store.entity(db, entity_id)
-        return (
-            revision == selection.revision
-            and entity_id in selection.entity_ids
-            and entity is not None
-            and entity.supported
-        )

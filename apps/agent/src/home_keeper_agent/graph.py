@@ -36,9 +36,9 @@ from home_keeper_agent.keeper import KeeperClient
 from home_keeper_agent.tools import COMMAND_TOOLS, command_refusals, keeper_tools, run_context
 
 SYSTEM_PROMPT = """\
-You help look after the lights, plugs and switches in one home. Home Keeper records what \
-they do through Home Assistant; your tools read what it recorded, choose which devices it \
-records and, when control is on, switch monitored devices.
+You help look after the lights, plugs and switches in one home. Home Keeper reads what \
+they do from Home Assistant's history; your tools read that history for the monitored \
+devices, choose which devices are monitored and, when control is on, switch monitored devices.
 
 Rules:
 - Every number you state comes from a tool result. Never add up, count or estimate from \

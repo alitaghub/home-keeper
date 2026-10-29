@@ -16,16 +16,11 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from support.api import (
-    AUTH,
     BROWSER,
-    CATALOG,
-    CATALOG_ENTITIES,
     NOW,
     TOKEN,
     Payload,
     catalog_reader,
-    observation,
-    select,
 )
 from support.control import (
     BROWSER_CHAT,
@@ -67,14 +62,6 @@ def record(response: httpx.Response) -> Recorded:
     return {"status": response.status_code, "body": normalize(response.json())}
 
 
-def health(clock: datetime) -> Payload:
-    return {"source_id": "demo", "status": "healthy", "received_at": clock.isoformat()}
-
-
-def coverage(clock: datetime, status: str = "interrupted", **changes: object) -> Payload:
-    return {"source_id": "demo", "status": status, "received_at": clock.isoformat()} | changes
-
-
 def usage_range(start: datetime, end: datetime) -> dict[str, str]:
     return {"start": start.isoformat(), "end": end.isoformat()}
 
@@ -85,9 +72,7 @@ def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
         return {
             "empty_catalog": record(client.get("/api/catalog")),
             "empty_selection": record(client.get("/api/selection")),
-            "empty_baselines": record(client.get("/api/baselines?entity_id=bulb-a")),
             "empty_events": record(client.get("/api/events")),
-            "empty_coverage": record(client.get("/api/coverage")),
             "empty_health": record(client.get("/api/health")),
             "empty_monitored": record(client.get("/api/monitored")),
             "empty_usage": record(
@@ -102,14 +87,11 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
     reader = catalog_reader()
     app = create_app(tmp_path / "seeded.sqlite", TOKEN, now=lambda: clock[0], reader=reader)
     with TestClient(app) as client:
-        # The collector's ingest routes check their own copy of the catalog.
-        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         result["put_selection"] = record(
             client.put("/api/selection/bulb-a", json={"selected": True}, headers=BROWSER)
         )
-        revision = select(client, "bulb-b")
-        client.post("/internal/health", json=health(clock[0]), headers=AUTH)
-        client.post("/internal/baselines", json=observation(revision), headers=AUTH)
+        selected = client.put("/api/selection/bulb-b", json={"selected": True}, headers=BROWSER)
+        assert selected.is_success, selected.text
         # Home Assistant's recorder holds bulb-a unavailable, then off, then the three changes
         # below. Its history starts 10 s after the usage window does.
         reader.record(
@@ -123,41 +105,15 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
             )
             reader.record("bulb-a", history_row(DESK, at, state))
 
-        # A whole-home gap that recovers with a snapshot.
-        clock[0] = NOW + timedelta(seconds=5)
-        client.post("/internal/coverage", json=coverage(clock[0]), headers=AUTH)
-        clock[0] = NOW + timedelta(seconds=6)
-        snapshot = observation(revision, received_at=clock[0].isoformat(), state="off")
-        assert client.post("/internal/baselines", json=snapshot, headers=AUTH).is_success
-        recovered = coverage(clock[0], "recovered", selection_revision=revision)
-        assert client.post("/internal/coverage", json=recovered, headers=AUTH).is_success
-
         # bulb-b stays selected but disappears from Home Assistant.
         clock[0] = NOW + timedelta(seconds=7)
-        catalog = CATALOG | {"entities": [e for e in CATALOG_ENTITIES if e["id"] != "bulb-b"]}
-        client.post("/internal/catalog", json=catalog, headers=AUTH)
         reader.drop("bulb-b")
         # Home Assistant reports bulb-a off now.
         reader.set("bulb-a", DESK, {"state": "off"})
 
-        # An entity-scoped gap that stays open.
-        clock[0] = NOW + timedelta(seconds=8)
-        open_gap = coverage(clock[0], reason="reconciliation", entity_id="bulb-a")
-        assert client.post("/internal/coverage", json=open_gap, headers=AUTH).is_success
-        client.post("/internal/health", json=health(clock[0]), headers=AUTH)
-        result["discovery_refresh"] = record(client.post("/api/discovery/refresh", headers=BROWSER))
-
         clock[0] = NOW + timedelta(seconds=10)
         result["catalog"] = record(client.get("/api/catalog"))
         result["selection"] = record(client.get("/api/selection"))
-        result["baselines"] = record(client.get("/api/baselines?entity_id=bulb-a"))
-        first = client.get("/api/baselines?entity_id=bulb-a&limit=1")
-        result["baselines_page_1"] = record(first)
-        cursor = first.json()["next_cursor"]
-        assert cursor is not None
-        result["baselines_page_2"] = record(
-            client.get(f"/api/baselines?entity_id=bulb-a&limit=1&cursor={cursor}")
-        )
         first = client.get("/api/events?limit=2")
         result["events_page_1"] = record(first)
         cursor = first.json()["next_cursor"]
@@ -165,7 +121,6 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
         result["events_page_2"] = record(
             client.get("/api/events", params={"limit": 2, "cursor": cursor})
         )
-        result["coverage"] = record(client.get("/api/coverage"))
         result["health"] = record(client.get("/api/health"))
         result["monitored"] = record(client.get("/api/monitored"))
         # bulb-a: no history, then unavailable, then the changes. bulb-b, gone from Home

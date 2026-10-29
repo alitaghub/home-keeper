@@ -49,7 +49,6 @@ def main() -> None:
         source_id=settings.source_id,
         home_assistant_url=settings.ha_public_url,
         retention_days=settings.retention_days,
-        reconciliation_seconds=settings.reconciliation_seconds,
         timezone=settings.timezone,
         allowed_hosts=hosts,
         allowed_origins=tuple(

@@ -7,13 +7,10 @@ from fastapi.testclient import TestClient
 from support.api import (
     AUTH,
     BROWSER,
-    CATALOG,
     NOW,
     TOKEN,
     app_for,
     catalog_reader,
-    observation,
-    select,
 )
 from support.reader import FakeReader
 
@@ -63,22 +60,14 @@ def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     with TestClient(app_for(tmp_path / "input.sqlite")) as client:
-        # The collector's ingest routes check their own copy of the catalog.
-        assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
         assert "<script>" in client.get("/api/catalog").text
-        revision = select(client)
         with caplog.at_level(logging.DEBUG):
-            rejected = client.post(
-                "/internal/baselines", headers=AUTH, json=observation(revision, received_at=TOKEN)
-            )
+            # Malformed input and unexpected credentials must not be echoed in errors.
+            for body in ({"received_at": TOKEN}, {"received_at": NOW.isoformat(), "x": TOKEN}):
+                response = client.post("/internal/control", headers=AUTH, json=body)
+                assert TOKEN not in response.text
+            rejected = client.post("/internal/control", headers=AUTH, json={"received_at": TOKEN})
             assert rejected.is_client_error
-            assert TOKEN not in rejected.text
-            # Unexpected credentials and raw vendor attributes must not be echoed in errors.
-            extra = client.post(
-                "/internal/baselines", headers=AUTH, json=observation(revision, password=TOKEN)
-            )
-            assert extra.is_client_error
-            assert TOKEN not in extra.text
             # No generic service passthrough exists beside the fixed light command.
             for path in (
                 "/api/control",
@@ -96,9 +85,6 @@ def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
         assert TOKEN not in caplog.text
         for endpoint in ("/api/catalog", "/api/selection", "/api/monitored", "/api/health"):
             assert TOKEN not in client.get(endpoint).text
-        assert (
-            client.get("/api/baselines", params={"entity_id": "bulb-a"}).json()["baselines"] == []
-        )
 
 
 def test_non_ascii_internal_credentials_are_rejected_without_server_error(tmp_path: Path) -> None:

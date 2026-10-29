@@ -1,6 +1,4 @@
-import json
 import secrets
-import sqlite3
 import time
 from collections.abc import Callable
 from datetime import MAXYEAR, UTC, datetime, timedelta
@@ -18,41 +16,28 @@ from home_keeper.changes import changes, events_page, read_cursor
 from home_keeper.commands import Commands, Refusal
 from home_keeper.control import Controller
 from home_keeper.models import (
-    BaselinesPage,
-    Catalog,
     CatalogResponse,
-    ChangeEvent,
     CommandRecord,
     CommandRefused,
     CommandRequest,
     CommandsPage,
     ControlHeartbeat,
     ControlStatus,
-    Coverage,
-    CoverageGap,
-    CoverageReport,
     DeviceKind,
-    DeviceObservation,
-    DiscoveryRefresh,
     EventsPage,
-    Health,
-    HealthPending,
-    HealthReport,
     HealthStatus,
     Identity,
     MonitoredEntities,
     ReaderError,
     Selection,
     SelectionChange,
-    SelectionSnapshot,
     Unreachable,
     UsageReport,
     to_utc,
 )
 from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
 from home_keeper.reader import Reader, ReaderUnavailable
-from home_keeper.recorder import Recorder, Rejected, update_current
-from home_keeper.store import Store, baseline_record
+from home_keeper.store import Store
 from home_keeper.usage import device_usage
 
 UTC_ZONE = ZoneInfo("UTC")
@@ -82,7 +67,6 @@ def create_app(
     *,
     reader: Reader,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
-    reconciliation_seconds: int = 60,
     source_id: str = "demo",
     home_assistant_url: str | None = None,
     retention_days: int = 30,
@@ -100,8 +84,8 @@ def create_app(
         or retention_days < 1
     ):
         raise ValueError("Retention must be a positive number of days")
-    if reconciliation_seconds < 1 or not service_token:
-        raise ValueError("Positive reconciliation interval and service credential required")
+    if not service_token:
+        raise ValueError("Service credential required")
     if source_id not in ("demo", "home_assistant"):
         raise ValueError("Unsupported collection source")
     store = Store(Path(db_path))
@@ -109,33 +93,7 @@ def create_app(
         existing = db.execute("SELECT value FROM metadata WHERE key='source_id'").fetchone()
         if existing and existing[0] != source_id:
             raise ValueError("Use a separate database for a different collection source")
-        # Existing records without source metadata must remain demo-only.
-        if (
-            not existing
-            and source_id != "demo"
-            and any(
-                db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608 -- fixed table names
-                for table in ("catalog", "selection", "baselines", "confirmed")
-            )
-        ):
-            raise ValueError("Use an empty database for live mode")
         db.execute("INSERT OR IGNORE INTO metadata VALUES('source_id', ?)", (source_id,))
-        db.execute("INSERT OR IGNORE INTO metadata VALUES('refresh_revision', '0')")
-        # Migrate retained snapshots to a separate cache before retention removes history.
-        for row in db.execute(
-            "SELECT b.entity_id, b.data FROM baselines b WHERE b.rowid="
-            "(SELECT MAX(newest.rowid) FROM baselines newest WHERE newest.entity_id=b.entity_id) "
-            "AND NOT EXISTS (SELECT 1 FROM current_state c WHERE c.entity_id=b.entity_id)"
-        ).fetchall():
-            if db.execute(
-                "SELECT 1 FROM current_state WHERE entity_id=?", (row["entity_id"],)
-            ).fetchone():
-                continue
-            value = baseline_record.validate_json(row["data"])
-            source_time = value.last_updated or value.received_at
-            update_current(db, row["entity_id"], source_time, value)
-        if store.last_confirmed(db):
-            store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "restart")
     device_commands = Commands(
         store,
         controller,
@@ -146,7 +104,6 @@ def create_app(
         stale_seconds=control_stale_seconds,
     )
     device_commands.interrupt_pending()
-    recorder = Recorder(store, source_id, now)
     monitoring = Monitoring(store, reader)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -157,11 +114,6 @@ def create_app(
 
     def conflict(code: str, message: str) -> HTTPException:
         return HTTPException(409, {"code": code, "message": message})
-
-    def rejection(rejected: Rejected) -> HTTPException:
-        if rejected.code == "future_timestamp":
-            return HTTPException(422, rejected.message)
-        return conflict(rejected.code, rejected.message)
 
     @app.middleware("http")
     async def browser_boundary(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -232,30 +184,6 @@ def create_app(
     def selection():
         return monitoring.selection()
 
-    @app.get(
-        "/internal/selection",
-        response_model=SelectionSnapshot,
-        dependencies=[Depends(internal_auth)],
-        include_in_schema=False,
-    )
-    def internal_selection():
-        with store.transaction("DEFERRED") as db:
-            return store.selection(db)
-
-    @app.post("/api/discovery/refresh", response_model=DiscoveryRefresh)
-    def refresh_discovery():
-        with store.transaction() as db:
-            revision = (
-                int(
-                    db.execute(
-                        "SELECT value FROM metadata WHERE key='refresh_revision'"
-                    ).fetchone()[0]
-                )
-                + 1
-            )
-            db.execute("UPDATE metadata SET value=? WHERE key='refresh_revision'", (str(revision),))
-            return DiscoveryRefresh(refresh_revision=revision)
-
     @app.put("/api/selection/{entity_id}", response_model=Selection, responses=needs_home_assistant)
     def select(entity_id: str, change: SelectionChange):
         result = monitoring.select(entity_id, selected=change.selected)
@@ -264,65 +192,6 @@ def create_app(
         if isinstance(result, UnsupportedEntity):
             raise HTTPException(422, "Entity is unsupported")
         return result
-
-    @app.post("/internal/catalog", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_catalog(payload: Catalog):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        with store.transaction() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO metadata VALUES('catalog_at', ?)", (now().isoformat(),)
-            )
-            db.execute("DELETE FROM catalog")
-            db.executemany(
-                "INSERT INTO catalog VALUES(?, ?)",
-                [(e.id, e.model_dump_json()) for e in payload.entities],
-            )
-            # Discovery describes support; it never changes the user's approval.
-        return {"accepted": True}
-
-    @app.post("/internal/baselines", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_observation(payload: DeviceObservation):
-        baseline = recorder.observe(payload)
-        if isinstance(baseline, Rejected):
-            raise rejection(baseline)
-        return {"accepted": True, "baseline": baseline.model_dump(mode="json", exclude_unset=True)}
-
-    # Stored readings omit unset light attributes; excluding unset fields returns them as stored.
-    @app.get("/api/baselines", response_model=BaselinesPage, response_model_exclude_unset=True)
-    def baselines(
-        entity_id: Identity,
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        cursor: Annotated[int | None, Query(ge=1)] = None,
-    ):
-        with store.transaction() as db:
-            rows = db.execute(
-                # Only fixed SQL fragments are concatenated; values are bound parameters.
-                "SELECT rowid,data FROM baselines WHERE entity_id=? AND persisted_at>=? "  # noqa: S608
-                + ("AND rowid<? " if cursor is not None else "")
-                + "ORDER BY rowid DESC LIMIT ?",
-                (
-                    entity_id,
-                    retention_cutoff(),
-                    *((cursor,) if cursor is not None else ()),
-                    limit + 1,
-                ),
-            ).fetchall()
-            return BaselinesPage(
-                baselines=[baseline_record.validate_json(row["data"]) for row in rows[:limit]],
-                next_cursor=rows[limit - 1]["rowid"] if len(rows) > limit else None,
-            )
-
-    @app.post("/internal/events", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_event(payload: ChangeEvent):
-        outcome = recorder.record(payload)
-        if isinstance(outcome, Rejected):
-            raise rejection(outcome)
-        return {
-            "accepted": True,
-            "recorded": outcome == "recorded",
-            "duplicate": outcome == "duplicate",
-        }
 
     # Readings omit unset light attributes; excluding unset fields keeps them absent.
     @app.get(
@@ -368,131 +237,6 @@ def create_app(
         ]
         return events_page(found, start=window_start, end=window_end, after=after, limit=limit)
 
-    @app.post("/internal/health", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_health(payload: Health):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        persisted = now().astimezone(UTC)
-        if payload.received_at > persisted:
-            raise HTTPException(422, "Future receipt timestamp")
-        with store.transaction() as db:
-            previous = store.health(db)
-            # A delayed heartbeat cannot erase a newer failure. When the API's
-            # clock rolled back, allow the new clock's heartbeat to reset health.
-            if (
-                previous
-                and persisted >= datetime.fromisoformat(previous.persisted_at)
-                and payload.received_at < datetime.fromisoformat(previous.received_at)
-            ):
-                raise conflict("heartbeat_older", "Heartbeat is older than latest health")
-            if payload.status == "failed":
-                reason = (
-                    "invalid_data"
-                    if payload.error == "discovery"
-                    else payload.error or "connection"
-                )
-                store.interrupt(db, source_id, persisted.isoformat(), reason)
-            if payload.status == "healthy":
-                db.execute(
-                    "INSERT OR REPLACE INTO metadata VALUES('last_healthy_at', ?)",
-                    (persisted.isoformat(),),
-                )
-            data = payload.model_dump(mode="json") | {"persisted_at": persisted.isoformat()}
-            db.execute("INSERT OR REPLACE INTO metadata VALUES('health', ?)", (json.dumps(data),))
-        return {"accepted": True}
-
-    def get_health(db: sqlite3.Connection) -> HealthPending | HealthReport:
-        result = store.health(db)
-        if result is None:
-            return HealthPending(status="pending", source_id=source_id)
-        age = (now() - datetime.fromisoformat(result.received_at)).total_seconds()
-        if age < 0 or age > 2 * reconciliation_seconds:
-            result.status = "stale"
-            store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "heartbeat")
-        return result
-
-    @app.post("/internal/coverage", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_coverage(payload: Coverage):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        persisted = now().astimezone(UTC)
-        if payload.received_at > persisted:
-            raise HTTPException(422, "Future receipt timestamp")
-        with store.transaction() as db:
-            current = store.selection(db)
-            if (
-                payload.entity_id is not None
-                and payload.entity_id not in store.selection(db).entity_ids
-            ):
-                raise conflict(
-                    "selection_changed", "Selection no longer permits this coverage scope"
-                )
-            if payload.status == "interrupted":
-                gap = store.interrupt(
-                    db, source_id, persisted.isoformat(), payload.reason, payload.entity_id
-                )
-                return {"accepted": True, "gap": gap}
-            if payload.selection_revision != store.selection(db).revision:
-                raise conflict("selection_changed", "Selection changed before recovery completed")
-            recovered_entities = (
-                payload.entity_ids if payload.entity_ids is not None else current.entity_ids
-            )
-            if not set(recovered_entities).issubset(current.entity_ids):
-                raise conflict(
-                    "selection_changed", "Selection no longer permits this recovery scope"
-                )
-            # Recovery is a collector assertion that subscription and snapshots completed.
-            rows = db.execute(
-                "SELECT id, scope, data FROM coverage WHERE recovered_at IS NULL"
-            ).fetchall()
-            relevant = [
-                row
-                for row in rows
-                if (
-                    row["scope"] == payload.entity_id
-                    if payload.entity_id is not None
-                    else row["scope"] == "*" or row["scope"] in recovered_entities
-                )
-            ]
-            gaps = [CoverageGap.model_validate_json(row["data"]) for row in relevant]
-            if any(payload.received_at < datetime.fromisoformat(gap.detected_at) for gap in gaps):
-                raise conflict("recovery_older", "Recovery is older than interruption")
-            for gap in gaps:
-                gap.recovered_at = persisted.isoformat()
-                db.execute(
-                    "UPDATE coverage SET recovered_at=?, data=? WHERE id=?",
-                    (persisted.isoformat(), gap.model_dump_json(), gap.id),
-                )
-            return {"accepted": True}
-
-    @app.get("/api/coverage", response_model=CoverageReport)
-    def coverage(limit: Annotated[int, Query(ge=1, le=100)] = 100):
-        with store.transaction() as db:
-            health = get_health(db)
-            gaps = [
-                CoverageGap.model_validate_json(row[0])
-                for row in db.execute(
-                    "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=? "
-                    "ORDER BY detected_at DESC, id DESC LIMIT ?",
-                    (retention_cutoff(), limit),
-                )
-            ]
-            return CoverageReport(
-                gaps=gaps,
-                state="interrupted"
-                if any(
-                    not gap.entity_ids or set(gap.entity_ids) & set(store.selection(db).entity_ids)
-                    for gap in store.open_gaps(db)
-                )
-                else "collecting"
-                if health.status == "healthy"
-                else "unknown",
-                last_confirmed_at=store.last_confirmed(db),
-                retained_since=(now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
-                continuous_coverage=False,
-                outside_recorded_windows="unknown",
-            )
-
     @app.get("/api/usage", response_model=UsageReport, responses=needs_home_assistant)
     def usage(
         *,
@@ -515,13 +259,9 @@ def create_app(
         if start > end or end - start > timedelta(days=366) or end.year >= MAXYEAR:
             raise HTTPException(422, "Invalid usage range")
         current = now().astimezone(UTC)
-        with store.transaction("DEFERRED") as db:
-            selected = store.selection(db).entity_ids
-            # Unselected IDs are left out rather than reported as missing.
-            devices = sorted(set(entity_id or selected) & set(selected))
-            stored_kinds: dict[str, DeviceKind | None] = {
-                device: Monitoring.device(db, device).kind for device in devices
-            }
+        stored_kinds = monitoring.kinds()
+        # Unselected IDs are left out rather than reported as missing.
+        devices = sorted(set(entity_id or stored_kinds) & set(stored_kinds))
         # Home Assistant has no history after now.
         history_end = min(end, current)
         history = (
@@ -531,7 +271,7 @@ def create_app(
         )
 
         def kind_of(device: str) -> DeviceKind:
-            # A device no stored kind names is still known by its rows.
+            # A device selected without a kind is still known by its rows.
             if stored := stored_kinds[device]:
                 return stored
             rows = history.get(device, [])

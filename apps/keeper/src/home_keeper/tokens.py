@@ -1,4 +1,4 @@
-"""Reads the service credential file. Kept apart from the API so collectors import no API code."""
+"""Reads the service credential file. Kept apart from the API so the reader imports no API code."""
 
 from pathlib import Path
 

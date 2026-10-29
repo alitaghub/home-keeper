@@ -26,12 +26,11 @@ READ_TOOLS = {
     "list_monitored",
     "get_usage",
     "get_events",
-    "get_coverage",
     "get_health",
     "list_devices",
 }
-# Writes change only the keeper's selection and discovery, never a device.
-WRITE_TOOLS = {"refresh_discovery", "monitor", "stop_monitoring"}
+# Writes change only the keeper's selection, never a device.
+WRITE_TOOLS = {"monitor", "stop_monitoring"}
 
 
 def snapshot(name: str) -> tuple[int, object]:

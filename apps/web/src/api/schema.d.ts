@@ -4,23 +4,6 @@
  */
 
 export interface paths {
-    "/api/baselines": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Baselines */
-        get: operations["baselines_api_baselines_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/catalog": {
         parameters: {
             query?: never;
@@ -72,23 +55,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/coverage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Coverage */
-        get: operations["coverage_api_coverage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/devices/{entity_id}/command": {
         parameters: {
             query?: never;
@@ -100,23 +66,6 @@ export interface paths {
         put?: never;
         /** Command Device */
         post: operations["command_device_api_devices__entity_id__command_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/discovery/refresh": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Refresh Discovery */
-        post: operations["refresh_discovery_api_discovery_refresh_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -237,13 +186,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** BaselinesPage */
-        BaselinesPage: {
-            /** Baselines */
-            baselines: (components["schemas"]["LightBaseline"] | components["schemas"]["SwitchBaseline"])[];
-            /** Next Cursor */
-            next_cursor: number | null;
-        };
         /** BrowserChatSender */
         BrowserChatSender: {
             /**
@@ -337,61 +279,6 @@ export interface components {
              */
             state: "on" | "off";
         };
-        /** CoverageGap */
-        CoverageGap: {
-            /**
-             * Detected At
-             * Format: date-time
-             */
-            detected_at: string;
-            /** Entity Ids */
-            entity_ids: string[];
-            /** Id */
-            id: string;
-            /** Last Confirmed At */
-            last_confirmed_at: string | null;
-            /**
-             * Reason
-             * @enum {string}
-             */
-            reason: "connection" | "ingestion" | "authentication" | "timeout" | "restart" | "overflow" | "reconciliation" | "heartbeat" | "selection" | "invalid_data" | "configuration" | "tls" | "missing";
-            /** Recovered At */
-            recovered_at: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /** Uncertain Start */
-            uncertain_start: boolean;
-        };
-        /** CoverageReport */
-        CoverageReport: {
-            /**
-             * Continuous Coverage
-             * @constant
-             */
-            continuous_coverage: false;
-            /** Gaps */
-            gaps: components["schemas"]["CoverageGap"][];
-            /** Last Confirmed At */
-            last_confirmed_at: string | null;
-            /**
-             * Outside Recorded Windows
-             * @constant
-             */
-            outside_recorded_windows: "unknown";
-            /**
-             * Retained Since
-             * Format: date-time
-             */
-            retained_since: string;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "interrupted" | "collecting" | "unknown";
-        };
         /** DashboardSender */
         DashboardSender: {
             /**
@@ -408,11 +295,6 @@ export interface components {
             on_seconds: number;
             /** Unknown Seconds */
             unknown_seconds: number;
-        };
-        /** DiscoveryRefresh */
-        DiscoveryRefresh: {
-            /** Refresh Revision */
-            refresh_revision: number;
         };
         /** Entity */
         Entity: {
@@ -465,99 +347,6 @@ export interface components {
              * @enum {string}
              */
             status: "healthy" | "unreachable";
-        };
-        /** LightBaseline */
-        LightBaseline: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Brightness */
-            brightness?: number | null;
-            /** Collection Started At */
-            collection_started_at: string | null;
-            /** Color Mode */
-            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
-            /** Color Temp Kelvin */
-            color_temp_kelvin?: number | null;
-            /** Coverage Gap Ids */
-            coverage_gap_ids?: string[] | null;
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "light";
-            /** Entity Id */
-            entity_id: string;
-            /** Hs Color */
-            hs_color?: [
-                number,
-                number
-            ] | null;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "baseline" | "reconciliation" | "recovery";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Rgb Color */
-            rgb_color?: [
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbw Color */
-            rgbw_color?: [
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbww Color */
-            rgbww_color?: [
-                number,
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Transition Time */
-            transition_time?: "unknown" | null;
-            /** Xy Color */
-            xy_color?: [
-                number,
-                number
-            ] | null;
         };
         /** LightCommandRecord */
         LightCommandRecord: {
@@ -754,62 +543,6 @@ export interface components {
         SelectionChange: {
             /** Selected */
             selected: boolean;
-        };
-        /** SwitchBaseline */
-        SwitchBaseline: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Collection Started At */
-            collection_started_at: string | null;
-            /** Coverage Gap Ids */
-            coverage_gap_ids?: string[] | null;
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "switch";
-            /** Entity Id */
-            entity_id: string;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "baseline" | "reconciliation" | "recovery";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Transition Time */
-            transition_time?: "unknown" | null;
         };
         /** SwitchCommandRecord */
         SwitchCommandRecord: {
@@ -1010,39 +743,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    baselines_api_baselines_get: {
-        parameters: {
-            query: {
-                entity_id: string;
-                limit?: number;
-                cursor?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BaselinesPage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     catalog_api_catalog_get: {
         parameters: {
             query?: never;
@@ -1126,37 +826,6 @@ export interface operations {
             };
         };
     };
-    coverage_api_coverage_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CoverageReport"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     command_device_api_devices__entity_id__command_post: {
         parameters: {
             query?: never;
@@ -1197,26 +866,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    refresh_discovery_api_discovery_refresh_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DiscoveryRefresh"];
                 };
             };
         };

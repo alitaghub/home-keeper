@@ -11,7 +11,7 @@
   controller reads a second token, for the non-admin "Home Keeper control"
   user, from the `ha-control-token` volume, read-only. Only `ha-setup`, which
   writes it with mode `600`, and the controller mount that volume. Revoke
-  control in Home Assistant without breaking collection, and its logbook names
+  control in Home Assistant without breaking the reader, and its logbook names
   that user for every command. In the bundled stack, `ha-setup` writes
   the token with mode `600` to the `ha-token` volume. It keeps the Home
   Assistant owner login, also mode `600`, in the `ha-owner` volume that no other
@@ -28,10 +28,10 @@
   and raw connector responses.
 - The reader's Home Assistant operations are fixed registry reads, one state
   read for each new light or switch candidate at discovery, state reads of the
-  lights and switches the API asks for, and `GET /api/` to check that Home
-  Assistant answers. Discovery reads a candidate's state only to detect a group
+  lights and switches the API asks for, `history/history_during_period` for
+  their history, and `GET /api/` to check that Home Assistant answers. Discovery reads a candidate's state only to detect a group
   and keeps only that answer. The reader keeps the projected catalog in memory
-  for up to 10 seconds and never keeps a state. It makes no service call, no
+  for up to 10 seconds and never keeps a state or history. It makes no service call, no
   event subscription and no device write, and it has no `/data` mount. The keeper
   image contains no controller code.
 - The controller makes exactly four Home Assistant service calls:

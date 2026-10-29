@@ -43,7 +43,6 @@ def main() -> None:
             "HOME_KEEPER_HA_URL": "http://fake-ha:8123",
             "HOME_KEEPER_HA_PUBLIC_URL": "http://ha.example.test:8123",
             "HOME_KEEPER_HA_TOKEN_FILE": str(token),
-            "HOME_KEEPER_RECONCILIATION_SECONDS": "1",
             # The proof publishes its own port, so ignore a caller's HOME_KEEPER_PORT.
             "HOME_KEEPER_PORT": "8000",
         }

@@ -1,5 +1,4 @@
-"""The environment variables the API, the reader, the collectors and the Home Assistant setup
-read."""
+"""The environment variables the API, the reader and the Home Assistant setup read."""
 
 from pathlib import Path
 from typing import Literal
@@ -10,22 +9,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from home_keeper_settings import OptionalOrigin, Origin, Port
 
-MAX_INTERVAL_SECONDS = 3600
 
-
-class ServiceSettings(BaseSettings):
-    """What the API and both collectors share: the API's port and the service credential."""
-
+class ApiSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="HOME_KEEPER_")
 
     port: Port = 8000
     # The API creates this credential at its first start; the others wait for it.
     token_file: Path = Path("/secrets/service-token")
-    # The API and the collector must agree: the API judges freshness by this interval.
-    reconciliation_seconds: int = Field(default=10, ge=1, le=MAX_INTERVAL_SECONDS)
-
-
-class ApiSettings(ServiceSettings):
     db: Path = Path("/data/home.sqlite")
     source_id: str = "demo"
     bind: str = "127.0.0.1"
@@ -35,14 +25,9 @@ class ApiSettings(ServiceSettings):
     controller_url: OptionalOrigin = "http://controller:8080"
     # The reader service, the API's only way to read Home Assistant.
     reader_url: Origin = "http://reader:8080"
+    # How long the command log is kept. Device history is Home Assistant's.
     retention_days: int = Field(default=30, ge=1)
     timezone: ZoneInfo = ZoneInfo("UTC")
-
-
-class CollectorSettings(ServiceSettings):
-    # The connector checks the origin itself, so its failure reaches the API's health status.
-    ha_url: str = ""
-    ha_token_file: Path = Path("/run/secrets/ha-token")
 
 
 class ReaderSettings(BaseSettings):

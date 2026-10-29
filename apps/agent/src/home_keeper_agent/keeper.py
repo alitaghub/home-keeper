@@ -103,22 +103,6 @@ class EventsPage(Wire):
     next_cursor: str | None
 
 
-class Gap(Wire):
-    entity_ids: list[str]
-    last_confirmed_at: str | None
-    uncertain_start: bool
-    detected_at: str
-    recovered_at: str | None
-    reason: str
-
-
-class CoverageReport(Wire):
-    gaps: list[Gap]
-    state: str
-    last_confirmed_at: str | None
-    retained_since: str
-
-
 class Health(Wire):
     status: Literal["healthy", "unreachable"]
     error: str | None = None
@@ -140,10 +124,6 @@ class Catalog(Wire):
 
 class Selection(Wire):
     entity_ids: list[str]
-
-
-class DiscoveryRefresh(Wire):
-    refresh_revision: int
 
 
 class Control(Wire):

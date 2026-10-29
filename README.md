@@ -3,10 +3,11 @@
 [![CI](https://github.com/alitaghub/home-keeper/actions/workflows/ci.yaml/badge.svg)](https://github.com/alitaghub/home-keeper/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Home Keeper is an agent that looks after your home. Recording is its
-foundation: it reads your smart-home devices through
-[Home Assistant](https://www.home-assistant.io/), keeps a record of what they
-actually do on your machine, and shows honest gaps where collection stopped.
+Home Keeper is an agent that looks after your home. Seeing is its foundation:
+it reads your smart-home devices through
+[Home Assistant](https://www.home-assistant.io/), shows what they report now and
+what they did, from Home Assistant's own history, and says plainly when it
+cannot know.
 
 An agent can only act well on a home it can see, so Home Keeper starts with
 seeing. By default it does not control devices. With the opt-in `control`
@@ -24,11 +25,11 @@ flowchart LR
     end
 
     subgraph keeper["Home Keeper · on your machine"]
-        collector["Collector"]
+        reader["Reader"]
         api["Home Keeper API"]
-        db[("SQLite<br/>recorded evidence")]
+        db[("SQLite<br/>monitored devices, commands")]
         dashboard["Dashboard<br/>devices and history"]
-        collector -- "observations" --> api
+        api -- "state and history reads" --> reader
         dashboard <-->|"monitoring and history"| api
         api --> db
         controller["Controller<br/>optional, profile control"]
@@ -47,7 +48,7 @@ flowchart LR
         agent <-->|"tools over the public API"| api
     end
 
-    ha -- "read-only collection" --> collector
+    reader -- "read-only state and history" --> ha
     controller -- "light.turn_on/off, switch.turn_on/off" --> ha
     telegram["Telegram<br/>private chats"] <-->|"outbound polling"| bot
     agent <-->|"model calls"| model["Your model provider"]
@@ -57,7 +58,7 @@ flowchart LR
     classDef agentNode fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95
     classDef externalNode fill:#fff7ed,stroke:#c2410c,color:#7c2d12
     class lights,ha homeNode
-    class collector,api,db,dashboard,controller keeperNode
+    class reader,api,db,dashboard,controller keeperNode
     class chat,agent,pg,bot agentNode
     class telegram,model externalNode
 ```
@@ -65,50 +66,55 @@ flowchart LR
 The dashboard works on its own. The optional [agent](docs/agent.md) uses the
 same API to answer questions in Agent Chat UI or [Telegram](docs/telegram.md).
 It asks for approval before changing which devices are monitored, and before it
-switches a light, plug or switch with the `control` profile. Neither the agent nor the collector
+switches a light, plug or switch with the `control` profile. Neither the agent nor the reader
 talks to Home Assistant to control a device; only the optional controller does,
 when the API asks it to. The SQLite database remains local.
 Questions and tool results go to your model provider; Telegram also receives
 your questions and replies.
 
-1. The **collector** discovers devices in Home Assistant and lists them in the
-   dashboard.
-2. You pick the lights, plugs and switches to monitor. Nothing is recorded
-   before you do.
-3. The collector takes a baseline snapshot of each selected device, then streams
-   its state changes: on/off and availability, plus brightness and color for a
-   light.
-4. The **API** validates every record and stores it in SQLite. If collection
-   stops, it records a gap instead of guessing what happened.
+1. The **reader** lists the devices in Home Assistant, and the dashboard shows
+   them.
+2. You pick the lights, plugs and switches to monitor. Home Keeper shows nothing
+   about a device before you do.
+3. When you open a tab, the **API** asks the reader for what it needs: the state
+   Home Assistant reports now, or the history Home Assistant's recorder keeps.
+   History covers on/off and availability, plus brightness and color for a light.
+   How far back it goes depends on Home Assistant's
+   [recorder settings](docs/home-assistant.md#history-retention).
+4. The API stores only what is its own in SQLite: which devices you monitor and
+   the commands it sent. If Home Assistant cannot be reached, every tab says so
+   and states show as unknown.
 5. The **dashboard** has three tabs. **Home** shows each monitored light and
    switches it, then each monitored plug or switch under **Plugs and switches**.
    Each card draws its last 24 hours as a strip: on, as high as the light's
    brightness, and off. Time Home Assistant reported the device unavailable is
-   hatched; time it has no history for stays blank. **Usage history** on a card opens
-   that device's last 24 hours, 7 days or 30 days, with its totals and its
+   hatched; time it has no history for stays blank. **Usage history** on a card
+   opens that device's last 24 hours, 7 days or 30 days, with its totals and its
    on-time per day and per hour of day.
-   **History** lists commands, changes and gaps in plain words, with the evidence
-   behind **Details**. **Setup** chooses which devices to monitor.
+   **History** lists commands and changes in plain words, with the details behind
+   **Details**. **Setup** chooses which devices to monitor.
 
 [docs/architecture.md](docs/architecture.md) has the full picture, the selection
 flow and the terms the code uses.
 
 ## Design principles
 
-- **Read-only by default; control is opt-in.** The collector makes fixed reads
-  and one event subscription. It has no code path that changes a device.
+- **Read-only by default; control is opt-in.** The reader makes a fixed set of
+  reads. It has no code path that changes a device.
   Switching devices needs the `control` profile, which adds a separate controller
   with its own non-admin Home Assistant user. It knows four commands, light on
   (with an optional brightness), light off, switch on and switch off, and the API
   sends them only for monitored devices. Without the profile, nothing can switch
   a device.
-- **Opt-in.** Discovery is not permission. Each device is recorded only after you
-  select it, and a removal takes effect even if a slow read is still in flight.
-- **Evidence, not guesses.** Every event keeps three timestamps: when Home
-  Assistant fired it, when the collector received it, and when the API stored it.
-  Interruptions show up as gaps. The app never invents a change it did not see.
+- **Opt-in.** Discovery is not permission. Monitoring is the only filter: History,
+  usage and the agent cover only the devices you monitor now. Monitoring a device
+  again shows all the history Home Assistant has for it.
+- **One source of history.** Home Assistant's recorder already keeps device
+  history, so Home Keeper reads it instead of copying it. Time Home Assistant has
+  no history for, or reported a device unavailable, counts as unknown. The app
+  never invents a change Home Assistant did not record.
 - **Local.** Everything binds to `127.0.0.1`. The Home Assistant token stays in
-  the collector container, and the control token in the controller container. Nothing goes to a cloud service, unless you turn on
+  the reader container, and the control token in the controller container. Nothing goes to a cloud service, unless you turn on
   the optional agent: then your questions and its tool results (light names,
   states, usage numbers) go to the model provider you configure. The Home
   Assistant token, the database and the service credential never do.
@@ -123,7 +129,7 @@ docker compose up --build --wait
 ```
 
 Setup runs without clicks: it creates the Home Assistant owner account and a
-token for the collector. Then:
+token for the reader. Then:
 
 1. Print your Home Assistant login:
 
@@ -133,8 +139,8 @@ token for the collector. Then:
 
 2. Open Home Assistant at <http://127.0.0.1:8123>, log in, and add your devices
    under **Settings → Devices & services → Add integration**. Home Assistant owns
-   every device connection. Home Keeper can record any single light, smart plug
-   or switch that Home Assistant shows, from any brand. It does not record
+   every device connection. Home Keeper can monitor any single light, smart plug
+   or switch that Home Assistant shows, from any brand. It does not monitor
    groups or rooms.
    Pairing a Hue Bridge, for example, needs one press of its button.
 3. Open the dashboard at <http://localhost:8000>. On the **Setup** tab, click
@@ -143,11 +149,16 @@ token for the collector. Then:
 If port 8000 or 8123 is taken, set `HOME_KEEPER_PORT` or `HA_PORT`, for example
 `HOME_KEEPER_PORT=18000 HA_PORT=18123 docker compose up --build --wait`.
 
-`docker compose down` stops everything and keeps Home Assistant, the token and
-your history in Docker volumes. Later starts validate the saved token directly
+`docker compose down` stops everything and keeps Home Assistant with its
+history, the token and your monitored devices in Docker volumes. Later starts validate the saved token directly
 instead of repeating onboarding. `docker compose down --volumes` deletes all of it.
 [docs/home-assistant.md](docs/home-assistant.md) covers the details, limits,
 and how to use a Home Assistant you already run.
+
+Upgrading from a release that copied device history into its own database: on
+the first start, Home Keeper deletes that old database, logs one line about it
+and starts empty. Select your devices again once. History still comes from Home
+Assistant; the old command log is gone.
 
 ## Try the demo
 
@@ -158,8 +169,8 @@ docker compose -f compose.demo.yaml up --build --wait
 ```
 
 Open <http://localhost:8000#setup> and click **Monitor** on a lamp. The lamp
-appears on the **Home** tab, and its changes appear on the **History** tab
-within a few seconds. Stop the home stack first; both use
+appears on the **Home** tab, and a day of its synthetic history appears on the
+**History** tab at once. Stop the home stack first; both use
 port 8000. [docs/demo.md](docs/demo.md) explains what the demo shows.
 
 ## Switch lights
@@ -184,8 +195,8 @@ dashboard, the API, the refusals and the limits.
 ## Chat with the agent
 
 An optional agent answers questions about your lights in plain words: how long
-a lamp was on this week, at which hours, and whether collection was healthy.
-It uses only the recorded evidence and says how much time is unknown. With the
+a lamp was on this week, at which hours, and whether Home Assistant can be
+reached. It uses only Home Assistant's history and says how much time is unknown. With the
 `control` profile, it can also switch a monitored light, plug or switch after you approve it. Put your model settings in `.env` (see
 [.env.example](.env.example)), then:
 
@@ -221,9 +232,9 @@ user IDs, setup, limits, and what goes through Telegram.
 | [Architecture](docs/architecture.md)      | Understand the parts, the data flow, and the domain terms          |
 | [Demo](docs/demo.md)                      | See what the synthetic home does and how to reset it               |
 | [Home Assistant](docs/home-assistant.md)  | Run the bundled Home Assistant or your own, and check a real light |
-| [Collection and gaps](docs/collection.md) | Learn what each record proves, how gaps work, and retention        |
+| [History and usage](docs/collection.md)   | Learn where history comes from, what unknown time means, and retention |
 | [Light control](docs/control.md)          | Turn on the `control` profile and switch monitored lights and plugs |
-| [Networking](docs/networking.md)                 | Pick an address the collector can reach on WSL2, macOS or Linux    |
+| [Networking](docs/networking.md)                 | Pick an address the reader can reach on WSL2, macOS or Linux       |
 | [Agent](docs/agent.md)                           | Chat with the agent, pick a model, and know what it sends out      |
 | [Telegram](docs/telegram.md)                   | Talk to the agent through a private family bot                     |
 | [Security](docs/security.md)                     | Understand the trust boundaries around the token, API and browser  |
@@ -232,7 +243,7 @@ user IDs, setup, limits, and what goes through Telegram.
 
 | Path            | What lives there                                                   |
 | --------------- | ------------------------------------------------------------------ |
-| `apps/keeper`   | Python service: FastAPI API, collectors, Home Assistant setup, SQLite store, tests |
+| `apps/keeper`   | Python service: FastAPI API, reader, Home Assistant setup, SQLite store, tests |
 | `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
 | `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
 | `apps/controller` | Optional light controller: the only code that calls Home Assistant services |

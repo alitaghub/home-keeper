@@ -126,7 +126,7 @@ class Commands:
         self.stale_seconds = stale_seconds
         self._send_slots = CapacityLimiter(slots)
         # Controller sends can block for seconds, so they get their own few threads and
-        # never take every worker of the shared pool that ingestion needs. One thread per
+        # never take every worker of the shared pool the API's other requests need. One thread per
         # held slot, so a send never waits for a thread once it has a slot.
         self._send_threads = CapacityLimiter(slots)
 

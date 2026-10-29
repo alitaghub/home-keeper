@@ -23,7 +23,6 @@ CALLS: dict[str, tuple[Mapping[str, object], str]] = {
     "list_monitored": ({}, "/api/monitored"),
     "get_usage": (RANGE, "/api/usage"),
     "get_events": (RANGE, "/api/events"),
-    "get_coverage": ({}, "/api/coverage"),
     "get_health": ({}, "/api/health"),
     "list_devices": ({}, "/api/catalog"),
 }
@@ -42,7 +41,6 @@ def normalized(items: list[tuple[str, str]]) -> dict[str, list[str | datetime]]:
 @pytest.mark.parametrize(
     ("name", "args", "path", "params"),
     [
-        pytest.param("get_coverage", {}, "/api/coverage", {}, id="get_coverage"),
         pytest.param("get_health", {}, "/api/health", {}, id="get_health"),
         pytest.param("list_devices", {}, "/api/catalog", {}, id="list_devices"),
         pytest.param(
@@ -282,7 +280,6 @@ def test_usage_average_brightness_is_a_rounded_percent(average: float, percent: 
         ("list_monitored", "monitored_unreachable", ["bulb-a", "bulb-b", "unknown"]),
         ("get_health", "health", ["healthy"]),
         ("get_health", "health_unreachable", ["unreachable", "connection"]),
-        ("get_coverage", "coverage", ["interrupted", "reconciliation"]),
         (
             "list_devices",
             "catalog",

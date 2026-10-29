@@ -35,7 +35,6 @@ def test_settings_reach_the_app_and_server(monkeypatch: pytest.MonkeyPatch, tmp_
         "HOME_KEEPER_SOURCE_ID": "home_assistant",
         "HOME_KEEPER_HA_PUBLIC_URL": "http://ha.example.test:8123",
         "HOME_KEEPER_RETENTION_DAYS": "7",
-        "HOME_KEEPER_RECONCILIATION_SECONDS": "3",
         "HOME_KEEPER_TIMEZONE": "Europe/Copenhagen",
         "HOME_KEEPER_BIND": "127.0.0.2",
     }.items():
@@ -47,7 +46,6 @@ def test_settings_reach_the_app_and_server(monkeypatch: pytest.MonkeyPatch, tmp_
     assert received["source_id"] == "home_assistant"
     assert received["home_assistant_url"] == "http://ha.example.test:8123"
     assert received["retention_days"] == 7
-    assert received["reconciliation_seconds"] == 3
     assert received["timezone"] == ZoneInfo("Europe/Copenhagen")
     assert received["host"] == "127.0.0.2"
     assert received["port"] == 9001

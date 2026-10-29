@@ -94,46 +94,6 @@ export const unreachableBody = {
   message: "Can't reach Home Assistant",
 };
 
-export const openGap = {
-  id: "gap-open",
-  reason: "reconciliation",
-  source_id: "demo",
-  entity_ids: ["light.hue_desk"],
-  last_confirmed_at: "2026-10-12T10:00:06+00:00",
-  detected_at: "2026-10-12T10:00:08+00:00",
-  recovered_at: null,
-  uncertain_start: true,
-} satisfies Schemas["CoverageGap"];
-
-export const recoveredGap = {
-  id: "gap-recovered",
-  reason: "connection",
-  source_id: "demo",
-  entity_ids: ["light.hue_desk", "light.hue_reading"],
-  last_confirmed_at: "2026-10-12T10:00:00+00:00",
-  detected_at: "2026-10-12T10:00:05+00:00",
-  recovered_at: "2026-10-12T10:00:06+00:00",
-  uncertain_start: true,
-} satisfies Schemas["CoverageGap"];
-
-export const coverage = {
-  continuous_coverage: false,
-  outside_recorded_windows: "unknown",
-  state: "interrupted",
-  last_confirmed_at: "2026-10-12T10:00:08+00:00",
-  retained_since: "2026-09-12T10:00:10+00:00",
-  gaps: [openGap, recoveredGap],
-} satisfies Schemas["CoverageReport"];
-
-export const emptyCoverage = {
-  continuous_coverage: false,
-  outside_recorded_windows: "unknown",
-  state: "unknown",
-  last_confirmed_at: null,
-  retained_since: "2026-09-12T10:00:00+00:00",
-  gaps: [],
-} satisfies Schemas["CoverageReport"];
-
 type ChangeRecord = Schemas["ChangeRecord"];
 
 /** A change Home Assistant recorded, with the ID the API gives it: entity and time. */
@@ -213,10 +173,6 @@ export const emptyEvents = {
   events: [],
   next_cursor: null,
 } satisfies Schemas["EventsPage"];
-
-export const discoveryRefresh = {
-  refresh_revision: 1,
-} satisfies ResponseBody<"POST /api/discovery/refresh">;
 
 /** The dashboard's `toLocaleString` rendering of an API timestamp. */
 export const localTime = (value: string): string => new Date(value).toLocaleString();
