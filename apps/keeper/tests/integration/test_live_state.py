@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 from support.api import BROWSER, NOW, TOKEN
 from support.control import ON, FakeController, beat, command
 from support.reader import FakeReader, live
@@ -61,7 +62,7 @@ class House:
         assert response.status_code == 200, response.text
         return {entity["id"]: entity for entity in response.json()["entities"]}
 
-    def select(self, entity_id: str, *, selected: bool = True) -> Any:
+    def select(self, entity_id: str, *, selected: bool = True) -> Response:
         return self.client.put(
             f"/api/selection/{entity_id}", json={"selected": selected}, headers=BROWSER
         )
@@ -86,7 +87,7 @@ def house(tmp_path: Path) -> Generator[House]:
         yield House(client, reader, controller)
 
 
-def unreachable_body(response: Any, error: ReaderError) -> None:
+def unreachable_body(response: Response, error: ReaderError) -> None:
     """A 503 with the safe code and a message that names no address or credential."""
     assert response.status_code == 503, response.text
     body = response.json()

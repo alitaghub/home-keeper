@@ -200,6 +200,9 @@ export function App() {
           headers: mutationHeaders,
         }),
       );
+      // History lists only monitored devices, so the pages already loaded are stale:
+      // the reload starts again from the newest page.
+      showingOlder.current = false;
     });
 
   const showCommandNotice = (notice: string) => {
