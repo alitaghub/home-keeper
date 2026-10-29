@@ -21,6 +21,8 @@ COPY apps/agent/pyproject.toml ./apps/agent/
 COPY apps/controller/pyproject.toml ./apps/controller/
 COPY packages/light-command/pyproject.toml ./packages/light-command/
 COPY packages/light-command/src ./packages/light-command/src
+COPY packages/settings/pyproject.toml ./packages/settings/
+COPY packages/settings/src ./packages/settings/src
 COPY apps/keeper/src ./apps/keeper/src
 # The API serves the dashboard from ./web relative to the working directory.
 COPY --from=web /src/apps/web/dist ./web

@@ -13,6 +13,8 @@ from langchain_core.tools import BaseTool
 
 from home_keeper_agent.graph import build_agent
 from home_keeper_agent.keeper import KeeperClient
+from home_keeper_agent.settings import AgentSettings
+from home_keeper_settings import load
 
 
 class TelegramProofModel(FakeMessagesListChatModel):
@@ -67,4 +69,6 @@ class TelegramProofModel(FakeMessagesListChatModel):
 
 
 # Never registered by the production server. The smoke mounts its own Aegra config.
-agent = build_agent(TelegramProofModel(responses=[]), KeeperClient.from_env())
+agent = build_agent(
+    TelegramProofModel(responses=[]), KeeperClient(load(AgentSettings).home_keeper_url)
+)

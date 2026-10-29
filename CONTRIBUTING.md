@@ -37,6 +37,15 @@ Put personal Claude settings in `.claude/settings.local.json`, which git ignores
 creates. The copy does not follow later edits: after you change the main `.env`,
 copy it again into worktrees that already exist.
 
+## Environment variables
+
+Each service reads its variables through one settings class, such as
+`apps/keeper/src/home_keeper/settings.py`. When you add or rename one, update the
+service's `environment` in Compose and, if users set it, `.env.example`.
+`mise run check:env` fails when Compose sets a variable the service's settings
+never read, or when `.env.example` and the variables Compose reads from your
+shell differ.
+
 ## Workflow
 
 1. Branch from `main`.
@@ -69,7 +78,7 @@ Each job runs one mise task, so a green local run means a green CI run.
 
 | Job          | Runs             | What it checks                                                        |
 | ------------ | ---------------- | --------------------------------------------------------------------- |
-| `Check`      | `mise run check` | Lint, format, types, tests with coverage, build, API types, workflows |
+| `Check`      | `mise run check` | Lint, format, types, tests with coverage, build, API types, environment variables, workflows |
 | `End-to-end` | `mise run e2e`   | Demo, own-HA, bundled-HA, agent and control Compose smoke scripts, Playwright |
 
 On failure, `End-to-end` uploads the Compose logs and the Playwright report.

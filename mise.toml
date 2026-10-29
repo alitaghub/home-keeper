@@ -45,6 +45,7 @@ run = [
   "mise run test",
   "pnpm --filter @home-keeper/web build",
   "mise run check:api",
+  "mise run check:env",
   "mise run lint:workflows",
 ]
 
@@ -68,6 +69,10 @@ run = [
   "mise run gen:api",
   "git diff --exit-code -- apps/web/src/api/schema.d.ts",
 ]
+
+[tasks."check:env"]
+description = "Fail when .env.example or Compose drift from what the services read"
+run = "uv run python scripts/check_env.py"
 
 [tasks."pr:images"]
 description = "Upload screenshots and add them to a pull request's description"
