@@ -12,6 +12,10 @@ from home_keeper.models import CommandRecord, DeviceKind
 # Marks a database written in the current shape. Any other file is an earlier release's copy
 # of device history, which Home Assistant now serves, so it is replaced.
 SCHEMA = "ha-history-1"
+# How long a connection waits for another one's lock.
+BUSY_SECONDS = 10.0
+# The first bytes of every SQLite database file.
+_SQLITE_HEADER = b"SQLite format 3\x00"
 
 stored_kind: TypeAdapter[DeviceKind | None] = TypeAdapter(DeviceKind | None)
 
@@ -23,20 +27,29 @@ def stored_json(record: CommandRecord) -> str:
     return record.model_dump_json(exclude_unset=True)
 
 
-def _current(path: Path) -> bool:
-    """Whether the file is a database in the current shape."""
-    try:
-        with closing(sqlite3.connect(path, timeout=10)) as db:
-            row = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
-    except sqlite3.Error:
-        # Not a database, or one without a metadata table.
+def _old(path: Path) -> bool:
+    """Whether the file is surely not a current database: not SQLite, or SQLite without the
+    current schema marker. A locked, unreadable or damaged database raises instead."""
+    with path.open("rb") as file:
+        header = file.read(len(_SQLITE_HEADER))
+    if not header:
+        # An empty file holds nothing; SQLite starts a new database in it.
         return False
-    return row is not None and row[0] == SCHEMA
+    if header != _SQLITE_HEADER:
+        return True
+    try:
+        with closing(sqlite3.connect(path, timeout=BUSY_SECONDS)) as db:
+            row = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
+    except sqlite3.OperationalError as error:
+        if str(error).startswith("no such table"):
+            return True
+        raise
+    return row is None or row[0] != SCHEMA
 
 
 def _replace_old(path: Path) -> None:
     """Delete a database an earlier release wrote, with its WAL files, so a new one starts."""
-    if not path.exists() or _current(path):
+    if not path.exists() or not _old(path):
         return
     for old in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
         old.unlink(missing_ok=True)
@@ -54,7 +67,7 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         _replace_old(path)
-        with closing(sqlite3.connect(path, timeout=10)) as db:
+        with closing(sqlite3.connect(path, timeout=BUSY_SECONDS)) as db:
             # The mode is stored in the database file, so setting it once at startup is enough.
             db.execute("PRAGMA journal_mode=WAL")
         with self.transaction() as db:
@@ -75,7 +88,7 @@ class Store:
         self, mode: Literal["IMMEDIATE", "DEFERRED"] = "IMMEDIATE"
     ) -> Generator[sqlite3.Connection]:
         """IMMEDIATE takes the write lock up front; DEFERRED suits reads that need no lock."""
-        db = sqlite3.connect(self.path, timeout=10)
+        db = sqlite3.connect(self.path, timeout=BUSY_SECONDS)
         db.row_factory = sqlite3.Row
         try:
             db.execute(f"BEGIN {mode}")

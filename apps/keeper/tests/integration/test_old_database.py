@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from support.api import BROWSER, NOW, TOKEN, app_for, catalog_reader
 
 from home_keeper.api import create_app
+from home_keeper.store import Store
 
 REMOVED = "Removed the old Home Keeper database"
 SELECT_AGAIN = "select your devices again"
@@ -194,3 +195,29 @@ def test_commands_older_than_the_retention_window_are_deleted(tmp_path: Path) ->
     with closing(sqlite3.connect(path)) as db:
         kept = [row[0] for row in db.execute("SELECT id FROM commands")]
     assert kept == ["recent-command"]
+
+
+def test_a_locked_current_database_is_kept_and_startup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("home_keeper.store.BUSY_SECONDS", 0.1)
+    path = tmp_path / "home.sqlite"
+    Store(path)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("INSERT INTO selection VALUES('bulb-a', 'light')")
+    inode = path.stat().st_ino
+
+    holder = sqlite3.connect(path)
+    try:
+        # After its first write the holder keeps an exclusive lock until it closes.
+        holder.execute("PRAGMA locking_mode=EXCLUSIVE")
+        holder.execute("INSERT INTO metadata VALUES('held', '1')")
+        holder.commit()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            Store(path)
+        assert path.stat().st_ino == inode, "the current database was replaced"
+    finally:
+        holder.close()
+
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("SELECT id FROM selection").fetchall() == [("bulb-a",)]

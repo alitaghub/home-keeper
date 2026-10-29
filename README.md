@@ -158,7 +158,9 @@ and how to use a Home Assistant you already run.
 Upgrading from a release that copied device history into its own database: on
 the first start, Home Keeper deletes that old database, logs one line about it
 and starts empty. Select your devices again once. History still comes from Home
-Assistant; the old command log is gone.
+Assistant; the old command log is gone. A database that Home Keeper cannot read,
+for example because another process holds it locked, is kept, and the API stops
+with an error.
 
 ## Try the demo
 
