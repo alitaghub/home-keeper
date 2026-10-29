@@ -106,6 +106,8 @@ type LoadOrder = { started: number; snapshot: number; control: number };
 export function App() {
   const [tab, setTab] = useState<Tab>(tabFromHash);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  // Set when the latest poll failed, so the snapshot's states are no longer current.
+  const [stale, setStale] = useState(false);
   // Apart from the snapshot, so a failed or off control read hides the toggles
   // even when another endpoint fails in the same poll.
   const [control, setControl] = useState<Schemas["ControlStatus"]["state"]>("off");
@@ -115,7 +117,7 @@ export function App() {
   const [commandNotice, setCommandNotice] = useState("");
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const timeline = useTimeline();
-  const { load: loadTimeline, showingOlder } = timeline;
+  const { load: loadTimeline, restart: restartTimeline, showingOlder } = timeline;
   const commands = useCommands();
   const { load: loadCommands, showingOlder: showingOlderCommands } = commands;
   // One selection change at a time.
@@ -148,6 +150,7 @@ export function App() {
       ]);
       if (!isLatest("snapshot")) return;
       setSnapshot({ catalog, selection, monitored, health });
+      setStale(false);
       setMessage("");
       await Promise.all([
         showingOlder.current ? null : loadTimeline(),
@@ -155,6 +158,7 @@ export function App() {
       ]);
     } catch {
       if (!isLatest("snapshot")) return;
+      setStale(true);
       setMessage("Cannot reach Home Keeper. States are unknown until the connection returns.");
     }
   }, [loadTimeline, showingOlder, loadCommands, showingOlderCommands]);
@@ -200,9 +204,8 @@ export function App() {
           headers: mutationHeaders,
         }),
       );
-      // History lists only monitored devices, so the pages already loaded are stale:
-      // the reload starts again from the newest page.
-      showingOlder.current = false;
+      // History lists only monitored devices, so the pages loaded or in flight are stale.
+      restartTimeline(selected ? null : id);
     });
 
   const showCommandNotice = (notice: string) => {
@@ -234,6 +237,13 @@ export function App() {
   const live = (snapshot?.catalog ?? health)?.source_id === "home_assistant";
   const unreachable = health?.status === "unreachable";
   const controlOn = snapshot !== null && control === "on";
+  // The poll reads its endpoints at once, so states read just before an outage are
+  // dropped too: nothing shows a state, or offers a switch, that may not be current.
+  const statesKnown = !stale && !unreachable;
+  const monitoredEntities =
+    snapshot?.monitored.entities.map((entity) =>
+      statesKnown ? entity : { ...entity, state: null },
+    ) ?? null;
   const names = new Map(
     [...(snapshot?.catalog?.entities ?? []), ...(snapshot?.monitored.entities ?? [])].map(
       (entity) => [entity.id, lightName(entity)],
@@ -307,12 +317,12 @@ export function App() {
             <span className="tag">{controlOn ? "CONTROL ON" : "READ ONLY"}</span>
           </p>
           <Monitored
-            entities={snapshot?.monitored.entities ?? null}
+            entities={monitoredEntities}
             usage={usage}
             onHistory={setHistoryFor}
             onStop={(id) => void toggle(id, false)}
             onSwitch={
-              controlOn && !unreachable
+              controlOn && statesKnown
                 ? (entity, command) => void sendCommand(entity, command)
                 : null
             }

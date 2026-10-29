@@ -365,6 +365,38 @@ describe("dashboard behavior", () => {
     await waitFor(() => expect(shownTimes()).toEqual([change3.time]));
   });
 
+  it("keeps a removed device out of History when an older page it requested arrives late", async () => {
+    startOn("history");
+    const { api, user } = renderDashboard({
+      "GET /api/selection": { entity_ids: [fixtures.desk.id] },
+      "GET /api/monitored": { entities: [fixtures.monitoredLight(fixtures.desk, "on")] },
+      "GET /api/events": fixtures.eventsPage1,
+    });
+    await waitFor(() => expect(changeRows()).toHaveLength(2));
+    const release = api.hold("GET /api/events", (call) => call.url.searchParams.has("cursor"));
+    await user.click(screen.getByRole("button", { name: "Load older changes" }));
+    await waitFor(() =>
+      expect(api.callsTo("GET /api/events").at(-1)?.url.searchParams.has("cursor")).toBe(true),
+    );
+
+    api.reply("GET /api/selection", fixtures.emptySelection);
+    api.reply("GET /api/monitored", fixtures.emptyMonitored);
+    api.reply("GET /api/events", (call) =>
+      call.url.searchParams.has("cursor") ? fixtures.eventsPage2 : fixtures.emptyEvents,
+    );
+    openTab("Home");
+    await user.click(screen.getByRole("button", { name: "Stop monitoring Desk lamp" }));
+    await waitFor(() => expect(byId("selected-count")).toHaveTextContent("0"));
+    // The older page was asked for under the old selection.
+    release();
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    openTab("History");
+    expect(changeRows()).toEqual([]);
+    await nextPoll();
+    expect(changeRows()).toEqual([]);
+  });
+
   it("shows a change at Home Assistant's time with its entity, and no evidence or receipt times", async () => {
     startOn("history");
     const event = fixtures.colorChange;
@@ -1846,6 +1878,39 @@ describe("when Home Assistant cannot be reached", () => {
     expect(switchButtons().every((button) => !button.disabled)).toBe(true);
   });
 
+  it("shows unknown states and no switch when a refresh cannot reach Home Keeper", async () => {
+    const { api } = renderReachable();
+    const monitored = within(byId("monitored"));
+    expect(await monitored.findByText("On · 100%")).toBeInTheDocument();
+    await waitFor(() => expect(switchButtons().length).toBeGreaterThan(0));
+
+    api.fail("GET /api/monitored", "network");
+    await nextPoll();
+
+    await waitFor(() => expect(byId("message")).toHaveTextContent(UNREACHABLE));
+    expect(monitored.queryByText("On · 100%")).toBeNull();
+    // The lamp and the plug.
+    expect(screen.getAllByText("State unknown")).toHaveLength(2);
+    expect(switchButtons()).toEqual([]);
+  });
+
+  it("shows unknown states when health is unreachable though the states read just before", async () => {
+    const { api } = renderReachable();
+    const monitored = within(byId("monitored"));
+    expect(await monitored.findByText("On · 100%")).toBeInTheDocument();
+
+    // The poll reads its endpoints at once; Home Assistant can go down after /api/monitored.
+    api.fail("GET /api/catalog", { status: 503, body: fixtures.unreachableBody });
+    api.reply("GET /api/health", fixtures.unreachableHealth);
+    await nextPoll();
+
+    await waitFor(() => expect(banner()).toBeVisible());
+    expect(monitored.queryByText("On · 100%")).toBeNull();
+    expect(screen.getAllByText("State unknown")).toHaveLength(2);
+    expect(switchButtons()).toEqual([]);
+    expect(screen.queryByRole("slider", { name: /^Brightness of / })).toBeNull();
+  });
+
   it("sends no command while Home Assistant cannot be reached", async () => {
     const { api } = renderReachable();
     await within(byId("monitored")).findByText("On · 100%");
@@ -1872,24 +1937,6 @@ describe("when Home Assistant cannot be reached", () => {
     const [stop] = api.callsTo("PUT /api/selection/{entity_id}");
     expect(stop?.body).toEqual({ selected: false });
     expect(stop?.url.pathname).toBe(`/api/selection/${fixtures.desk.id}`);
-  });
-
-  it("hides the switch and the slider during an outage, even for a light with a known state", async () => {
-    renderDashboard({
-      "GET /api/control": fixtures.controlOn,
-      "GET /api/selection": { entity_ids: [fixtures.desk.id] },
-      "GET /api/monitored": {
-        entities: [fixtures.monitoredLight(fixtures.desk, "on", "available", 255)],
-      },
-      "GET /api/health": fixtures.unreachableHealth,
-    });
-
-    const monitored = within(byId("monitored"));
-    expect(await monitored.findByText("On · 100%")).toBeInTheDocument();
-    await waitFor(() => expect(banner()).toBeVisible());
-    expect(screen.getByText("CONTROL ON")).toBeInTheDocument();
-    expect(switchButtons()).toEqual([]);
-    expect(screen.queryByRole("slider", { name: /^Brightness of / })).toBeNull();
   });
 
   it("shows no state and no switch for a device Home Assistant no longer has", async () => {
