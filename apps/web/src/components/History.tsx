@@ -26,6 +26,26 @@ function levels(device: DeviceUsage) {
   }));
 }
 
+type Span = { x0: number; x1: number };
+type Bar = Span & { state: "on" | "off"; level: number };
+
+/**
+ * Joins each span narrower than one unit with the spans that follow it closely, so the
+ * strip draws at most about WIDTH spans however often the device changed.
+ */
+function thinned<T extends Span>(spans: T[], join: (first: T, next: T) => T): T[] {
+  const kept: T[] = [];
+  for (const span of spans) {
+    const last = kept.at(-1);
+    if (last && last.x1 - last.x0 < 1 && span.x0 - last.x1 < 1) {
+      kept[kept.length - 1] = join(last, span);
+    } else {
+      kept.push(span);
+    }
+  }
+  return kept;
+}
+
 /**
  * On, off and unknown time across the report's range. On draws as high as the
  * light's brightness. Unknown time is never drawn as on or off: a gap or an
@@ -65,30 +85,49 @@ export function UsageStrip({
         </pattern>
       </defs>
       <rect className="strip-track" width={WIDTH} height={HEIGHT} />
-      {levels(device).map((period) => {
-        const height = period.state === "on" ? period.level * HEIGHT : 2;
+      {thinned(
+        levels(device).map(
+          ({ start, end, state, level }): Bar => ({
+            x0: x(start),
+            x1: x(end),
+            state,
+            level,
+          }),
+        ),
+        // Within one unit, any on time shows, at its highest level.
+        (first, next): Bar => ({
+          x0: first.x0,
+          x1: next.x1,
+          state: first.state === "on" || next.state === "on" ? "on" : "off",
+          level: Math.max(first.level, next.level),
+        }),
+      ).map((bar) => {
+        const height = bar.state === "on" ? bar.level * HEIGHT : 2;
         return (
           <rect
-            key={period.start}
-            className={`strip-${period.state}`}
-            x={x(period.start)}
-            width={x(period.end) - x(period.start)}
+            key={bar.x0}
+            className={`strip-${bar.state}`}
+            x={bar.x0}
+            width={bar.x1 - bar.x0}
             y={HEIGHT - height}
             height={height}
           />
         );
       })}
-      {device.unknown_intervals
-        .filter((interval) => interval.reason !== "no_evidence")
-        .map((interval) => (
-          <rect
-            key={interval.start}
-            x={x(interval.start)}
-            width={x(interval.end) - x(interval.start)}
-            height={HEIGHT}
-            fill={`url(#${hatch})`}
-          />
-        ))}
+      {thinned(
+        device.unknown_intervals
+          .filter((interval) => interval.reason !== "no_evidence")
+          .map((interval) => ({ x0: x(interval.start), x1: x(interval.end) })),
+        (first, next) => ({ x0: first.x0, x1: next.x1 }),
+      ).map((span) => (
+        <rect
+          key={span.x0}
+          x={span.x0}
+          width={span.x1 - span.x0}
+          height={HEIGHT}
+          fill={`url(#${hatch})`}
+        />
+      ))}
     </svg>
   );
 }
@@ -131,7 +170,8 @@ function Days({ device }: { device: DeviceUsage }) {
           <li key={day.date}>
             <span>{day.date}</span>
             <span className="bar">
-              <span style={{ width: `${(day.on_seconds / 86400) * 100}%` }} />
+              {/* A day with a daylight-saving change can have 25 hours. */}
+              <span style={{ width: `${Math.min(100, (day.on_seconds / 86400) * 100)}%` }} />
             </span>
             <span>{duration(day.on_seconds)}</span>
           </li>
@@ -181,10 +221,12 @@ export function HistoryDialog({
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [days, setDays] = useState<Days>(1);
-  // Each answer remembers its range, so switching ranges never shows the old one's numbers.
+  // A retry asks again for the same range.
+  const [request, setRequest] = useState({ days: 1 as Days, attempt: 0 });
+  const { days } = request;
+  // Each answer remembers its request, so a range switch or a retry never shows old numbers.
   const [loaded, setLoaded] = useState<
-    { days: Days; report: Usage } | { days: Days; failed: true }
+    { request: typeof request; report: Usage } | { request: typeof request; failed: true }
   >();
 
   useEffect(() => {
@@ -193,16 +235,16 @@ export function HistoryDialog({
 
   useEffect(() => {
     let current = true;
-    fetchUsage(days, [entityId]).then(
-      (report) => current && setLoaded({ days, report }),
-      () => current && setLoaded({ days, failed: true }),
+    fetchUsage(request.days, [entityId]).then(
+      (report) => current && setLoaded({ request, report }),
+      () => current && setLoaded({ request, failed: true }),
     );
     return () => {
       current = false;
     };
-  }, [days, entityId]);
+  }, [request, entityId]);
 
-  const shown = loaded?.days === days ? loaded : undefined;
+  const shown = loaded?.request === request ? loaded : undefined;
   const report = shown && "report" in shown ? shown.report : undefined;
   const device = report?.devices.find((entry) => entry.entity_id === entityId);
   const label = RANGES.find((range) => range.days === days)?.label ?? "";
@@ -227,7 +269,7 @@ export function HistoryDialog({
             key={range.days}
             type="button"
             aria-pressed={range.days === days}
-            onClick={() => setDays(range.days)}
+            onClick={() => setRequest({ days: range.days, attempt: 0 })}
           >
             {range.label}
           </button>
@@ -235,7 +277,14 @@ export function HistoryDialog({
       </fieldset>
       {shown && "failed" in shown ? (
         <p className="history-status" role="status">
-          Cannot load usage. Please retry.
+          Cannot load usage.{" "}
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => setRequest({ days, attempt: request.attempt + 1 })}
+          >
+            Retry
+          </button>
         </p>
       ) : !report ? (
         <p className="history-status" role="status">

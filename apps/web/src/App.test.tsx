@@ -1671,6 +1671,15 @@ describe("device history", () => {
       fixtures.monitoredSwitch(fixtures.smartPlug, "off"),
     ],
   };
+  const HOUR = 3600;
+  const deskStrip = (hours: number) => `Last 24 hours: on ${hours}h 0m, unknown 30m`;
+  /** The usage fixture with the desk lamp on for `seconds`. */
+  const deskOn = (seconds: number) => ({
+    ...fixtures.usage,
+    devices: fixtures.usage.devices.map((device) =>
+      device.entity_id === fixtures.desk.id ? { ...device, on_seconds: seconds } : device,
+    ),
+  });
   const span = (call: ApiCall | undefined) =>
     Date.parse(call?.url.searchParams.get("end") ?? "") -
     Date.parse(call?.url.searchParams.get("start") ?? "");
@@ -1721,12 +1730,13 @@ describe("device history", () => {
     expect(strip.querySelectorAll('rect[fill^="url("]')).toHaveLength(2);
   });
 
-  it("reloads the strips once a minute and when a card's state changes, not on every poll", async () => {
+  it("reloads the strips a minute later and soon after a card changes, not on every poll", async () => {
+    // Each report gives the desk lamp one more hour on, so a stale strip shows.
     const { api } = renderDashboard({
       "GET /api/monitored": monitored,
-      "GET /api/usage": fixtures.usage,
+      "GET /api/usage": () => deskOn(api.callsTo("GET /api/usage").length * HOUR),
     });
-    await waitFor(() => expect(api.callsTo("GET /api/usage")).toHaveLength(1));
+    expect(await screen.findByRole("img", { name: deskStrip(1) })).toBeVisible();
 
     await nextPoll();
     expect(api.callsTo("GET /api/usage")).toHaveLength(1);
@@ -1738,23 +1748,37 @@ describe("device history", () => {
       ],
     });
     await nextPoll();
-    await waitFor(() => expect(api.callsTo("GET /api/usage")).toHaveLength(2));
+    // A change reloads no sooner than 10 s after the last report started.
+    await act(() => vi.advanceTimersByTimeAsync(7000));
+    expect(await screen.findByRole("img", { name: deskStrip(2) })).toBeVisible();
 
     await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(await screen.findByRole("img", { name: deskStrip(3) })).toBeVisible();
     expect(api.callsTo("GET /api/usage")).toHaveLength(3);
   });
 
-  it("opens a device's history, switches the range and closes it", async () => {
-    const { api, user } = renderDashboard({
+  it("hides the strips when a reload fails, so an old day never reads as the last 24 hours", async () => {
+    const { api } = renderDashboard({
       "GET /api/monitored": monitored,
       "GET /api/usage": fixtures.usage,
+    });
+    expect(await screen.findByRole("img", { name: deskStrip(1) })).toBeVisible();
+
+    api.fail("GET /api/usage", 500);
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    await waitFor(() => expect(screen.queryByRole("img", { name: deskStrip(1) })).toBeNull());
+  });
+
+  it("opens a device's history, switches the range and closes it", async () => {
+    // The 7-day report differs from the 24-hour one, so showing the old range fails.
+    const { api, user } = renderDashboard({
+      "GET /api/monitored": monitored,
+      "GET /api/usage": (call) => deskOn(span(call) === 7 * DAY_MS ? 9 * HOUR : HOUR),
     });
     await user.click(await screen.findByRole("button", { name: "Usage history of Desk lamp" }));
 
     const dialog = screen.getByRole("dialog", { name: "Desk lamp" });
-    expect(
-      await within(dialog).findByRole("img", { name: "Last 24 hours: on 1h 0m, unknown 30m" }),
-    ).toBeVisible();
+    expect(await within(dialog).findByRole("img", { name: deskStrip(1) })).toBeVisible();
     expect(within(dialog).getByText("2 times")).toBeVisible();
     expect(within(dialog).getByText("75%")).toBeVisible();
     expect(within(dialog).getByLabelText("10:00, on 1h 0m")).toBeInTheDocument();
@@ -1766,8 +1790,16 @@ describe("device history", () => {
         .filter((call) => call.url.searchParams.getAll("entity_id").includes(fixtures.desk.id));
     expect(span(forDesk()[0])).toBe(DAY_MS);
 
+    const release = api.hold("GET /api/usage");
     await user.click(within(dialog).getByRole("button", { name: "7 days" }));
-    expect(await within(dialog).findByRole("heading", { name: "On per day" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Loading…")).toBeVisible();
+    expect(within(dialog).queryByRole("img")).toBeNull();
+    release();
+
+    expect(
+      await within(dialog).findByRole("img", { name: "Last 7 days: on 9h 0m, unknown 30m" }),
+    ).toBeVisible();
+    expect(within(dialog).getByRole("heading", { name: "On per day" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "7 days" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -1791,12 +1823,19 @@ describe("device history", () => {
     expect(within(dialog).queryByText("Average brightness")).toBeNull();
   });
 
-  it("says when a device's history cannot load", async () => {
+  it("says when a device's history cannot load, and loads it on retry", async () => {
     const { api, user } = renderDashboard({ "GET /api/monitored": monitored });
     await user.click(await screen.findByRole("button", { name: "Usage history of Desk lamp" }));
     api.fail("GET /api/usage", 500);
     await user.click(screen.getByRole("button", { name: "30 days" }));
+    const dialog = screen.getByRole("dialog", { name: "Desk lamp" });
+    expect(await within(dialog).findByText(/^Cannot load usage\./)).toBeVisible();
 
-    expect(await screen.findByText("Cannot load usage. Please retry.")).toBeVisible();
+    api.reply("GET /api/usage", fixtures.usage);
+    await user.click(within(dialog).getByRole("button", { name: "Retry" }));
+
+    expect(
+      await within(dialog).findByRole("img", { name: "Last 30 days: on 1h 0m, unknown 30m" }),
+    ).toBeVisible();
   });
 });

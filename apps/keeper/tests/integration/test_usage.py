@@ -815,10 +815,10 @@ def test_periods_and_unknown_intervals_tile_the_range_and_equal_stretches_merge(
 
         [light] = house.usage(utc(10, 10), utc(10, 14))["devices"]
 
-    def on(start: datetime, end: datetime, brightness: int) -> dict[str, Any]:
+    def on(start: datetime, end: datetime, brightness: int) -> dict[str, object]:
         return {"start": start, "end": end, "state": "on", "brightness": brightness}
 
-    def off(start: datetime, end: datetime) -> dict[str, Any]:
+    def off(start: datetime, end: datetime) -> dict[str, object]:
         return {"start": start, "end": end, "state": "off", "brightness": None}
 
     assert periods(light) == [
@@ -853,3 +853,24 @@ def test_switch_periods_carry_no_brightness_and_leave_gaps_to_unknown_intervals(
         {"start": utc(10, 12), "end": utc(10, 14), "state": "off"},
     ]
     assert unknown(plug) == [interval(utc(10, 11), utc(10, 12), "gap")]
+
+
+def test_equal_states_on_both_sides_of_a_gap_stay_two_periods(tmp_path: Path) -> None:
+    with home(tmp_path, clock=utc(10, 8)) as house:
+        house.snapshot("bulb-a", "on", brightness=200)
+        house.at(utc(10, 11))
+        # The gap starts at this last confirmation.
+        house.snapshot("bulb-a", "on", brightness=200)
+        house.interrupt("bulb-a")
+        house.at(utc(10, 12))
+        house.snapshot("bulb-a", "on", brightness=200)
+        house.recover("bulb-a")
+        house.at(utc(10, 15))
+
+        [light] = house.usage(utc(10, 10), utc(10, 14))["devices"]
+
+    assert periods(light) == [
+        {"start": utc(10, 10), "end": utc(10, 11), "state": "on", "brightness": 200},
+        {"start": utc(10, 12), "end": utc(10, 14), "state": "on", "brightness": 200},
+    ]
+    assert unknown(light) == [interval(utc(10, 11), utc(10, 12), "gap")]

@@ -284,7 +284,7 @@ def test_a_migrated_database_reads_back_as_before_with_every_kind_stored(
             for name, (route, params) in ROUTES.items()
         }
 
-    # Usage periods were added after the base, so they are not part of what it returned.
+    # The base response has no usage periods, so the comparison drops that additive field.
     for device in bodies["usage"]["devices"]:
         assert device.pop("periods") is not None
     assert bodies == json.loads(BEFORE.read_text())
