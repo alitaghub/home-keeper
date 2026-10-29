@@ -14,3 +14,10 @@ export const time = (value: string | null | undefined) => {
 /** Home Assistant brightness (1–255) as the percent a person sets, never below 1%. */
 export const brightnessPercent = (brightness: number) =>
   Math.max(1, Math.round((brightness * 100) / 255));
+
+/** Seconds as hours and minutes, such as "5h 12m" or "40m". */
+export const duration = (seconds: number) => {
+  const minutes = Math.round(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  return hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+};

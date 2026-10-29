@@ -502,6 +502,19 @@ class UnknownInterval(WireModel):
     reason: UnknownReason
 
 
+class SwitchPeriod(WireModel):
+    """A stretch the evidence shows on or off. Periods and unknown intervals tile the range."""
+
+    start: Timestamp
+    end: Timestamp
+    state: Literal["on", "off"]
+
+
+class LightPeriod(SwitchPeriod):
+    # 0-255 while on, when Home Assistant reported it; always null while off.
+    brightness: int | None
+
+
 class DayUsage(WireModel):
     # Local calendar date, YYYY-MM-DD, in the report's time zone.
     date: str
@@ -523,12 +536,14 @@ class UsageFields(WireModel):
 class LightUsage(UsageFields):
     device_kind: Literal["light"]
     average_brightness: float | None
+    periods: list[LightPeriod]
 
 
 class SwitchUsage(UsageFields):
     """A plug or switch: the same numbers as a light, with no brightness."""
 
     device_kind: Literal["switch"]
+    periods: list[SwitchPeriod]
 
 
 DeviceUsage = Annotated[LightUsage | SwitchUsage, Field(discriminator="device_kind")]

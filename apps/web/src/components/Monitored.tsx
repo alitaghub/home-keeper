@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { Schemas } from "../api/client";
 import { brightnessPercent, date } from "../format";
+import type { DeviceUsage, Usage } from "../useUsage";
 import { lightName } from "./Catalog";
+import { UsageStrip } from "./History";
 
 type Baseline = NonNullable<Schemas["MonitoredEntity"]["baseline"]>;
 export type DeviceCommand = Schemas["CommandRequest"]["command"];
@@ -113,15 +115,21 @@ function Dimmer({
 
 type Switch = (entity: Schemas["MonitoredEntity"], command: DeviceCommand) => void;
 
+type Recent = { range: Pick<Usage, "start" | "end">; device: DeviceUsage | undefined };
+
 function Tile({
   entity,
+  recent,
   onStop,
   onSwitch,
+  onHistory,
   busy,
 }: {
   entity: Schemas["MonitoredEntity"];
+  recent: Recent | null;
   onStop: (id: string) => void;
   onSwitch: Switch | null;
+  onHistory: (entity: Schemas["MonitoredEntity"]) => void;
   busy: boolean;
 }) {
   const name = lightName(entity);
@@ -185,6 +193,17 @@ function Tile({
           )}
         </div>
       )}
+      {recent?.device && (
+        <UsageStrip range={recent.range} device={recent.device} caption="Last 24 hours" />
+      )}
+      <button
+        type="button"
+        className="quiet history-link"
+        aria-label={`Usage history of ${name}`}
+        onClick={() => onHistory(entity)}
+      >
+        Usage history
+      </button>
       <details className="details">
         <summary>Details</summary>
         {baseline ? (
@@ -207,21 +226,28 @@ function Tile({
 
 export function Monitored({
   entities,
+  usage,
   onStop,
   onSwitch,
+  onHistory,
   onChooseLights,
   sending,
 }: {
   entities: Schemas["MonitoredEntity"][] | null;
+  /** The last day's usage, for each card's strip; null until it loads. */
+  usage: Usage | null;
   onStop: (id: string) => void;
   /** Null while control is off: no light, plug or switch gets a switch. */
   onSwitch: Switch | null;
+  onHistory: (entity: Schemas["MonitoredEntity"]) => void;
   onChooseLights: () => void;
   /** IDs of devices whose command is still running. */
   sending: ReadonlySet<string>;
 }) {
   const switches = entities?.filter((entity) => entity.device_kind === "switch") ?? [];
   const lights = entities?.filter((entity) => entity.device_kind !== "switch") ?? [];
+  const devices = new Map(usage?.devices.map((device) => [device.entity_id, device]));
+  const recent = (id: string): Recent | null => usage && { range: usage, device: devices.get(id) };
   return (
     <>
       <div id="monitored" className="tiles">
@@ -237,8 +263,10 @@ export function Monitored({
           <Tile
             key={entity.id}
             entity={entity}
+            recent={recent(entity.id)}
             onStop={onStop}
             onSwitch={onSwitch}
+            onHistory={onHistory}
             busy={sending.has(entity.id)}
           />
         ))}
@@ -251,8 +279,10 @@ export function Monitored({
               <Tile
                 key={entity.id}
                 entity={entity}
+                recent={recent(entity.id)}
                 onStop={onStop}
                 onSwitch={onSwitch}
+                onHistory={onHistory}
                 busy={sending.has(entity.id)}
               />
             ))}

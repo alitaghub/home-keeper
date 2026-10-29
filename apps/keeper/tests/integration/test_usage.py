@@ -167,6 +167,18 @@ def unknown(light: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def periods(device: dict[str, Any]) -> list[dict[str, Any]]:
+    """Known periods with parsed instants, so tests do not depend on offset formatting."""
+    return [
+        entry
+        | {
+            "start": datetime.fromisoformat(entry["start"]),
+            "end": datetime.fromisoformat(entry["end"]),
+        }
+        for entry in device["periods"]
+    ]
+
+
 def test_light_on_before_start_counts_from_start_and_only_observed_off_to_on_is_a_switch_on(
     tmp_path: Path,
 ) -> None:
@@ -777,3 +789,108 @@ def test_switch_readings_name_the_kind_after_a_kindless_entry_is_reselected(
 
     assert device["device_kind"] == "switch"
     assert "average_brightness" not in device
+
+
+def test_periods_and_unknown_intervals_tile_the_range_and_equal_stretches_merge(
+    tmp_path: Path,
+) -> None:
+    with home(tmp_path, clock=utc(10, 8)) as house:
+        house.snapshot("bulb-a", "on", brightness=200)
+        house.at(utc(10, 11))
+        house.change("bulb-a", {"state": "on", "brightness": 200}, {"state": "off"})
+        house.at(utc(10, 11, 30))
+        # A snapshot that confirms the state does not split the period.
+        house.snapshot("bulb-a", "off")
+        house.at(utc(10, 12))
+        house.change("bulb-a", {"state": "off"}, {"state": "on", "brightness": 200})
+        house.at(utc(10, 12, 30))
+        house.change(
+            "bulb-a", {"state": "on", "brightness": 200}, {"state": "on", "brightness": 100}
+        )
+        house.at(utc(10, 13))
+        house.change("bulb-a", {"state": "on", "brightness": 100}, {"state": "unavailable"})
+        house.at(utc(10, 13, 30))
+        house.change("bulb-a", {"state": "unavailable"}, {"state": "off"})
+        house.at(utc(10, 15))
+
+        [light] = house.usage(utc(10, 10), utc(10, 14))["devices"]
+
+    def on(start: datetime, end: datetime, brightness: int) -> dict[str, object]:
+        return {"start": start, "end": end, "state": "on", "brightness": brightness}
+
+    def off(start: datetime, end: datetime) -> dict[str, object]:
+        return {"start": start, "end": end, "state": "off", "brightness": None}
+
+    assert periods(light) == [
+        on(utc(10, 10), utc(10, 11), 200),
+        off(utc(10, 11), utc(10, 12)),
+        on(utc(10, 12), utc(10, 12, 30), 200),
+        on(utc(10, 12, 30), utc(10, 13), 100),
+        off(utc(10, 13, 30), utc(10, 14)),
+    ]
+    assert unknown(light) == [interval(utc(10, 13), utc(10, 13, 30), "unavailable")]
+
+
+def test_switch_periods_carry_no_brightness_and_leave_gaps_to_unknown_intervals(
+    tmp_path: Path,
+) -> None:
+    switch: Payload = {"device_kind": "switch"}
+    with home(tmp_path, ("plug-a",), clock=utc(10, 8)) as house:
+        house.snapshot("plug-a", "on", **switch)
+        house.at(utc(10, 11))
+        # The gap starts at this last confirmation.
+        house.snapshot("plug-a", "on", **switch)
+        house.interrupt("plug-a")
+        house.at(utc(10, 12))
+        house.snapshot("plug-a", "off", **switch)
+        house.recover("plug-a")
+        house.at(utc(10, 15))
+
+        [plug] = house.usage(utc(10, 10), utc(10, 14))["devices"]
+
+    assert periods(plug) == [
+        {"start": utc(10, 10), "end": utc(10, 11), "state": "on"},
+        {"start": utc(10, 12), "end": utc(10, 14), "state": "off"},
+    ]
+    assert unknown(plug) == [interval(utc(10, 11), utc(10, 12), "gap")]
+
+
+def test_equal_states_on_both_sides_of_a_gap_stay_two_periods(tmp_path: Path) -> None:
+    with home(tmp_path, clock=utc(10, 8)) as house:
+        house.snapshot("bulb-a", "on", brightness=200)
+        house.at(utc(10, 11))
+        # The gap starts at this last confirmation.
+        house.snapshot("bulb-a", "on", brightness=200)
+        house.interrupt("bulb-a")
+        house.at(utc(10, 12))
+        house.snapshot("bulb-a", "on", brightness=200)
+        house.recover("bulb-a")
+        house.at(utc(10, 15))
+
+        [light] = house.usage(utc(10, 10), utc(10, 14))["devices"]
+
+    assert periods(light) == [
+        {"start": utc(10, 10), "end": utc(10, 11), "state": "on", "brightness": 200},
+        {"start": utc(10, 12), "end": utc(10, 14), "state": "on", "brightness": 200},
+    ]
+    assert unknown(light) == [interval(utc(10, 11), utc(10, 12), "gap")]
+
+
+def test_time_before_a_devices_first_record_is_no_evidence_even_after_a_gap(
+    tmp_path: Path,
+) -> None:
+    with home(tmp_path, clock=utc(10, 8)) as house:
+        # Collection stops before bulb-a has any record, then recovers.
+        house.interrupt()
+        house.at(utc(10, 9))
+        house.recover()
+        house.at(utc(10, 10))
+        house.snapshot("bulb-a", "off")
+        house.at(utc(10, 12))
+
+        [light] = house.usage(utc(10, 8), utc(10, 12))["devices"]
+
+    assert unknown(light) == [
+        interval(utc(10, 8), utc(10, 9), "gap"),
+        interval(utc(10, 9), utc(10, 10), "no_evidence"),
+    ]

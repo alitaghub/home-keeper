@@ -595,6 +595,219 @@ footer {
   cursor: pointer;
 }
 
+/* Usage history: the card strip and the history dialog */
+.strip {
+  display: block;
+  width: 100%;
+  height: 24px;
+  border-radius: 4px;
+}
+
+.strip-track {
+  fill: var(--surface-2);
+}
+
+.strip-on {
+  fill: var(--lit);
+}
+
+.strip-off {
+  fill: var(--muted);
+  opacity: 0.5;
+}
+
+.strip-hatch {
+  fill: var(--muted);
+  opacity: 0.55;
+}
+
+.history-link {
+  align-self: flex-start;
+  font-size: 12px;
+}
+
+.history-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.history-dialog::backdrop {
+  background: rgba(5, 10, 16, 0.6);
+}
+
+.history-dialog h2 {
+  margin: 0;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+
+.history-dialog h3 {
+  margin: 22px 0 10px;
+  font-size: 14px;
+}
+
+.history-dialog .strip {
+  height: 48px;
+}
+
+.ranges {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 18px;
+  padding: 0;
+  border: 0;
+}
+
+.ranges legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.ranges button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.strip-axis,
+.hour-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.legend li::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+
+.legend-on::before {
+  background: var(--lit);
+}
+
+.legend-off::before {
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.legend-unknown::before {
+  background: repeating-linear-gradient(45deg, var(--muted) 0 2px, transparent 2px 5px);
+}
+
+.legend-none::before {
+  background: var(--surface-2);
+  outline: 1px solid var(--line);
+}
+
+.totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 18px 0 0;
+}
+
+.totals div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.totals dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.totals dd {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.day-bars {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.day-bars li {
+  display: grid;
+  grid-template-columns: 6.5em minmax(0, 1fr) 4.5em;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.day-bars li > span:last-child {
+  text-align: right;
+}
+
+.day-bars .bar {
+  height: 10px;
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.day-bars .bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--lit);
+}
+
+.hour-bars {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  align-items: end;
+  gap: 2px;
+  height: 64px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hour-bars li {
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--surface-2);
+}
+
+.hour-bars span {
+  width: 100%;
+  border-radius: 2px;
+  background: var(--lit);
+}
+
 @media (max-width: 640px) {
   header {
     flex-wrap: wrap;

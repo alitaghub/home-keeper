@@ -137,9 +137,16 @@ The numbers only count what the evidence shows:
 - Time when Home Assistant reports a light as `unavailable` or `unknown` is
   unknown too, never on or off.
 - Time before a light's first evidence, or before the retention cutoff, is
-  unknown.
+  unknown. Outside a gap its reason is `no_evidence`, even after an earlier gap
+  has recovered: a device with no record yet had no state for the gap to hide.
 - Each light lists its `unknown_intervals`, with reason `gap`, `unavailable` or
   `no_evidence`.
+- Each device also lists its `periods`: the stretches the evidence shows it on
+  or off, in time order. A light's period carries its `brightness` (0–255, or
+  null when Home Assistant did not report one, and always null while off). A
+  plug's or switch's period has no brightness. Together, `periods` and
+  `unknown_intervals` cover the whole range without overlap. A snapshot that
+  confirms the same state does not start a new period.
 
 Selection history is not recorded. If you remove a light and select it again
 later, evidence from before the removal can fill the time it was not selected.
