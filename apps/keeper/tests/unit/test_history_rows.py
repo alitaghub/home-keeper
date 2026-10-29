@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 from home_keeper.home_assistant import history_state
+from home_keeper.models import LightState
 
 # Captured from `history/history_during_period` on the bundled Home Assistant: `lu` is
 # always sent, and `lc` only when it differs from `lu`.
@@ -40,6 +41,8 @@ def at(timestamp: float) -> datetime:
 
 def test_recorded_rows_without_last_changed_take_it_from_last_updated() -> None:
     first, attribute_change, off = (history_state(row, "light.diag") for row in RECORDED)
+    assert isinstance(first, LightState)
+    assert isinstance(attribute_change, LightState)
 
     assert (first.state, first.brightness) == ("on", 120)
     assert first.last_changed == first.last_updated == at(1793303017.4513721)
