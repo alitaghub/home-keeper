@@ -11,7 +11,7 @@ from http import HTTPStatus
 from typing import Literal, Protocol, Self
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, model_validator
 
 from home_keeper.models import (
     CollectorError,
@@ -56,19 +56,28 @@ class HistoryRow(WireModel):
     """One row of Home Assistant's recorded history for one entity."""
 
     source_entity_id: Identity
-    # last_changed and last_updated are always set: Home Assistant's history has both.
     reading: Reading
+    _updated_at: datetime = PrivateAttr()
 
     @model_validator(mode="after")
     def source_times(self) -> Self:
-        if self.reading.last_changed is None or self.reading.last_updated is None:
+        """Home Assistant's history has both times; each must be a timezone-aware time."""
+        times = (self.reading.last_changed, self.reading.last_updated)
+        changed, updated = (None if value is None else _aware(value) for value in times)
+        if changed is None or updated is None:
             raise ValueError("A history row needs its source times")
+        self._updated_at = updated
         return self
 
     @property
     def updated_at(self) -> datetime:
         """When Home Assistant last updated the state: the time of a change to this row."""
-        return to_utc(datetime.fromisoformat(self.reading.last_updated or ""))
+        return self._updated_at
+
+
+def _aware(value: str) -> datetime:
+    """Raises ValueError for a malformed time or one without a timezone."""
+    return to_utc(datetime.fromisoformat(value))
 
 
 class Reader(Protocol):
