@@ -10,10 +10,12 @@ import {
 import { Catalog, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { Coverage, openGaps } from "./components/Coverage";
+import { HistoryDialog } from "./components/History";
 import { type DeviceCommand, Monitored } from "./components/Monitored";
 import { Timeline } from "./components/Timeline";
 import { date, time } from "./format";
 import { useCommands, useTimeline } from "./useTimeline";
+import { useRecentUsage } from "./useUsage";
 
 const POLL_MS = 3000;
 
@@ -132,6 +134,7 @@ export function App() {
   // change), so commands lock per device, apart from `busy`.
   const sending = useRef(new Set<string>());
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
+  const [historyFor, setHistoryFor] = useState<Schemas["MonitoredEntity"] | null>(null);
   const discovery = useRef<DiscoveryState>({
     refreshPending: false,
     lastCatalogRefresh: null,
@@ -272,6 +275,18 @@ export function App() {
     ),
   );
 
+  // The strips reload when what the cards show changes: a selection, a state or a brightness.
+  const usage = useRecentUsage(
+    snapshot &&
+      JSON.stringify(
+        snapshot.monitored.entities.map(({ id, baseline }) => [
+          id,
+          baseline?.state,
+          baseline?.device_kind === "light" ? baseline.brightness : null,
+        ]),
+      ),
+  );
+
   const interrupted = openGaps(snapshot?.coverage ?? null);
   const panel = (id: Tab) => ({
     id: `panel-${id}`,
@@ -328,6 +343,8 @@ export function App() {
           </p>
           <Monitored
             entities={snapshot?.monitored.entities ?? null}
+            usage={usage}
+            onHistory={setHistoryFor}
             onStop={(id) => void toggle(id, false)}
             onSwitch={controlOn ? (entity, command) => void sendCommand(entity, command) : null}
             onChooseLights={() => openTab("setup")}
@@ -440,6 +457,14 @@ export function App() {
             />
           </section>
         </section>
+        {historyFor && (
+          <HistoryDialog
+            key={historyFor.id}
+            entityId={historyFor.id}
+            name={lightName(historyFor)}
+            onClose={() => setHistoryFor(null)}
+          />
+        )}
         <footer>
           Stored on this machine · Change records are evidence, not explanations of cause
         </footer>

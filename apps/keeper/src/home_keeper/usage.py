@@ -17,9 +17,11 @@ from home_keeper.models import (
     DeviceKind,
     DeviceUsage,
     EventRecord,
+    LightPeriod,
     LightReading,
     LightStateValue,
     LightUsage,
+    SwitchPeriod,
     SwitchUsage,
     UnknownInterval,
     UnknownReason,
@@ -225,10 +227,30 @@ def device_usage(
     hours = [0.0] * 24
     on_seconds = unknown_seconds = brightness_seconds = weighted_brightness = 0.0
     unknown_intervals: list[UnknownInterval] = []
+    periods: list[LightPeriod] = []
     for segment_start, segment_end in pairwise(boundaries):
         current = status(segment_start)
         seconds = (segment_end - segment_start).total_seconds()
         if isinstance(current, Known):
+            state = "on" if current.on else "off"
+            brightness = current.brightness if current.on else None
+            last = periods[-1] if periods else None
+            # A snapshot that confirms the same state continues the period.
+            if (
+                last
+                and last.end == segment_start.isoformat()
+                and (last.state, last.brightness) == (state, brightness)
+            ):
+                last.end = segment_end.isoformat()
+            else:
+                periods.append(
+                    LightPeriod(
+                        start=segment_start.isoformat(),
+                        end=segment_end.isoformat(),
+                        state=state,
+                        brightness=brightness,
+                    )
+                )
             if not current.on:
                 continue
             on_seconds += seconds
@@ -277,6 +299,10 @@ def device_usage(
             days=day_usage,
             hours=hours,
             unknown_intervals=unknown_intervals,
+            periods=[
+                SwitchPeriod(start=period.start, end=period.end, state=period.state)
+                for period in periods
+            ],
         )
     return LightUsage(
         device_kind="light",
@@ -288,4 +314,5 @@ def device_usage(
         days=day_usage,
         hours=hours,
         unknown_intervals=unknown_intervals,
+        periods=periods,
     )

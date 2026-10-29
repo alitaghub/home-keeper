@@ -734,6 +734,26 @@ export interface components {
             /** Brightness Pct */
             brightness_pct?: number | null;
         };
+        /** LightPeriod */
+        LightPeriod: {
+            /** Brightness */
+            brightness: number | null;
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off";
+        };
         /**
          * LightReading
          * @description Light attributes as stored. Event states omit unset attributes, so routes returning
@@ -816,6 +836,8 @@ export interface components {
             hours: number[];
             /** On Seconds */
             on_seconds: number;
+            /** Periods */
+            periods: components["schemas"]["LightPeriod"][];
             /** Switch Ons */
             switch_ons: number;
             /** Unknown Intervals */
@@ -1030,6 +1052,27 @@ export interface components {
             action: "on";
         };
         /**
+         * SwitchPeriod
+         * @description A stretch the evidence shows on or off. Periods and unknown intervals tile the range.
+         */
+        SwitchPeriod: {
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off";
+        };
+        /**
          * SwitchReading
          * @description A plug or switch state as stored: no light attributes.
          */
@@ -1074,6 +1117,8 @@ export interface components {
             hours: number[];
             /** On Seconds */
             on_seconds: number;
+            /** Periods */
+            periods: components["schemas"]["SwitchPeriod"][];
             /** Switch Ons */
             switch_ons: number;
             /** Unknown Intervals */

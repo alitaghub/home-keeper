@@ -83,6 +83,16 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   // The toggle shows the recorded state, so the card flips only once the change is recorded.
   await expect(state).toHaveText(new RegExp(`^${now === "on" ? "On" : "Off"}`), COLLECTION);
 
+  // The card draws its last day from /api/usage; its usage history opens in a dialog.
+  await expect(card.getByRole("img", { name: /^Last 24 hours: on / })).toBeVisible(COLLECTION);
+  await card.getByRole("button", { name: `Usage history of ${LAMP}` }).click();
+  const history = page.getByRole("dialog", { name: LAMP });
+  await expect(history.getByText("Switched on")).toBeVisible();
+  await history.getByRole("button", { name: "7 days" }).click();
+  await expect(history.getByRole("heading", { name: "On per day" })).toBeVisible();
+  await history.getByRole("button", { name: "Close" }).click();
+  await expect(history).toHaveCount(0);
+
   // The name containing a script tag must never become markup.
   await expect(page.locator("body script")).toHaveCount(0);
   expect(dialogs).toEqual([]);

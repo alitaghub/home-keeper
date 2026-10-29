@@ -284,6 +284,9 @@ def test_a_migrated_database_reads_back_as_before_with_every_kind_stored(
             for name, (route, params) in ROUTES.items()
         }
 
+    # Usage periods were added after the base, so they are not part of what it returned.
+    for device in bodies["usage"]["devices"]:
+        assert device.pop("periods") is not None
     assert bodies == json.loads(BEFORE.read_text())
     assert not SIDE_TABLES & set(contents(path)), "the side tables must be gone"
     assert metadata(path, "schema_version") is not None
