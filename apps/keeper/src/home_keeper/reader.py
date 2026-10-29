@@ -1,15 +1,17 @@
 """The API's view of Home Assistant: the reader service, reached over internal HTTP.
 
 The reader alone holds the Home Assistant token. The API asks it for the catalog, the
-current state of selected devices and reachability on each request, and keeps no copy.
+current state of selected devices, their history and reachability on each request, and keeps
+no copy.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 from http import HTTPStatus
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from home_keeper.models import (
     CollectorError,
@@ -18,9 +20,11 @@ from home_keeper.models import (
     ReaderError,
     Reading,
     WireModel,
+    to_utc,
 )
 
 __all__ = [
+    "HistoryRow",
     "HttpReader",
     "LiveState",
     "Reader",
@@ -48,6 +52,25 @@ class LiveState(WireModel):
     reading: Reading
 
 
+class HistoryRow(WireModel):
+    """One row of Home Assistant's recorded history for one entity."""
+
+    source_entity_id: Identity
+    # last_changed and last_updated are always set: Home Assistant's history has both.
+    reading: Reading
+
+    @model_validator(mode="after")
+    def source_times(self) -> Self:
+        if self.reading.last_changed is None or self.reading.last_updated is None:
+            raise ValueError("A history row needs its source times")
+        return self
+
+    @property
+    def updated_at(self) -> datetime:
+        """When Home Assistant last updated the state: the time of a change to this row."""
+        return to_utc(datetime.fromisoformat(self.reading.last_updated or ""))
+
+
 class Reader(Protocol):
     def health(self) -> None:
         """Return when Home Assistant answers. Raises ReaderUnavailable."""
@@ -59,6 +82,14 @@ class Reader(Protocol):
 
     def states(self, entity_ids: Sequence[Identity]) -> dict[Identity, LiveState | None]:
         """One key per requested ID; None when Home Assistant no longer has the entity.
+        Raises ReaderUnavailable."""
+        ...
+
+    def history(
+        self, entity_ids: Sequence[Identity], start: datetime, end: datetime
+    ) -> dict[Identity, list[HistoryRow]]:
+        """One key per requested ID, rows oldest first. The first row is the state at
+        `start`. [] when Home Assistant has no history for the entity or no longer has it.
         Raises ReaderUnavailable."""
         ...
 
@@ -80,6 +111,10 @@ class ReaderCatalog(WireModel):
 
 class ReaderStates(WireModel):
     states: dict[Identity, LiveState | None]
+
+
+class ReaderHistory(WireModel):
+    history: dict[Identity, list[HistoryRow]]
 
 
 class HttpReader:
@@ -106,6 +141,22 @@ class HttpReader:
             "/internal/states", ReaderStates, params={"entity_id": list(entity_ids)}
         ).states
         return {entity_id: states.get(entity_id) for entity_id in entity_ids}
+
+    def history(
+        self, entity_ids: Sequence[Identity], start: datetime, end: datetime
+    ) -> dict[Identity, list[HistoryRow]]:
+        if not entity_ids:
+            return {}
+        history = self._get(
+            "/internal/history",
+            ReaderHistory,
+            params={
+                "entity_id": list(entity_ids),
+                "start": [start.isoformat()],
+                "end": [end.isoformat()],
+            },
+        ).history
+        return {entity_id: history.get(entity_id, []) for entity_id in entity_ids}
 
     def _get[T: BaseModel](
         self, path: str, model: type[T], params: dict[str, list[str]] | None = None

@@ -8,6 +8,8 @@ const LAMP = "Reading lamp";
 
 // The demo reader answers at once; the margin covers a slow first start of the stack.
 const COLLECTION = { timeout: 45_000 };
+const RECORDER_DOC =
+  "https://github.com/alitaghub/home-keeper/blob/main/docs/home-assistant.md#history-retention";
 
 // A reused Compose volume can still hold the selection from an earlier run.
 test.beforeEach(async ({ request }) => {
@@ -93,10 +95,35 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await history.getByRole("button", { name: "Close" }).click();
   await expect(history).toHaveCount(0);
 
+  // The demo has a day of history from its first minute.
+  const anHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const older = await request.get("/api/events", {
+    params: { entity_id: SCRIPT_ENTITY_ID, end: anHourAgo },
+  });
+  expect(older.ok()).toBe(true);
+  const olderPage: components["schemas"]["EventsPage"] = await older.json();
+  expect(olderPage.events.length).toBeGreaterThan(0);
+
+  // History lists the lamp's changes in words at Home Assistant's time, including the command.
+  await page.getByRole("tab", { name: "History" }).click();
+  const rows = page.locator("#timeline article").filter({ hasText: LAMP });
+  await expect(rows.filter({ hasText: `turned ${now}` }).first()).toBeVisible(COLLECTION);
+  await expect(rows.first().locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
+  // The panel around the "Recorded changes" heading.
+  const changes = page.locator("#changes-heading").locator("..");
+  await expect(changes).not.toContainText(
+    /Evidence ID|Retained since|Retention cutoff|received|Stored/i,
+  );
+  await expect(changes.getByRole("link", { name: "recorder settings" })).toHaveAttribute(
+    "href",
+    RECORDER_DOC,
+  );
+
   // The name containing a script tag must never become markup.
   await expect(page.locator("body script")).toHaveCount(0);
   expect(dialogs).toEqual([]);
 
+  await page.getByRole("tab", { name: "Home" }).click();
   await card.getByRole("button", { name: `Stop monitoring ${LAMP}` }).click();
   await expect(card).toHaveCount(0);
   await page.getByRole("tab", { name: "Setup" }).click();

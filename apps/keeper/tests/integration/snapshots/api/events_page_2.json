@@ -1,32 +1,30 @@
 {
   "status": 200,
   "body": {
-    "coverage": "unknown",
     "events": [
       {
         "device_kind": "light",
         "entity_id": "bulb-a",
-        "event_time": "2026-10-12T09:59:30Z",
-        "id": "change-1",
+        "id": "bulb-a@2026-10-12T09:59:30+00:00",
         "new": {
           "availability": "available",
           "brightness": 50,
           "device_kind": "light",
+          "last_changed": "2026-10-12T09:59:30+00:00",
+          "last_updated": "2026-10-12T09:59:30+00:00",
           "state": "on"
         },
         "old": {
           "availability": "available",
           "device_kind": "light",
+          "last_changed": "2026-10-12T09:59:20+00:00",
+          "last_updated": "2026-10-12T09:59:20+00:00",
           "state": "off"
         },
-        "persisted_at": "2026-10-12T10:00:00+00:00",
-        "received_at": "2026-10-12T09:59:33Z",
-        "selection_revision": 2,
-        "source_entity_id": null,
-        "source_id": "demo"
+        "source_entity_id": "light.desk",
+        "time": "2026-10-12T09:59:30+00:00"
       }
     ],
-    "next_cursor": null,
-    "retained_since": "2026-09-12T10:00:10+00:00"
+    "next_cursor": null
   }
 }

@@ -18,7 +18,12 @@ from support.home_assistant import (
     use_transport,
 )
 
-from home_keeper.home_assistant import MAX_PAYLOAD, ConnectorError, HomeAssistantConnector
+from home_keeper.home_assistant import (
+    MAX_PAYLOAD,
+    ConnectorError,
+    HomeAssistantConnector,
+    Session,
+)
 from home_keeper.models import Observation
 
 type Install = Callable[..., FakeSocket]
@@ -460,7 +465,7 @@ def test_names_redact_credentials_and_write_helper_rejected(
     count = len(socket.sent)
     for command in ("call_service", "fire_event", "config/device_registry/update"):
         with pytest.raises(ConnectorError):
-            client._registry(socket, 3, command)  # pyright: ignore[reportPrivateUsage] -- exercise the private write guard directly
+            Session(client, socket, MAX_PAYLOAD).request(command, failure="discovery")
     assert len(socket.sent) == count
 
 

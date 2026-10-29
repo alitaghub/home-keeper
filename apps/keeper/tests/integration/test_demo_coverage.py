@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from support.api import recorded_events
 from support.recorded_reader import RecordedReader
 
 from home_keeper.api import create_app
@@ -29,7 +30,7 @@ def test_demo_gap_resumes_with_snapshot_without_inventing_missing_transition(
         # The synthetic home changes while collection is paused; no event is forwarded.
         replay.advance(datetime.now(UTC))
         reconcile(client, replay)
-        events = client.get("/api/events").json()["events"]
+        events = recorded_events(path)
         assert len(events) == 2
         assert not any(e["old"]["state"] == "off" and e["new"]["state"] == "on" for e in events)
         snapshots = client.get(f"/api/baselines?entity_id={entity}").json()["baselines"]
@@ -46,6 +47,6 @@ def test_demo_gap_resumes_with_snapshot_without_inventing_missing_transition(
         result = client.get("/api/coverage").json()
         assert result["state"] == "interrupted"
         assert result["gaps"][0]["reason"] == "restart"
-        assert client.get("/api/events").json()["events"] == events
+        assert recorded_events(path) == events
         reconcile(client, replay)
         assert client.get("/api/coverage").json()["state"] == "collecting"

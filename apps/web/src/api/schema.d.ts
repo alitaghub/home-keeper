@@ -130,7 +130,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Events */
+        /**
+         * Events
+         * @description Changes Home Assistant recorded for monitored devices in `[start, end)`, newest
+         *     first. A cursor keeps the window of the first page and overrides `start` and `end`.
+         */
         get: operations["events_api_events_get"];
         put?: never;
         post?: never;
@@ -255,6 +259,33 @@ export interface components {
              * @enum {string}
              */
             source_id: "demo" | "home_assistant";
+        };
+        /**
+         * ChangeRecord
+         * @description A change Home Assistant recorded for a monitored device: two consecutive history rows
+         *     whose state, availability, brightness or color differ.
+         */
+        ChangeRecord: {
+            /**
+             * Device Kind
+             * @enum {string}
+             */
+            device_kind: "light" | "switch";
+            /** Entity Id */
+            entity_id: string;
+            /** Id */
+            id: string;
+            /** New */
+            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"];
+            /** Old */
+            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"];
+            /** Source Entity Id */
+            source_entity_id: string;
+            /**
+             * Time
+             * Format: date-time
+             */
+            time: string;
         };
         /** CommandRefusal */
         CommandRefusal: {
@@ -396,62 +427,12 @@ export interface components {
             /** Supported */
             supported: boolean;
         };
-        /** EventRecord */
-        EventRecord: {
-            /**
-             * Device Kind
-             * @enum {string}
-             */
-            device_kind: "light" | "switch";
-            /** Entity Id */
-            entity_id: string;
-            /**
-             * Event Time
-             * Format: date-time
-             */
-            event_time: string;
-            /** Id */
-            id: string;
-            /** New */
-            new: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
-            /** Old */
-            old: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Selection Revision */
-            selection_revision: number;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-        };
         /** EventsPage */
         EventsPage: {
-            /**
-             * Coverage
-             * @constant
-             */
-            coverage: "unknown";
             /** Events */
-            events: components["schemas"]["EventRecord"][];
+            events: components["schemas"]["ChangeRecord"][];
             /** Next Cursor */
             next_cursor: string | null;
-            /**
-             * Retained Since
-             * Format: date-time
-             */
-            retained_since: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1244,7 +1225,6 @@ export interface operations {
     events_api_events_get: {
         parameters: {
             query?: {
-                source_id?: ("demo" | "home_assistant") | null;
                 entity_id?: string | null;
                 start?: string | null;
                 end?: string | null;
@@ -1273,6 +1253,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };

@@ -49,22 +49,27 @@ Baseline history uses `limit` (1–100, default 50) and an integer `cursor` from
 
 ### Recorded changes
 
-The **Recorded changes** list on the **History** tab stores observed state,
-availability, brightness and color transitions. Each row says the change in
-words, such as "Desk lamp turned on at 40%". Its **Details** include its evidence ID, source entity and
-stable registry identity, old and new values, Home Assistant's `time_fired`,
-connector receipt time and API persistence time. Recorded changes use the
-[Home Assistant WebSocket `state_changed` subscription](https://developers.home-assistant.io/docs/api/websocket/#subscribe-to-events).
-The connector keeps only approved light fields. For a plug or switch it keeps
-only the on/off state, availability and source times, so a plug that reports a
-brightness never stores one. It drops unrelated attributes, account identifiers
-and raw logs. Each reading carries its `device_kind`, `light` or `switch`, and
-so does every stored row. Databases from earlier releases left it out of a
-light's rows. The first start after the upgrade backs such a database up to
-`<database>.pre-forward-only.bak` beside it, then migrates it once. An event ID
-leaves the kind out, so a light's events keep their earlier IDs. Duplicate
-delivery creates one event. A late event remains in history without replacing
-a newer current state.
+The **Recorded changes** list on the **History** tab shows the changes Home
+Assistant's recorder stored for the devices monitored now. Home Keeper keeps no
+copy: each request reads Home Assistant's history through the reader with
+[`history/history_during_period`](https://developers.home-assistant.io/docs/api/websocket/),
+with `significant_changes_only` off so brightness and color changes are included.
+A change is two consecutive history rows whose state, availability, brightness or
+color differ. Each row says the change in words, such as "Desk lamp turned on at
+40%", at Home Assistant's time. Its **Details** show the source entity, the stable
+registry identity, the old and new values and that time. How far back History
+goes depends on Home Assistant's recorder settings. A device that is not monitored
+now has no History, even for the time it was monitored; monitoring it again shows
+all the history Home Assistant has for it.
+
+The reader keeps only approved light fields. For a plug or switch it keeps only
+the on/off state and availability, so a plug that reports a brightness never shows
+one. It drops unrelated attributes, account identifiers and raw logs.
+
+Usage still reads the changes the collector recorded. Databases from earlier
+releases left a light's `device_kind` out of its rows. The first start after the
+upgrade backs such a database up to `<database>.pre-forward-only.bak` beside it,
+then migrates it once.
 
 Allowed color fields are `color_mode`, `color_temp_kelvin`, `hs_color`, `xy_color`,
 `rgb_color`, `rgbw_color` and `rgbww_color`. Brightness uses integers from 0 to
@@ -74,13 +79,13 @@ two finite numbers within 0..360 and 0..100; XY uses two finite numbers within
 Missing fields stay absent, rather than being inferred from another color format.
 
 History refreshes automatically until you load older entries. **Load older
-changes** requests another bounded page; **Refresh history** returns to the newest
-records. Events from removed selections remain readable until retention expires.
-The read-only `GET /api/events` endpoint accepts optional `source_id`, stable
-`entity_id`, timezone-aware `start` and `end` timestamps, a `cursor`, and a `limit` from 1 to
-100, default 50. It returns `events`, `next_cursor` and `retained_since`. Event
-history uses its own timestamp/ID cursor, separate from baseline history. The
-retention cutoff is not proof that collection covered that period continuously.
+changes** requests the next page; **Refresh history** returns to the newest
+changes. The read-only `GET /api/events` endpoint accepts an optional stable
+`entity_id`, timezone-aware `start` and `end` timestamps, a `cursor`, and a `limit`
+from 1 to 100, default 50. Without `start`, it covers the 30 days before `end`,
+which defaults to now. It returns `events`, newest first, and `next_cursor`. The
+cursor is opaque and keeps the first page's window, so later pages do not shift
+when new changes arrive. When Home Assistant cannot be read, it answers 503.
 
 ### Retention
 

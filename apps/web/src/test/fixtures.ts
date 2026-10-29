@@ -134,49 +134,45 @@ export const emptyCoverage = {
   gaps: [],
 } satisfies Schemas["CoverageReport"];
 
-const changeEvent = {
-  device_kind: "light",
-  entity_id: "light.hue_desk",
-  source_entity_id: null,
-  source_id: "demo",
-  selection_revision: 2,
-  persisted_at: "2026-10-12T10:00:00+00:00",
-} satisfies Partial<Schemas["EventRecord"]>;
+type ChangeRecord = Schemas["ChangeRecord"];
 
-export const change3 = {
-  ...changeEvent,
-  id: "change-3",
-  event_time: "2026-10-12T09:59:50Z",
-  received_at: "2026-10-12T09:59:50Z",
+/** A change Home Assistant recorded, with the ID the API gives it: entity and time. */
+const change = (
+  fields: Omit<ChangeRecord, "id" | "entity_id" | "source_entity_id" | "device_kind"> &
+    Partial<ChangeRecord>,
+): ChangeRecord => {
+  const entity_id = fields.entity_id ?? "light.hue_desk";
+  return {
+    device_kind: "light",
+    source_entity_id: entity_id,
+    ...fields,
+    entity_id,
+    id: `${entity_id}@${fields.time}`,
+  };
+};
+
+export const change3 = change({
+  time: "2026-10-12T09:59:50Z",
   old: { device_kind: "light", availability: "available", state: "off" },
   new: { device_kind: "light", availability: "available", state: "on", brightness: 150 },
-} satisfies Schemas["EventRecord"];
+});
 
-export const change2 = {
-  ...changeEvent,
-  id: "change-2",
-  event_time: "2026-10-12T09:59:40Z",
-  received_at: "2026-10-12T09:59:40Z",
+export const change2 = change({
+  time: "2026-10-12T09:59:40Z",
   old: { device_kind: "light", availability: "available", state: "on" },
   new: { device_kind: "light", availability: "available", state: "off" },
-} satisfies Schemas["EventRecord"];
+});
 
-export const change1 = {
-  ...changeEvent,
-  id: "change-1",
-  event_time: "2026-10-12T09:59:30Z",
-  received_at: "2026-10-12T09:59:30Z",
+export const change1 = change({
+  time: "2026-10-12T09:59:30Z",
   old: { device_kind: "light", availability: "available", state: "off" },
   new: { device_kind: "light", availability: "available", state: "on", brightness: 50 },
-} satisfies Schemas["EventRecord"];
+});
 
-// Distinct source, receipt, and storage times so a swapped label shows up.
-export const colorChange = {
-  ...changeEvent,
-  id: "change-color",
-  event_time: "2026-10-12T09:59:55Z",
-  received_at: "2026-10-12T09:59:57Z",
-  persisted_at: "2026-10-12T10:00:01+00:00",
+// A different Home Assistant entity ID, so the details show which one changed.
+export const colorChange = change({
+  source_entity_id: "light.desk_lamp_bulb",
+  time: "2026-10-12T09:59:55Z",
   old: {
     device_kind: "light",
     availability: "available",
@@ -191,39 +187,31 @@ export const colorChange = {
     brightness: 150,
     xy_color: [0.45, 0.41],
   },
-} satisfies Schemas["EventRecord"];
+});
 
 // The smart plug turning on: a switch reading has a state but no light attributes.
-export const plugChange = {
-  ...changeEvent,
+export const plugChange = change({
   device_kind: "switch",
   entity_id: smartPlug.id,
-  id: "change-plug",
-  event_time: "2026-10-12T09:59:58Z",
-  received_at: "2026-10-12T09:59:58Z",
+  time: "2026-10-12T09:59:58Z",
   old: { device_kind: "switch", availability: "available", state: "off" },
   new: { device_kind: "switch", availability: "available", state: "on" },
-} satisfies Schemas["EventRecord"];
+});
 
 export const eventsPage1 = {
-  coverage: "unknown",
   events: [change3, change2],
-  next_cursor: "2026-10-12T09:59:40Z|change-2",
-  retained_since: "2026-09-12T10:00:10+00:00",
+  // Opaque to the dashboard: it only sends it back.
+  next_cursor: "opaque-cursor-after-change-2",
 } satisfies Schemas["EventsPage"];
 
 export const eventsPage2 = {
-  coverage: "unknown",
   events: [change1],
   next_cursor: null,
-  retained_since: "2026-09-12T10:00:10+00:00",
 } satisfies Schemas["EventsPage"];
 
 export const emptyEvents = {
-  coverage: "unknown",
   events: [],
   next_cursor: null,
-  retained_since: "2026-09-12T10:00:00+00:00",
 } satisfies Schemas["EventsPage"];
 
 export const discoveryRefresh = {

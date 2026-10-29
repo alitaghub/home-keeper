@@ -159,9 +159,12 @@ def format_usage(usage: Usage) -> str:
 
 
 def format_events(page: EventsPage) -> str:
-    lines = [f"{len(page.events)} event(s), newest first, retained since {page.retained_since}:"]
+    lines = [
+        f"{len(page.events)} change(s) from Home Assistant's history, newest first. How far "
+        "back it goes depends on Home Assistant's recorder settings:"
+    ]
     lines.extend(
-        f"- {event.event_time} {event.entity_id}: {_reading(event.old)} -> {_reading(event.new)}"
+        f"- {event.time} {event.entity_id}: {_reading(event.old)} -> {_reading(event.new)}"
         for event in page.events
     )
     if page.next_cursor is not None:
@@ -357,8 +360,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def get_events(start: str, end: str, entity_id: str | None = None) -> str:
-        """List recorded changes of lights, plugs and switches in a time range, newest first, at
-        most 100.
+        """List changes Home Assistant recorded for monitored lights, plugs and switches in a
+        time range, newest first, at most 100.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset.

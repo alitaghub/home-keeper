@@ -21,6 +21,12 @@ const HISTORY_FAILED =
   "Cannot load recorded history. Previously displayed entries may be out of date.";
 // The banner every tab shows while the reader or Home Assistant cannot be reached.
 const CANT_REACH_HA = /^Can't reach Home Assistant/;
+const RECORDER_LINE =
+  "History comes from Home Assistant. How far back it goes depends on its recorder settings.";
+const RECORDER_DOC =
+  "https://github.com/alitaghub/home-keeper/blob/main/docs/home-assistant.md#history-retention";
+// Text from the recorded copy History no longer shows.
+const COPY_EVIDENCE = /Evidence ID|Retained since|Retention cutoff|received|Stored/i;
 
 let api: FakeApi;
 
@@ -47,6 +53,13 @@ const openTab = (name: "Home" | "History" | "Setup") =>
   fireEvent.click(screen.getByRole("tab", { name }));
 
 const pathsOf = (calls: ApiCall[]) => calls.map((call) => call.url.pathname);
+
+/** The History rows, newest first. */
+const changeRows = () => Array.from(byId("timeline").querySelectorAll("article"));
+
+/** The Home Assistant time each History row shows, newest first. */
+const shownTimes = () =>
+  changeRows().map((row) => row.querySelector("time")?.getAttribute("datetime"));
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -274,19 +287,12 @@ describe("dashboard behavior", () => {
           ? { ...fixtures.eventsPage2, events: [fixtures.change2, fixtures.change1] }
           : fixtures.eventsPage1,
     });
-    const timeline = within(byId("timeline"));
-    const evidenceIds = () =>
-      timeline.getAllByText(/^Evidence ID: /).map((element) => element.textContent);
-    const cutoff = `Retention cutoff: ${localTime(fixtures.eventsPage1.retained_since)}. This cutoff does not establish continuous coverage.`;
+    const { change1, change2, change3 } = fixtures;
 
-    await waitFor(() =>
-      expect(evidenceIds()).toEqual(["Evidence ID: change-3", "Evidence ID: change-2"]),
-    );
-    expect(byId("timeline-status")).toHaveTextContent(
-      `2 changes shown. ${cutoff} New changes refresh automatically.`,
-    );
-    const newest = timeline.getByText("Evidence ID: change-3").closest("article");
-    if (!newest) throw new Error("change-3 is not rendered as a card");
+    await waitFor(() => expect(shownTimes()).toEqual([change3.time, change2.time]));
+    const [newest] = changeRows();
+    if (!newest) throw new Error("change-3 is not rendered as a row");
+    expect(newest).toHaveTextContent("turned on at 59%");
     expect(
       within(newest)
         .getAllByRole("listitem")
@@ -296,19 +302,10 @@ describe("dashboard behavior", () => {
 
     await user.click(screen.getByRole("button", { name: "Load older changes" }));
 
-    await waitFor(() =>
-      expect(evidenceIds()).toEqual([
-        "Evidence ID: change-3",
-        "Evidence ID: change-2",
-        "Evidence ID: change-1",
-      ]),
-    );
+    await waitFor(() => expect(shownTimes()).toEqual([change3.time, change2.time, change1.time]));
     const older = api.callsTo("GET /api/events").at(-1);
     expect(older?.url.searchParams.get("cursor")).toBe(fixtures.eventsPage1.next_cursor);
     expect(older?.url.searchParams.get("limit")).toBe("50");
-    expect(byId("timeline-status")).toHaveTextContent(
-      `3 changes shown. ${cutoff} Older history is open; refresh to see new changes.`,
-    );
     expect(screen.queryByRole("button", { name: "Load older changes" })).toBeNull();
 
     // While older history is open, polling leaves the timeline alone.
@@ -322,34 +319,37 @@ describe("dashboard behavior", () => {
 
     await user.click(screen.getByRole("button", { name: "Refresh history" }));
 
-    await waitFor(() =>
-      expect(evidenceIds()).toEqual(["Evidence ID: change-3", "Evidence ID: change-2"]),
-    );
+    await waitFor(() => expect(shownTimes()).toEqual([change3.time, change2.time]));
     expect(api.callsTo("GET /api/events").at(-1)?.url.searchParams.has("cursor")).toBe(false);
-    expect(byId("timeline-status")).toHaveTextContent(
-      `2 changes shown. ${cutoff} New changes refresh automatically.`,
-    );
   });
 
-  it("shows a color-only change with its source, receipt and storage times", async () => {
+  it("shows a change at Home Assistant's time with its entity, and no evidence or receipt times", async () => {
     startOn("history");
     const event = fixtures.colorChange;
     renderDashboard({ "GET /api/events": { ...fixtures.eventsPage2, events: [event] } });
 
-    const card = (await within(byId("timeline")).findByText(`Evidence ID: ${event.id}`)).closest(
-      "article",
-    );
-    if (!card) throw new Error(`${event.id} is not rendered as a card`);
-    const scope = within(card);
-    expect(scope.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
-      "xy color: 0.3, 0.32 → 0.45, 0.41",
-    ]);
-    expect(scope.getByText(`Source event: ${localTime(event.event_time)}`)).toBeInTheDocument();
+    const [card] = await within(byId("timeline")).findAllByRole("article");
+    if (!card) throw new Error(`${event.id} is not rendered as a row`);
     expect(
-      scope.getByText(
-        `Connector received: ${localTime(event.received_at)} · Stored: ${localTime(event.persisted_at)}`,
-      ),
-    ).toBeInTheDocument();
+      within(card)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["xy color: 0.3, 0.32 → 0.45, 0.41"]);
+    expect(card.querySelector("time")).toHaveAttribute("datetime", event.time);
+    expect(card).toHaveTextContent(event.source_entity_id);
+    expect(card).not.toHaveTextContent(COPY_EVIDENCE);
+    expect(card).not.toHaveTextContent(event.id);
+  });
+
+  it("says history comes from Home Assistant and links to its recorder settings", async () => {
+    startOn("history");
+    renderDashboard({ "GET /api/events": fixtures.eventsPage1 });
+
+    const link = await screen.findByRole("link", { name: "recorder settings" });
+    expect(link).toHaveAttribute("href", RECORDER_DOC);
+    expect(link.parentElement?.textContent).toBe(RECORDER_LINE);
+    await waitFor(() => expect(changeRows()).toHaveLength(2));
+    expect(byId("changes-heading").closest("section")).not.toHaveTextContent(COPY_EVIDENCE);
   });
 
   it("tells an open collection gap from a recovered one", async () => {
@@ -411,15 +411,16 @@ describe("dashboard behavior", () => {
   });
 
   it("keeps shown history but flags it when the timeline request fails", async () => {
-    const { api } = renderDashboard({ "GET /api/events": fixtures.eventsPage1 });
-    const timeline = within(byId("timeline"));
-    await waitFor(() => expect(timeline.getByText("Evidence ID: change-3")).toBeInTheDocument());
+    renderDashboard({ "GET /api/events": fixtures.eventsPage1 });
+    await waitFor(() =>
+      expect(shownTimes()).toEqual([fixtures.change3.time, fixtures.change2.time]),
+    );
 
     api.fail("GET /api/events", "network");
     await nextPoll();
 
-    await waitFor(() => expect(byId("timeline-status")).toHaveTextContent(HISTORY_FAILED));
-    expect(timeline.getByText("Evidence ID: change-3")).toBeInTheDocument();
+    await waitFor(() => expect(document.body).toHaveTextContent(HISTORY_FAILED));
+    expect(shownTimes()).toEqual([fixtures.change3.time, fixtures.change2.time]);
   });
 
   it("reports a failed selection change", async () => {
@@ -1115,14 +1116,15 @@ describe("command history in the timeline", () => {
           : fixtures.eventsPage1,
       [COMMANDS]: commandsPage([command("c1")], "cursor-2"),
     });
-    const timeline = within(byId("timeline"));
-    await waitFor(() => expect(timeline.getByText("Evidence ID: change-3")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(shownTimes()).toEqual([fixtures.change3.time, fixtures.change2.time]),
+    );
     await waitFor(() => expect(articles()).toHaveLength(1));
     const commandRequests = api.callsTo(COMMANDS).length;
 
     await user.click(screen.getByRole("button", { name: "Load older changes" }));
 
-    await waitFor(() => expect(timeline.getByText("Evidence ID: change-1")).toBeInTheDocument());
+    await waitFor(() => expect(shownTimes()).toContain(fixtures.change1.time));
     expect(api.callsTo(COMMANDS)).toHaveLength(commandRequests);
     expect(api.callsTo(COMMANDS).every((call) => !call.url.searchParams.has("cursor"))).toBe(true);
     expect(
@@ -1772,6 +1774,7 @@ describe("when Home Assistant cannot be reached", () => {
   function loseHomeAssistant(api: FakeApi) {
     api.fail("GET /api/catalog", { status: 503, body: fixtures.unreachableBody });
     api.fail("PUT /api/selection/{entity_id}", { status: 503, body: fixtures.unreachableBody });
+    api.fail("GET /api/events", { status: 503, body: fixtures.unreachableBody });
     api.reply("GET /api/health", fixtures.unreachableHealth);
     api.reply("GET /api/monitored", {
       entities: [fixtures.unknownDevice(fixtures.desk), fixtures.unknownDevice(fixtures.smartPlug)],
@@ -1784,6 +1787,7 @@ describe("when Home Assistant cannot be reached", () => {
       entities: [fixtures.desk, fixtures.smartPlug],
     });
     api.reply("PUT /api/selection/{entity_id}", { entity_ids: [fixtures.desk.id] });
+    api.reply("GET /api/events", fixtures.emptyEvents);
     api.reply("GET /api/health", fixtures.health);
     api.reply("GET /api/monitored", {
       entities: [

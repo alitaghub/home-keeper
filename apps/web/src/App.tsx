@@ -30,6 +30,10 @@ type Tab = (typeof TABS)[number]["id"];
 const tabFromHash = (): Tab =>
   TABS.find((tab) => `#${tab.id}` === window.location.hash)?.id ?? "home";
 
+// How far back History reaches, in the hosted docs: the image does not ship docs/.
+const recorderDocs =
+  "https://github.com/alitaghub/home-keeper/blob/main/docs/home-assistant.md#history-retention";
+
 // Why Home Assistant cannot be read, from /api/health. Fixed text, never upstream text.
 const unreachableMessages: Record<NonNullable<Schemas["HealthStatus"]["error"]>, string> = {
   authentication: "Home Assistant rejected the reader's token. Check the token and its user.",
@@ -344,7 +348,17 @@ export function App() {
           <section className="panel" aria-labelledby="changes-heading">
             <h3 id="changes-heading">Recorded changes</h3>
             <p id="timeline-status" className="history-status" role="status" aria-live="polite">
-              {timeline.status}
+              {timeline.failed ? (
+                "Cannot load recorded history. Previously displayed entries may be out of date."
+              ) : (
+                <>
+                  History comes from Home Assistant. How far back it goes depends on its{" "}
+                  <a href={recorderDocs} target="_blank" rel="noreferrer">
+                    recorder settings
+                  </a>
+                  .
+                </>
+              )}
             </p>
             <Timeline events={timeline.events} names={names} />
             <button

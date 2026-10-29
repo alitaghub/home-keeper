@@ -8,7 +8,7 @@ from queue import Empty, Queue
 from threading import Event, Thread
 
 from fastapi.testclient import TestClient
-from support.api import recorded_current
+from support.api import recorded_current, recorded_events
 from support.home_assistant import Frame
 from support.recorded_reader import RecordedReader
 from websockets.datastructures import Headers
@@ -102,7 +102,7 @@ def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path: Path) 
                     assert session.reconcile()
                     change_during_read[0] = True
                     assert session.reconcile()
-                    events = api.get("/api/events").json()["events"]
+                    events = recorded_events(db)
                     assert [event["new"]["brightness"] for event in events] == [180]
                     assert api.get("/api/coverage").json()["gaps"] == []
                 finally:
@@ -224,7 +224,7 @@ def test_event_received_after_read_keeps_pass_and_recovers_gap(tmp_path: Path) -
             ]
             assert recorded_current(db, "ha:a")["brightness"] == 180
             # The race only happened if the event was saved before the older snapshot.
-            [event] = api.get("/api/events").json()["events"]
+            [event] = recorded_events(db)
             recovery = api.get("/api/baselines", params={"entity_id": "ha:a"}).json()["baselines"][
                 0
             ]

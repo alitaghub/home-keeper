@@ -91,15 +91,15 @@ class Usage(Wire):
 
 class Event(Wire):
     entity_id: str
-    event_time: str
-    old: Reading | None
-    new: Reading | None
+    # Home Assistant's time of the change.
+    time: str
+    old: Reading
+    new: Reading
 
 
 class EventsPage(Wire):
     events: list[Event]
     next_cursor: str | None
-    retained_since: str
 
 
 class Gap(Wire):

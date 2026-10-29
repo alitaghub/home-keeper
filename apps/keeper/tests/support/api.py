@@ -1,5 +1,6 @@
 """Seed data and request builders for tests that drive the FastAPI app."""
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -124,3 +125,11 @@ def recorded_current(path: Path, entity_id: str = "bulb-a") -> dict[str, Any]:
     assert current is not None, f"nothing recorded for {entity_id}"
     reading: dict[str, Any] = current.model_dump(mode="json", exclude_unset=True)
     return reading
+
+
+def recorded_events(path: Path) -> list[dict[str, Any]]:
+    """The change events the recorder stored from the collector, newest first. `/api/events`
+    reads Home Assistant's history instead; the recorder keeps these until its tables go."""
+    with Store(path).transaction("DEFERRED") as db:
+        rows = db.execute("SELECT data FROM events ORDER BY event_time DESC, id DESC").fetchall()
+    return [json.loads(row[0]) for row in rows]

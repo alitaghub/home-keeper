@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from support.api import recorded_events
 from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry, use_transport
 from support.recorded_reader import RecordedReader
 from websockets.datastructures import Headers
@@ -390,7 +391,7 @@ def test_api_detected_gap_closes_after_next_full_pass_without_fabricated_events(
                 and value["transition_time"] == "unknown"
                 for value in snapshots
             )
-            assert api.get("/api/events").json()["events"] == []
+            assert recorded_events(tmp_path / "recorded.sqlite") == []
         finally:
             session.close()
 

@@ -5,16 +5,16 @@ import time
 from collections.abc import Callable
 from datetime import MAXYEAR, UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import TypeAdapter
 from starlette.middleware.base import RequestResponseEndpoint
 
+from home_keeper.changes import changes, events_page, read_cursor
 from home_keeper.commands import Commands, Refusal
 from home_keeper.control import Controller
 from home_keeper.models import (
@@ -58,6 +58,11 @@ from home_keeper.store import Store, baseline_record, current_reading
 from home_keeper.usage import device_usage
 
 UTC_ZONE = ZoneInfo("UTC")
+# History's window when a request names no start.
+HISTORY_WINDOW = timedelta(days=30)
+# The API reads history from just before `start`, so a change at exactly `start` has the row
+# before it.
+BEFORE_START = timedelta(milliseconds=1)
 
 # Fixed text for each reason Home Assistant cannot be read: never upstream text, URLs or tokens.
 UNREACHABLE_MESSAGES: dict[ReaderError, str] = {
@@ -321,58 +326,49 @@ def create_app(
             "duplicate": outcome == "duplicate",
         }
 
-    @app.get("/api/events", response_model=EventsPage, response_model_exclude_unset=True)
+    # Readings omit unset light attributes; excluding unset fields keeps them absent.
+    @app.get(
+        "/api/events",
+        response_model=EventsPage,
+        response_model_exclude_unset=True,
+        responses=needs_home_assistant,
+    )
     def events(
         *,
-        source_id: Literal["demo", "home_assistant"] | None = None,
         entity_id: Identity | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        cursor: Annotated[str | None, Query(max_length=200)] = None,
+        cursor: Annotated[str | None, Query(max_length=1000)] = None,
     ):
+        """Changes Home Assistant recorded for monitored devices in `[start, end)`, newest
+        first. A cursor keeps the window of the first page and overrides `start` and `end`."""
         try:
-            start = to_utc(start) if start else None
-            end = to_utc(end) if end else None
-            if start and end and start > end:
-                raise ValueError("Reversed range")
-            position = None
-            if cursor is not None:
-                timestamp, identity = cursor.split("|", 1)
-                position = (to_utc(datetime.fromisoformat(timestamp)).isoformat(), identity)
-                # Reuse the boundary type rather than accepting arbitrary cursor identifiers.
-                position = (position[0], TypeAdapter(Identity).validate_python(identity))
-        except (ValueError, TypeError):
+            after = None if cursor is None else read_cursor(cursor)
+            if after is not None:
+                window_start, window_end = to_utc(after.start), to_utc(after.end)
+            else:
+                window_end = to_utc(end) if end else now().astimezone(UTC)
+                window_start = to_utc(start) if start else window_end - HISTORY_WINDOW
+                if window_start > window_end:
+                    raise ValueError("Reversed range")
+            # The row before `start` is the predecessor of a change at exactly `start`.
+            history_start = window_start - BEFORE_START
+        # OverflowError: a timestamp near year 1 or 9999 can fall outside the calendar.
+        except (ValueError, TypeError, OverflowError):
             raise HTTPException(422, "Invalid event scope") from None
-        clauses, parameters = ["persisted_at>=?"], [retention_cutoff()]
-        for column, value in (("source_id", source_id), ("entity_id", entity_id)):
-            if value is not None:
-                clauses.append(f"{column}=?")
-                parameters.append(value)
-        for operator, value in ((">=", start), ("<=", end)):
-            if value is not None:
-                clauses.append(f"event_time {operator} ?")
-                parameters.append(value.isoformat())
-        if position:
-            clauses.append("(event_time < ? OR (event_time=? AND id < ?))")
-            parameters.extend((position[0], position[0], position[1]))
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        with store.transaction() as db:
-            rows = db.execute(
-                # Only fixed SQL fragments are concatenated; values are bound parameters.
-                "SELECT data FROM events" + where + " ORDER BY event_time DESC, id DESC LIMIT ?",  # noqa: S608
-                (*parameters, limit + 1),
-            ).fetchall()
-        values = [EventRecord.model_validate_json(row[0]) for row in rows[:limit]]
-        next_cursor = None
-        if len(rows) > limit:
-            next_cursor = f"{values[-1].event_time}|{values[-1].id}"
-        return EventsPage(
-            events=values,
-            next_cursor=next_cursor,
-            retained_since=(now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
-            coverage="unknown",
-        )
+        devices = [
+            device
+            for device in monitoring.selection().entity_ids
+            if entity_id is None or device == entity_id
+        ]
+        history = reader.history(devices, history_start, window_end) if devices else {}
+        found = [
+            change
+            for device in devices
+            for change in changes(device, history.get(device, []), window_start, window_end)
+        ]
+        return events_page(found, start=window_start, end=window_end, after=after, limit=limit)
 
     @app.post("/internal/health", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_health(payload: Health):

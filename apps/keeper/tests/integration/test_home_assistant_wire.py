@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from support.api import recorded_current
+from support.api import recorded_current, recorded_events
 from support.home_assistant import Frame, hue_room, registry_entry, state_changed
 from support.recorded_reader import RecordedReader
 from websockets.datastructures import Headers
@@ -414,8 +414,9 @@ def test_selected_switch_records_a_baseline_and_a_change_without_light_attribute
             if index < len(results) - 1:
                 command = json.loads(socket.recv(timeout=5))
 
+    db = tmp_path / "live.sqlite"
     app = create_app(
-        db_path=tmp_path / "live.sqlite",
+        db_path=db,
         service_token="internal-token-sentinel",
         source_id="home_assistant",
         reader=RecordedReader(tmp_path / "live.sqlite"),
@@ -443,13 +444,13 @@ def test_selected_switch_records_a_baseline_and_a_change_without_light_attribute
                 assert session.reconcile()
                 recorded.set()
                 deadline = time.monotonic() + 5
-                while not api.get("/api/events").json()["events"] and time.monotonic() < deadline:
+                while not recorded_events(db) and time.monotonic() < deadline:
                     session.receive(0.05)
 
                 [baseline] = api.get("/api/baselines?entity_id=ha:plug").json()["baselines"]
                 assert baseline["device_kind"] == "switch"
                 assert baseline["state"] == "on"
-                [event] = api.get("/api/events").json()["events"]
+                [event] = recorded_events(db)
                 assert event["device_kind"] == "switch"
                 assert (event["old"]["state"], event["new"]["state"]) == ("on", "off")
                 [monitored] = api.get("/api/monitored").json()["entities"]

@@ -442,6 +442,8 @@ class BaselinesPage(WireModel):
 
 
 class EventRecord(WireModel):
+    """A change the collector recorded. Usage still reads these."""
+
     id: Identity
     entity_id: Identity
     source_entity_id: Identity | None
@@ -455,11 +457,25 @@ class EventRecord(WireModel):
     new: Reading | None
 
 
+class ChangeRecord(WireModel):
+    """A change Home Assistant recorded for a monitored device: two consecutive history rows
+    whose state, availability, brightness or color differ."""
+
+    # `{entity_id}@{time}`.
+    id: str
+    entity_id: Identity
+    source_entity_id: Identity
+    device_kind: DeviceKind
+    # Home Assistant's last_updated of the new state.
+    time: Timestamp
+    old: Reading
+    new: Reading
+
+
 class EventsPage(WireModel):
-    events: list[EventRecord]
+    events: list[ChangeRecord]
+    # Opaque; it carries the window of the first page.
     next_cursor: str | None
-    retained_since: Timestamp
-    coverage: Literal["unknown"]
 
 
 class CoverageGap(WireModel):

@@ -1,18 +1,20 @@
 """A reader over what the collector ingest routes recorded, for tests written against them.
 
 The API reads Home Assistant through a reader; these tests still seed it through
-`/internal/catalog` and `/internal/baselines`. This reader serves those rows back.
+`/internal/catalog` and `/internal/baselines`. This reader serves those rows back. It has no
+Home Assistant history: the recorded events are not what `/api/events` reads.
 """
 
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
 from home_keeper.models import Entity, Identity, LightReading, Reading, SwitchReading
-from home_keeper.reader import LiveState
+from home_keeper.reader import HistoryRow, LiveState
 from home_keeper.store import current_reading
 
 _reading: TypeAdapter[Reading] = TypeAdapter(Reading)
@@ -63,3 +65,8 @@ class RecordedReader:
                 ),
             )
         return result
+
+    def history(
+        self, entity_ids: Sequence[Identity], start: datetime, end: datetime
+    ) -> dict[Identity, list[HistoryRow]]:
+        return {entity_id: [] for entity_id in entity_ids}

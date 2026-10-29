@@ -1,17 +1,17 @@
 import { useCallback, useRef, useState } from "react";
 import { api, type CommandRecord, type Schemas, unwrap } from "./api/client";
-import { date } from "./format";
 
-type EventRecord = Schemas["EventRecord"];
+type ChangeRecord = Schemas["ChangeRecord"];
 
 export function useTimeline() {
   const busy = useRef(false);
   const cursor = useRef<string | null>(null);
   // Polling stops replacing the list while older pages are open.
   const showingOlder = useRef(false);
-  const loaded = useRef<EventRecord[]>([]);
-  const [events, setEvents] = useState<EventRecord[] | null>(null);
-  const [status, setStatus] = useState("Waiting for recorded history.");
+  const loaded = useRef<ChangeRecord[]>([]);
+  const [events, setEvents] = useState<ChangeRecord[] | null>(null);
+  // Whether the latest read failed, so the list shown may be out of date.
+  const [failed, setFailed] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -34,18 +34,16 @@ export function useTimeline() {
       cursor.current = history.next_cursor;
       setHasMore(Boolean(history.next_cursor));
       setEvents(loaded.current);
-      setStatus(
-        `${loaded.current.length} changes shown. Retention cutoff: ${date(history.retained_since)}. This cutoff does not establish continuous coverage.${older ? " Older history is open; refresh to see new changes." : " New changes refresh automatically."}`,
-      );
+      setFailed(false);
     } catch {
-      setStatus("Cannot load recorded history. Previously displayed entries may be out of date.");
+      setFailed(true);
     } finally {
       busy.current = false;
       setLoading(false);
     }
   }, []);
 
-  return { events, status, hasMore, loading, load, showingOlder };
+  return { events, failed, hasMore, loading, load, showingOlder };
 }
 
 // Commands page like events, apart from them: the two lists are not interleaved.

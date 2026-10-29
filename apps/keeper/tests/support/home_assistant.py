@@ -16,9 +16,20 @@ type Handler = Callable[[httpx.Request], httpx.Response]
 
 
 class FakeSocket:
-    """Replays the two registry answers and records every frame the adapter sends."""
+    """Replays the two registry answers and records every frame the adapter sends.
 
-    def __init__(self, entities: list[Frame], devices: Iterable[Frame] = ()) -> None:
+    It answers `history/history_during_period` from `history`: Home Assistant's compressed
+    rows by entity ID, returned as they are for each requested entity it has. Like Home
+    Assistant, it refuses a request whose ID does not exceed every earlier ID on the
+    connection.
+    """
+
+    def __init__(
+        self,
+        entities: list[Frame],
+        devices: Iterable[Frame] = (),
+        history: dict[str, list[Frame]] | None = None,
+    ) -> None:
         self.messages: deque[Frame] = deque(
             [
                 {"type": "auth_required"},
@@ -28,6 +39,8 @@ class FakeSocket:
             ]
         )
         self.sent: list[Frame] = []
+        self.history: dict[str, list[Frame]] = history or {}
+        self._last_id = 0
 
     def __enter__(self) -> Self:
         return self
@@ -40,7 +53,30 @@ class FakeSocket:
         return json.dumps(self.messages.popleft())
 
     def send(self, value: str) -> None:
-        self.sent.append(json.loads(value))
+        frame = json.loads(value)
+        self.sent.append(frame)
+        if frame.get("type") == "auth":
+            # Tests reuse one socket for several connections; IDs restart with each one.
+            self._last_id = 0
+        identity = frame.get("id")
+        if not isinstance(identity, int):
+            return
+        if identity <= self._last_id:
+            error = {"code": "id_reuse", "message": "Identifier values have to increase."}
+            self.messages.appendleft(
+                {"id": identity, "type": "result", "success": False, "error": error}
+            )
+            return
+        self._last_id = identity
+        if frame.get("type") == "history/history_during_period":
+            result = {
+                entity_id: self.history[entity_id]
+                for entity_id in frame.get("entity_ids", [])
+                if entity_id in self.history
+            }
+            self.messages.appendleft(
+                {"id": identity, "type": "result", "success": True, "result": result}
+            )
 
     def close(self) -> None:
         pass
@@ -146,3 +182,14 @@ def state_changed(entity: str = "light.bulb", **changes: Any) -> Frame:
             },
         },
     }
+
+
+def history_row(
+    state: str, changed: float, updated: float | None = None, **attributes: Any
+) -> Frame:
+    """One compressed row of `history/history_during_period`: Unix-second times, and `lu`
+    left out when it equals `lc`, as Home Assistant sends it."""
+    row: Frame = {"s": state, "a": attributes, "lc": changed}
+    if updated is not None and updated != changed:
+        row["lu"] = updated
+    return row

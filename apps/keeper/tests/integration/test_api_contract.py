@@ -39,7 +39,7 @@ from support.control import (
     command,
     on,
 )
-from support.reader import FakeReader
+from support.reader import FakeReader, history_row
 
 from home_keeper.api import create_app
 
@@ -111,15 +111,22 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
         revision = select(client, "bulb-b")
         client.post("/internal/health", json=health(clock[0]), headers=AUTH)
         client.post("/internal/baselines", json=observation(revision), headers=AUTH)
+        # Home Assistant's recorder holds bulb-a off, then the three changes below.
+        reader.record("bulb-a", history_row(DESK, NOW - timedelta(seconds=40), {"state": "off"}))
         for index, (old, new) in enumerate([("off", "on"), ("on", "off"), ("off", "on")], start=1):
             at = NOW - timedelta(seconds=40 - 10 * index)
+            state: Payload = (
+                {"state": new, "brightness": 50 * index} if new == "on" else {"state": new}
+            )
+            reader.record("bulb-a", history_row(DESK, at, state))
+            # Usage still reads the collector's recorded events.
             payload = event(
                 revision,
                 identity=f"change-{index}",
                 event_time=at.isoformat(),
                 received_at=(at + timedelta(seconds=3)).isoformat(),
                 old={"state": old},
-                new={"state": new, "brightness": 50 * index} if new == "on" else {"state": new},
+                new=state,
             )
             assert client.post("/internal/events", json=payload, headers=AUTH).is_success
 
@@ -204,6 +211,7 @@ def unreachable_responses(tmp_path: Path) -> dict[str, Recorded]:
             "error_select_unreachable": record(
                 client.put("/api/selection/room", json={"selected": True}, headers=BROWSER)
             ),
+            "events_unreachable": record(client.get("/api/events")),
             "deselect_unreachable": record(
                 client.put("/api/selection/bulb-b", json={"selected": False}, headers=BROWSER)
             ),

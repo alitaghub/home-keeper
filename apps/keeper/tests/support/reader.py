@@ -1,11 +1,13 @@
-"""A stand-in for the reader service: the catalog and the live states the API reads."""
+"""A stand-in for the reader service: the catalog, the live states and the history the API
+reads."""
 
 from collections.abc import Callable, Sequence
+from datetime import datetime
 
 from pydantic import TypeAdapter
 
 from home_keeper.models import Entity, Reading
-from home_keeper.reader import LiveState, ReaderError, ReaderUnavailable
+from home_keeper.reader import HistoryRow, LiveState, ReaderError, ReaderUnavailable
 
 type Payload = dict[str, object]
 
@@ -31,6 +33,35 @@ def live(source_entity_id: str, state: Payload) -> LiveState:
     )
 
 
+def history_row(
+    source_entity_id: str, at: datetime, state: Payload, last_changed: datetime | None = None
+) -> HistoryRow:
+    """One row of Home Assistant's recorder: what `live` reports, recorded at `at`.
+
+    `last_changed` defaults to `at`; pass the earlier time when only attributes changed.
+    """
+    recorded = live(source_entity_id, state).reading.model_dump(exclude_unset=True) | {
+        "last_changed": (last_changed or at).isoformat(),
+        "last_updated": at.isoformat(),
+    }
+    return HistoryRow(
+        source_entity_id=source_entity_id, reading=reading_of.validate_python(recorded)
+    )
+
+
+def recorded_at(row: HistoryRow) -> datetime:
+    assert row.reading.last_updated is not None, "a history row always has its time"
+    return datetime.fromisoformat(row.reading.last_updated)
+
+
+def period(rows: Sequence[HistoryRow], start: datetime, end: datetime) -> list[HistoryRow]:
+    """What Home Assistant's `history/history_during_period` returns for one entity: the
+    state at `start` first, then each row recorded after `start` and before `end`."""
+    ordered = sorted(rows, key=recorded_at)
+    before = [row for row in ordered if recorded_at(row) <= start]
+    return before[-1:] + [row for row in ordered if start < recorded_at(row) < end]
+
+
 class RunawayPollingError(BaseException):
     """Raised from a read when a command keeps polling far past any sane deadline.
 
@@ -44,6 +75,7 @@ class FakeReader:
     Set `error` to make every call raise `ReaderUnavailable(error)`, as when the reader or
     Home Assistant cannot be reached. `on_read` runs at the start of each `states` call,
     before the answer is taken, so a test can change the home or the clock between reads.
+    `recorded` holds Home Assistant's recorder rows by entity ID, in any order.
     """
 
     def __init__(
@@ -56,6 +88,9 @@ class FakeReader:
         # The entity ids of each `states` call, in order.
         self.reads: list[list[str]] = []
         self.max_reads = 500
+        self.recorded: dict[str, list[HistoryRow]] = {}
+        # The (entity IDs, start, end) of each `history` call, in order.
+        self.history_reads: list[tuple[list[str], datetime, datetime]] = []
 
     def health(self) -> None:
         self._check()
@@ -73,6 +108,20 @@ class FakeReader:
         self._check()
         return {entity_id: self.live.get(entity_id) for entity_id in entity_ids}
 
+    def history(
+        self, entity_ids: Sequence[str], start: datetime, end: datetime
+    ) -> dict[str, list[HistoryRow]]:
+        self.history_reads.append((list(entity_ids), start, end))
+        self._check()
+        return {
+            entity_id: period(self.recorded.get(entity_id, []), start, end)
+            for entity_id in entity_ids
+        }
+
+    def record(self, entity_id: str, *rows: HistoryRow) -> None:
+        """Home Assistant's recorder stores `rows` for the device."""
+        self.recorded.setdefault(entity_id, []).extend(rows)
+
     def set(self, entity_id: str, source_entity_id: str, state: Payload) -> None:
         """Home Assistant now reports `state` for the device."""
         self.live[entity_id] = live(source_entity_id, state)
@@ -81,6 +130,7 @@ class FakeReader:
         """Home Assistant no longer has the device: gone from the registry and the states."""
         self.entities = [entity for entity in self.entities if entity.id != entity_id]
         self.live.pop(entity_id, None)
+        self.recorded.pop(entity_id, None)
 
     def _check(self) -> None:
         if self.error is not None:

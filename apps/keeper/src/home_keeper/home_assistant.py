@@ -5,15 +5,17 @@
 
 import contextlib
 import ipaddress
+import itertools
 import json
 import logging
 import re
 import ssl
 import time
+from collections.abc import Generator, Sequence
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import Any, NoReturn, Protocol, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -33,6 +35,8 @@ from home_keeper.models import (
 )
 
 MAX_PAYLOAD = 2 * 1024 * 1024
+# Weeks of a busy light's history outgrow one registry list.
+HISTORY_MAX_PAYLOAD = 16 * 1024 * 1024
 MAX_REGISTRY_ROWS = 500
 MAX_SOURCE_ENTITY_ID_LENGTH = 128
 MAX_TOKEN_LENGTH = 4096
@@ -44,7 +48,14 @@ _REGISTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,120}$")
 _DEVICE_ID = re.compile(r"^(light|switch)\.[a-z0-9_]{1,120}$")
 # Integrations flag their group entities with attributes such as is_hue_group or is_deconz_group.
 _GROUP_FLAG = re.compile(r"^is_[a-z0-9_]+_group$")
-_DISCOVERY_COMMANDS = frozenset({"config/entity_registry/list", "config/device_registry/list"})
+# The only WebSocket requests the adapter sends: reads, never service calls or writes.
+_READ_COMMANDS = frozenset(
+    {
+        "config/entity_registry/list",
+        "config/device_registry/list",
+        "history/history_during_period",
+    }
+)
 GROUP_REASON = "Groups and rooms are not recorded"
 DISABLED_REASON = "Disabled in Home Assistant"
 NOT_A_DEVICE_REASON = "Only lights, plugs and switches are supported"
@@ -163,64 +174,81 @@ class HomeAssistantConnector:
         # A failed refresh forbids reading even cached identities until revalidated.
         self._validated = False
         self._approved = {}
-        try:
-            with connect(
-                self._websocket_url,
-                open_timeout=self._timeout,
-                close_timeout=self._timeout,
-                max_size=MAX_PAYLOAD,
-                proxy=None,
-                logger=_WS_LOGGER,
-            ) as socket:
-                if self._receive(socket).get("type") != "auth_required":
-                    raise ConnectorError("invalid_data")
-                socket.send(json.dumps({"type": "auth", "access_token": self._token}))
-                authentication = self._receive(socket).get("type")
-                if authentication == "auth_invalid":
-                    raise ConnectorError("authentication")
-                if authentication != "auth_ok":
-                    raise ConnectorError("invalid_data")
-                entities = self._registry(socket, 1, "config/entity_registry/list")
-                devices = self._registry(socket, 2, "config/device_registry/list")
+        with self._session() as session:
+            entities = _rows(session.request("config/entity_registry/list", failure="discovery"))
+            devices = _rows(session.request("config/device_registry/list", failure="discovery"))
             catalog, mapping = self._project(entities, devices)
-        except ConnectorError:
-            raise
-        except ssl.SSLError:
-            raise ConnectorError("tls") from None
-        except TimeoutError:
-            raise ConnectorError("timeout") from None
-        except (OSError, WebSocketException):
-            raise ConnectorError("connection") from None
-        except (ValueError, TypeError, KeyError):
-            raise ConnectorError("invalid_data") from None
         self._entities = mapping
         self._supported = {entity.id for entity in catalog.entities if entity.supported}
         self._validated = True
         return catalog
 
-    def _receive(self, socket: WebSocket) -> dict[str, Any]:
+    def history(
+        self, source_entity_ids: Sequence[str], start: datetime, end: datetime
+    ) -> dict[str, list[LightState | SwitchState]]:
+        """Each light's or switch's recorded states from `start` to `end`, oldest first, in one
+        request. The first is its state at `start`; an entity with no history has []."""
+        if any(not _DEVICE_ID.fullmatch(entity_id) for entity_id in source_entity_ids):
+            raise ConnectorError("configuration")
+        if not source_entity_ids:
+            return {}
+        with self._session(HISTORY_MAX_PAYLOAD) as session:
+            result = session.request(
+                "history/history_during_period",
+                # Home Assistant answers a malformed history request with an error result.
+                failure="invalid_data",
+                start_time=start.isoformat(),
+                end_time=end.isoformat(),
+                entity_ids=list(source_entity_ids),
+                include_start_time_state=True,
+                # Lights are not in Home Assistant's significant domains: without this, it
+                # leaves out their brightness and color changes.
+                significant_changes_only=False,
+                minimal_response=False,
+                no_attributes=False,
+            )
+            if not is_json_object(result):
+                raise ConnectorError("invalid_data")
+            return {
+                entity_id: [
+                    history_state(row, entity_id) for row in _rows(result.get(entity_id, []))
+                ]
+                for entity_id in source_entity_ids
+            }
+
+    @contextlib.contextmanager
+    def _session(self, max_size: int = MAX_PAYLOAD) -> Generator["Session"]:
+        """An authenticated WebSocket for read requests. Every failure inside, including the
+        caller's parsing, leaves as a safe ConnectorError code."""
+        try:
+            with connect(
+                self._websocket_url,
+                open_timeout=self._timeout,
+                close_timeout=self._timeout,
+                max_size=max_size,
+                proxy=None,
+                logger=_WS_LOGGER,
+            ) as socket:
+                if self._receive(socket, max_size).get("type") != "auth_required":
+                    raise ConnectorError("invalid_data")
+                socket.send(json.dumps({"type": "auth", "access_token": self._token}))
+                authentication = self._receive(socket, max_size).get("type")
+                if authentication == "auth_invalid":
+                    raise ConnectorError("authentication")
+                if authentication != "auth_ok":
+                    raise ConnectorError("invalid_data")
+                yield Session(self, socket, max_size)
+        except Exception as error:
+            _raise_safe(error)
+
+    def _receive(self, socket: WebSocket, max_size: int = MAX_PAYLOAD) -> dict[str, Any]:
         raw = socket.recv(timeout=self._timeout)
-        if len(raw) > MAX_PAYLOAD:
+        if len(raw) > max_size:
             raise ConnectorError("invalid_data")
         data = json.loads(raw)
         if not is_json_object(data):
             raise ConnectorError("invalid_data")
         return data
-
-    def _registry(self, socket: WebSocket, request_id: int, command: str) -> list[Any]:
-        # This private helper is also guarded: future callers cannot add write commands.
-        if command not in _DISCOVERY_COMMANDS:
-            raise ConnectorError("configuration")
-        socket.send(json.dumps({"id": request_id, "type": command}))
-        response = self._receive(socket)
-        if response.get("type") != "result" or response.get("id") != request_id:
-            raise ConnectorError("invalid_data")
-        if response.get("success") is not True:
-            raise ConnectorError("discovery")
-        result: object = response.get("result")
-        if not isinstance(result, list):
-            raise ConnectorError("invalid_data")
-        return result  # pyright: ignore[reportUnknownVariableType] -- raw rows; _project validates each
 
     def _name(self, value: object, fallback: str) -> str:
         name = value if isinstance(value, str) and value else fallback
@@ -466,6 +494,79 @@ def _read_failure(error: Exception) -> ConnectorError:
     return ConnectorError("invalid_data")
 
 
+def _raise_safe(error: Exception) -> NoReturn:
+    """The safe code for a failed WebSocket exchange: a type check, never the error's text."""
+    if isinstance(error, ConnectorError):
+        raise error
+    if isinstance(error, ssl.SSLError):
+        raise ConnectorError("tls") from None
+    if isinstance(error, TimeoutError):
+        raise ConnectorError("timeout") from None
+    if isinstance(error, (OSError, WebSocketException)):
+        raise ConnectorError("connection") from None
+    raise ConnectorError("invalid_data") from None
+
+
+class Session:
+    """Read requests on one authenticated WebSocket. Home Assistant needs each request's ID to
+    be higher than the last, so the session numbers them from 1."""
+
+    def __init__(self, connector: HomeAssistantConnector, socket: WebSocket, max_size: int):
+        self._connector = connector
+        self._socket = socket
+        self._max_size = max_size
+        self._ids = itertools.count(1)
+
+    def request(self, command: str, *, failure: str, **fields: object) -> object:
+        """Send one allowlisted read and return its result. A refusal raises `failure`."""
+        # Guarded here too: no caller can add a write command.
+        if command not in _READ_COMMANDS:
+            raise ConnectorError("configuration")
+        request_id = next(self._ids)
+        self._socket.send(json.dumps({**fields, "id": request_id, "type": command}))
+        response = self._connector._receive(self._socket, self._max_size)
+        if response.get("type") != "result" or response.get("id") != request_id:
+            raise ConnectorError("invalid_data")
+        if response.get("success") is not True:
+            raise ConnectorError(failure)
+        return response.get("result")
+
+
+def _rows(value: object) -> list[object]:
+    """A raw list from Home Assistant; its callers validate each row."""
+    if not isinstance(value, list):
+        raise ConnectorError("invalid_data")
+    return cast("list[object]", value)
+
+
+def _timestamp(value: object) -> datetime:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("Invalid history timestamp")
+    return datetime.fromtimestamp(value, UTC)
+
+
+def history_state(row: object, source_entity_id: str) -> LightState | SwitchState:
+    """One compressed history row, `{s, a, lc, lu}`, as a light's or switch's state. Times are
+    Unix seconds; Home Assistant leaves out `lu` when it equals `lc`. Only the approved light
+    attributes are kept; a switch keeps its state only."""
+    if not is_json_object(row):
+        raise ValueError("Invalid history row")
+    changed = _timestamp(row.get("lc"))
+    state = device_state(
+        {
+            "entity_id": source_entity_id,
+            "state": row.get("s"),
+            "attributes": row.get("a", {}),
+            "last_changed": changed,
+            "last_updated": _timestamp(row["lu"]) if "lu" in row else changed,
+        },
+        source_entity_id,
+    )
+    if state is None:
+        raise ValueError("Invalid history row")
+    return state
+
+
 class SelectedSubscription:
     """Only fixed state_changed subscriptions, with filtering before projection."""
 
@@ -504,19 +605,7 @@ class SelectedSubscription:
                 raise ConnectorError("discovery")
         except Exception as error:
             self.close()
-            self._raise_safe(error)
-
-    @staticmethod
-    def _raise_safe(error: Exception) -> NoReturn:
-        if isinstance(error, ConnectorError):
-            raise error
-        if isinstance(error, ssl.SSLError):
-            raise ConnectorError("tls") from None
-        if isinstance(error, TimeoutError):
-            raise ConnectorError("timeout") from None
-        if isinstance(error, (OSError, WebSocketException)):
-            raise ConnectorError("connection") from None
-        raise ConnectorError("invalid_data") from None
+            _raise_safe(error)
 
     def receive(self, timeout: float = 1) -> ChangeEvent | None:
         if not 0 < timeout <= MAX_RECEIVE_TIMEOUT_SECONDS:
@@ -565,7 +654,7 @@ class SelectedSubscription:
                 new=new,
             )
         except Exception as error:
-            self._raise_safe(error)
+            _raise_safe(error)
 
     def close(self) -> None:
         if self._socket is not None:

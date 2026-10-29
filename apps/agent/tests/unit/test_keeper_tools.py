@@ -226,6 +226,41 @@ def test_event_brightness_is_a_percent() -> None:
     assert "/255" not in result
 
 
+def change(time: str, old: dict[str, object], new: dict[str, object]) -> dict[str, object]:
+    """A change in `/api/events`, as Home Assistant's recorder holds it for bulb-a."""
+    return {
+        "id": f"bulb-a@{time}",
+        "entity_id": "bulb-a",
+        "source_entity_id": "light.bulb_a",
+        "device_kind": "light",
+        "time": time,
+        "old": {"device_kind": "light", "availability": "available"} | old,
+        "new": {"device_kind": "light", "availability": "available"} | new,
+    }
+
+
+def test_events_list_each_change_at_home_assistants_time() -> None:
+    page = {
+        "events": [
+            change("2026-10-12T09:59:50Z", {"state": "off"}, {"state": "on", "brightness": 150}),
+            change("2026-10-12T09:59:40Z", {"state": "on"}, {"state": "off"}),
+        ],
+        "next_cursor": None,
+    }
+    keeper = FakeKeeper({"/api/events": (200, page)})
+
+    result = call(keeper.tools(), "get_events", RANGE)
+
+    assert not result.startswith("Keeper error:"), result
+    newest, older = (line for line in result.splitlines() if "bulb-a" in line)
+    assert "2026-10-12T09:59:50Z" in newest, newest
+    assert "brightness 59%" in newest, newest
+    assert "2026-10-12T09:59:40Z" in older, older
+    # History reaches as far back as Home Assistant's recorder; Home Keeper keeps no copy.
+    assert "retained" not in result.lower(), result
+    assert "more events exist" not in result.lower(), result
+
+
 @pytest.mark.parametrize(
     ("average", "percent"),
     [(255.0, 100), (142.0, 56), (128.5, 50), (100.0, 39), (1.5, 1), (0.5, 0)],

@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -102,9 +103,23 @@ def main() -> None:
                 # Read through the reader on this request: no collection pass to wait for.
                 [monitored] = client.get("/api/monitored").json()["entities"]
                 assert monitored["source_entity_id"] == "light.fixture"
-                assert monitored["state"]["state"] == "off"
+                assert monitored["state"]["state"] == "on"
+                assert monitored["state"]["brightness"] == 180
                 assert monitored["missing"] is False
-                for endpoint in ("catalog", "monitored", "health", "selection"):
+                # History comes from Home Assistant's recorder: the fixture's brightness
+                # change from before Home Keeper started.
+                events = client.get("/api/events")
+                assert events.status_code == 200, events.text
+                [change] = events.json()["events"]
+                assert (change["entity_id"], change["source_entity_id"]) == (
+                    "ha:fixture",
+                    "light.fixture",
+                )
+                assert (change["old"]["brightness"], change["new"]["brightness"]) == (120, 180)
+                assert change["old"]["state"] == change["new"]["state"] == "on"
+                changed = datetime.fromisoformat(change["time"])
+                assert timedelta(0) < datetime.now(UTC) - changed < timedelta(minutes=10)
+                for endpoint in ("catalog", "monitored", "health", "selection", "events"):
                     content = client.get(f"/api/{endpoint}").text
                     assert "synthetic-compose-token" not in content
                     assert "ADMIN_SENTINEL" not in content
@@ -119,6 +134,9 @@ def main() -> None:
                 assert set(unavailable.json()) == {"error", "message"}
                 [unknown] = client.get("/api/monitored").json()["entities"]
                 assert (unknown["id"], unknown["state"]) == ("ha:fixture", None)
+                no_history = client.get("/api/events")
+                assert no_history.status_code == 503, no_history.text
+                assert set(no_history.json()) == {"error", "message"}
 
                 compose("start", "fake-ha")
                 deadline = time.monotonic() + 15
@@ -129,7 +147,7 @@ def main() -> None:
                 else:
                     raise AssertionError("The reader did not reach Home Assistant again")
                 [recovered] = client.get("/api/monitored").json()["entities"]
-                assert recovered["state"]["state"] == "off"
+                assert recovered["state"]["state"] == "on"
 
                 # The selection is Home Keeper's own record and survives an API restart.
                 compose("restart", "api")

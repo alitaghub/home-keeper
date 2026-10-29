@@ -16,6 +16,7 @@ from support.api import (
     event,
     observation,
     recorded_current,
+    recorded_events,
     select,
 )
 
@@ -84,7 +85,7 @@ def test_failure_recovery_is_explicit_and_never_invents_bulb_events(tmp_path: Pa
             "/internal/coverage", json=coverage(clock[0], "recovered"), headers=AUTH
         ).is_success
         assert client.get("/api/coverage").json()["state"] == "collecting"
-        assert client.get("/api/events").json()["events"] == []
+        assert recorded_events(tmp_path / "db") == []
 
 
 def test_restart_heartbeat_retention_and_scoped_access(tmp_path: Path) -> None:
@@ -141,7 +142,6 @@ def test_restart_heartbeat_retention_and_scoped_access(tmp_path: Path) -> None:
         gaps = client.get("/api/coverage").json()["gaps"]
         assert len(gaps) == 1
         assert gaps[0]["recovered_at"] is None
-        assert client.get("/api/events").json()["events"] == []
 
 
 def test_reconciliation_mismatch_is_a_gap_and_snapshot_not_fabricated_event(tmp_path: Path) -> None:
@@ -165,7 +165,7 @@ def test_reconciliation_mismatch_is_a_gap_and_snapshot_not_fabricated_event(tmp_
         assert gap["reason"] == "reconciliation"
         assert gap["entity_ids"] == ["bulb-a"]
         assert response.json()["baseline"]["kind"] == "recovery"
-        assert client.get("/api/events").json()["events"] == []
+        assert recorded_events(tmp_path / "db") == []
         assert recorded_current(tmp_path / "db")["state"] == "off"
 
 
@@ -320,7 +320,7 @@ def test_restart_gap_survives_retention_and_recovery_cannot_invent_outage(tmp_pa
         assert recovered["coverage_gap_ids"] == [evidence["id"]]
         assert recovered["transition_time"] == "unknown"
         post(client, "/internal/coverage", gap(clock[0], revision, status="recovered"))
-        assert client.get("/api/events").json()["events"] == []
+        assert recorded_events(path) == []
         assert recorded_current(tmp_path / "restart.sqlite")["state"] == "off"
 
 
@@ -348,5 +348,5 @@ def test_delayed_pre_gap_event_does_not_overwrite_recovery_snapshot(tmp_path: Pa
             event(revision, "delayed", received_at=clock[0].isoformat()),
         )
         assert recorded_current(tmp_path / "order.sqlite")["state"] == "off"
-        assert client.get("/api/events").json()["events"][0]["id"] == "delayed"
+        assert recorded_events(tmp_path / "order.sqlite")[0]["id"] == "delayed"
         assert client.get("/api/coverage").json()["state"] == "interrupted"
