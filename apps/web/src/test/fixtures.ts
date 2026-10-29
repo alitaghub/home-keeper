@@ -340,3 +340,72 @@ export const commandsPage = (commands: CommandRecord[], next_cursor: string | nu
   }) satisfies Schemas["CommandsPage"];
 
 export const emptyCommands = commandsPage([]);
+
+const hourly = (hour: number, seconds: number) =>
+  Array.from({ length: 24 }, (_, index) => (index === hour ? seconds : 0));
+
+/** The last day's usage: the desk lamp on 1 h at 75%, with a 30-minute gap; the plug on 2 h. */
+export const usage = {
+  start: "2026-10-11T10:00:00+00:00",
+  end: "2026-10-12T10:00:00+00:00",
+  timezone: "UTC",
+  retained_since: "2026-09-12T10:00:00+00:00",
+  devices: [
+    {
+      device_kind: "light",
+      entity_id: desk.id,
+      on_seconds: 3600,
+      unknown_seconds: 1800,
+      switch_ons: 2,
+      average_brightness: 191.25,
+      days: [
+        { date: "2026-10-11", on_seconds: 1800, unknown_seconds: 1800 },
+        { date: "2026-10-12", on_seconds: 1800, unknown_seconds: 0 },
+      ],
+      hours: hourly(10, 3600),
+      unknown_intervals: [
+        { start: "2026-10-11T12:00:00+00:00", end: "2026-10-11T12:30:00+00:00", reason: "gap" },
+      ],
+      periods: [
+        {
+          start: "2026-10-11T10:00:00+00:00",
+          end: "2026-10-11T11:00:00+00:00",
+          state: "on",
+          brightness: 191,
+        },
+        {
+          start: "2026-10-11T11:00:00+00:00",
+          end: "2026-10-11T12:00:00+00:00",
+          state: "off",
+          brightness: null,
+        },
+        {
+          start: "2026-10-11T12:30:00+00:00",
+          end: "2026-10-12T10:00:00+00:00",
+          state: "off",
+          brightness: null,
+        },
+      ],
+    },
+    {
+      device_kind: "switch",
+      entity_id: smartPlug.id,
+      on_seconds: 7200,
+      unknown_seconds: 0,
+      switch_ons: 1,
+      days: [
+        { date: "2026-10-11", on_seconds: 7200, unknown_seconds: 0 },
+        { date: "2026-10-12", on_seconds: 0, unknown_seconds: 0 },
+      ],
+      hours: hourly(20, 7200),
+      unknown_intervals: [],
+      periods: [
+        { start: "2026-10-11T10:00:00+00:00", end: "2026-10-11T20:00:00+00:00", state: "off" },
+        { start: "2026-10-11T20:00:00+00:00", end: "2026-10-11T22:00:00+00:00", state: "on" },
+        { start: "2026-10-11T22:00:00+00:00", end: "2026-10-12T10:00:00+00:00", state: "off" },
+      ],
+    },
+  ],
+} satisfies Schemas["UsageReport"];
+
+export const emptyUsage = { ...usage, devices: [] } satisfies Schemas["UsageReport"];

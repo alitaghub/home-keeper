@@ -13,7 +13,7 @@ seeing. By default it does not control devices. With the opt-in `control`
 profile, it can switch a light, plug or switch on or off, but only one it
 monitors, so every command leaves evidence.
 
-![The Home Keeper Home tab with two monitored lamps, one on at 39%](docs/images/dashboard.png)
+![The Home Keeper Home tab with two monitored lamps, one on at 39%, each with a strip of its last 24 hours](docs/images/dashboard.png)
 
 ## How it works
 
@@ -82,6 +82,11 @@ your questions and replies.
    stops, it records a gap instead of guessing what happened.
 5. The **dashboard** has three tabs. **Home** shows each monitored light and
    switches it, then each monitored plug or switch under **Plugs and switches**.
+   Each card draws its last 24 hours as a strip: on, as high as the light's
+   brightness, and off. A collection gap or an unavailable device is hatched;
+   time before the first record stays blank. **Usage history** on a card opens
+   that device's last 24 hours, 7 days or 30 days, with its totals and its
+   on-time per day and per hour of day.
    **History** lists commands, changes and gaps in plain words, with the evidence
    behind **Details**. **Setup** chooses which devices to monitor.
 
