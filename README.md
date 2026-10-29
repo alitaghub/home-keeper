@@ -13,7 +13,7 @@ seeing. By default it does not control devices. With the opt-in `control`
 profile, it can switch a light, plug or switch on or off, but only one it
 monitors, so every command leaves evidence.
 
-![The Home Keeper Home tab with two monitored lamps, one on at 39%](docs/images/dashboard.png)
+![The Home Keeper Home tab with two monitored lamps, one on at 39%, each with a strip of its last 24 hours](docs/images/dashboard.png)
 
 ## How it works
 
