@@ -110,6 +110,8 @@ class Commands:
         # Below the agent's 10-second request timeout, so a command never switches a device
         # after its caller gave up.
         deadline_seconds: float = 8.0,
+        # The least time left before the deadline that a send may start with.
+        send_floor_seconds: float = 0.5,
         slots: int = 4,
     ) -> None:
         """`wait_seconds`: how long, by `now`, to read the device's state after a send.
@@ -125,6 +127,7 @@ class Commands:
         self.wait_seconds = wait_seconds
         self.queue_seconds = queue_seconds
         self.deadline_seconds = deadline_seconds
+        self.send_floor_seconds = send_floor_seconds
         self.stale_seconds = stale_seconds
         self._send_slots = CapacityLimiter(slots)
         # Controller sends can block for seconds, so they get their own few threads and
@@ -174,7 +177,7 @@ class Commands:
             if not isinstance(accepted, _Accepted):
                 return accepted
             # Past the deadline the caller may have given up, so nothing is sent.
-            if self.now() >= deadline:
+            if (deadline - self.now()).total_seconds() < self.send_floor_seconds:
                 return _BUSY
             sent_at = self.now().astimezone(UTC)
             # From the forwarded command, so a switch's record holds a switch command.
@@ -191,9 +194,19 @@ class Commands:
             )
             # Stored before the send, so a crash during it still leaves the command on record.
             await anyio.to_thread.run_sync(self._save, record)
+            # The send gives up at the deadline, so no device switches after it.
+            budget = (deadline - self.now()).total_seconds()
             try:
-                result = await anyio.to_thread.run_sync(
-                    accepted.controller.send, accepted.forwarded, limiter=self._send_threads
+                # A save that outlasts the deadline leaves no time to send.
+                result = (
+                    await anyio.to_thread.run_sync(
+                        accepted.controller.send,
+                        accepted.forwarded,
+                        budget,
+                        limiter=self._send_threads,
+                    )
+                    if budget > 0
+                    else None
                 )
             except ControllerUnreachable:
                 result = None
@@ -205,7 +218,7 @@ class Commands:
         elif result == "refused":
             outcome = "refused"
         else:
-            confirmed = await self._confirm(entity_id, request.command)
+            confirmed = await self._confirm(entity_id, request.command, sent_at)
             outcome = "observed" if confirmed else "not_observed"
         record = record.model_copy(update={"outcome": outcome})
         await anyio.to_thread.run_sync(self._save, record)
@@ -332,17 +345,19 @@ class Commands:
                 (record.id, record.entity_id, record.sent_at, stored_json(record)),
             )
 
-    async def _confirm(self, entity_id: str, command: LightCommand) -> bool:
+    async def _confirm(self, entity_id: str, command: LightCommand, sent_at: datetime) -> bool:
         """Read the device's state every `poll_seconds` until it shows the command or
-        `wait_seconds` have passed by `now`. A failed read counts as not showing it. The
-        reads are also counted, so a clock that stalls or steps back cannot extend the wait."""
-        deadline = self.now() + timedelta(seconds=self.wait_seconds)
+        `wait_seconds` after `sent_at` have passed by `now`. A failed or late read does not
+        count. The reads are also counted, so a stalled clock cannot extend the wait."""
+        deadline = sent_at + timedelta(seconds=self.wait_seconds)
         # One read at the send and one per pause, the last pause cut short at the deadline.
         reads = math.ceil(self.wait_seconds / self.poll_seconds - 1e-9) + 1
         for read in range(1, reads + 1):
-            if await anyio.to_thread.run_sync(self._shows, entity_id, command):
-                return True
+            shown = await anyio.to_thread.run_sync(self._shows, entity_id, command)
             remaining = (deadline - self.now()).total_seconds()
+            # A read that answers after the window cannot confirm the command within it.
+            if shown and remaining >= 0:
+                return True
             if remaining <= 0 or read == reads:
                 break
             await anyio.to_thread.run_sync(self.sleep, min(self.poll_seconds, remaining))

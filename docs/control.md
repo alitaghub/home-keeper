@@ -111,7 +111,8 @@ record, not authentication. See [security.md](security.md).
 ### Outcome
 
 The API records the command as `pending`, forwards it to the controller, then
-reads the device's state from Home Assistant every 0.5 seconds for up to 5 seconds. It answers `200`
+reads the device's state from Home Assistant every 0.5 seconds until 5 seconds after
+the send. A read that answers later than that does not count. It answers `200`
 with the command record, which names the device's `device_kind`, and one
 `outcome`:
 
@@ -145,7 +146,7 @@ The API refuses these before it sends anything. It records nothing for them.
 | 409    | code `not_supported`                      | The command has a `brightness_pct` and the device is a plug or switch. |
 | 409    | code `unavailable`                        | Home Assistant reports the device as `unavailable`.         |
 | 409    | code `already_in_state`                   | The device is already in that state, at that brightness.    |
-| 409    | code `busy`                               | Four commands are being sent and this one waited 3 seconds, or the checks and the wait took 8 seconds. |
+| 409    | code `busy`                               | Four commands are being sent and this one waited 3 seconds, or less than half a second of the command's 8 seconds is left to send it. |
 
 The API checks in the order of this table and answers the first refusal that
 applies.
@@ -157,10 +158,12 @@ instead.
 The API sends at most four commands at a time. A command that waits for a free
 send is checked again before it is sent: if the device stopped being monitored or
 control turned off meanwhile, it gets that refusal and nothing is sent. A command
-that waits more than 3 seconds gets `busy`. A command also gets `busy` when its
-checks and its wait together take 8 seconds, for example when Home Assistant
-answers slowly. Either way it never switches a device after its sender has given
-up.
+that waits more than 3 seconds gets `busy`. Each command also has 8 seconds from
+its request until the send must end, for example when Home Assistant answers
+slowly. With less than half a second left the API refuses it as `busy`. Otherwise
+the send gets only the time left, and a send that runs out of time ends as
+`unreachable`. Either way the API stops waiting for the controller before its
+sender gives up.
 
 ## Command history
 

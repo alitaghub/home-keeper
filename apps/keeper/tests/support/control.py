@@ -67,7 +67,7 @@ class FakeController:
         self._threads: list[Thread] = []
         self._errors: list[BaseException] = []
 
-    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+    def send(self, forwarded: ForwardedCommand, timeout_seconds: float) -> Literal["ok", "refused"]:
         self.sent.append(to_jsonable_python(forwarded, exclude_none=True))
         self.clock[0] += timedelta(seconds=1)
         if self.on_send is not None:

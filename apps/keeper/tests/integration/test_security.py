@@ -107,7 +107,7 @@ class RecordingController:
         self.sent: list[str] = []
         self.reader = reader
 
-    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+    def send(self, forwarded: ForwardedCommand, timeout_seconds: float) -> Literal["ok", "refused"]:
         self.sent.append(forwarded.source_entity_id)
         if self.reader is not None:
             self.reader.set("bulb-a", forwarded.source_entity_id, {"state": "on"})

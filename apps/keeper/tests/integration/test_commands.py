@@ -103,12 +103,15 @@ class ScriptedController:
     """Records each forwarded command and runs `steps` inside the send. The clock stays put."""
 
     sent: list[ForwardedCommand] = field(default_factory=list[ForwardedCommand])
+    # The time limit of each send, in seconds.
+    timeouts: list[float] = field(default_factory=list[float])
     steps: list[Callable[[], object]] = field(default_factory=list[Callable[[], object]])
     reply: Literal["ok", "refused"] = "ok"
     unreachable: bool = False
 
-    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+    def send(self, forwarded: ForwardedCommand, timeout_seconds: float) -> Literal["ok", "refused"]:
         self.sent.append(forwarded)
+        self.timeouts.append(timeout_seconds)
         for step in self.steps:
             step()
         if self.unreachable:
@@ -871,6 +874,63 @@ async def test_waiting_for_a_send_slot_ends_at_the_deadline(tmp_path: Path) -> N
     assert result == refused("busy")
     assert waited < 2, f"waited {waited:.1f} s for the slot, past the deadline"
     assert len(house.controller.sent) == 1
+
+
+def slow_send(house: Home, seconds: float) -> None:
+    """The controller takes `seconds` on the test clock, or gives up at its time limit."""
+
+    def take() -> None:
+        limit = house.controller.timeouts[-1]
+        house.clock.now += timedelta(seconds=min(seconds, limit))
+        if seconds > limit:
+            raise ControllerUnreachable
+
+    house.controller.steps.append(take)
+
+
+async def test_the_send_gets_only_the_time_left_before_the_deadline(tmp_path: Path) -> None:
+    house = ready(tmp_path, LIGHT)
+    slow_catalog(house, 3, 3)
+    house.controller.steps.append(lambda: house.report(LIGHT, IS_ON))
+    assert recorded(await switch(house, LIGHT, ON)).outcome == "observed"
+    assert house.controller.timeouts == [DEADLINE_SECONDS - 6]
+
+
+async def test_a_send_slower_than_the_time_left_ends_unreachable_by_the_deadline(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    slow_catalog(house, 3, 3)
+    # Within the controller's own 6-second limit, but past the command's deadline.
+    slow_send(house, 3)
+    assert recorded(await switch(house, LIGHT, ON)).outcome == "unreachable"
+    assert house.clock.now <= NOW + timedelta(seconds=DEADLINE_SECONDS)
+
+
+async def test_a_command_with_too_little_time_left_to_send_is_refused_as_busy(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    # 0.4 s left: under the half second a send needs at least.
+    slow_catalog(house, DEADLINE_SECONDS - 0.4)
+    assert await switch(house, LIGHT, ON) == refused("busy")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+async def test_a_state_read_that_returns_after_the_observation_window_does_not_count(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+
+    def slow_first_read() -> None:
+        if len(house.confirmation_reads) == 1:
+            # The read answers a second after the window ends, with the commanded state.
+            house.clock.now += timedelta(seconds=WAIT_SECONDS + 1)
+            house.report(LIGHT, IS_ON)
+
+    house.after_send.append(slow_first_read)
+    assert recorded(await switch(house, LIGHT, ON)).outcome == "not_observed"
 
 
 # The command audit
