@@ -850,10 +850,11 @@ async def test_command_whose_checks_outlast_the_deadline_is_refused_as_busy(
 async def test_waiting_for_a_send_slot_ends_at_the_deadline(tmp_path: Path) -> None:
     house = ready(tmp_path, LIGHT, slots=1, queue=5)
     entered, release = hold_the_only_slot(house)
-    first: list[Result] = []
+    # The queued command's answer and the real seconds it waited for it.
+    queued: list[tuple[Result, float]] = []
 
     async def command() -> None:
-        first.append(await switch(house, LIGHT, ON))
+        await switch(house, LIGHT, ON)
 
     async with anyio.create_task_group() as group:
         group.start_soon(command)
@@ -862,11 +863,12 @@ async def test_waiting_for_a_send_slot_ends_at_the_deadline(tmp_path: Path) -> N
         slow_catalog(house, DEADLINE_SECONDS - 0.25)
         started = anyio.current_time()
         try:
-            queued = await switch(house, LIGHT, ON)
+            result = await switch(house, LIGHT, ON)
+            queued.append((result, anyio.current_time() - started))
         finally:
             release.set()
-        waited = anyio.current_time() - started
-    assert queued == refused("busy")
+    [(result, waited)] = queued
+    assert result == refused("busy")
     assert waited < 2, f"waited {waited:.1f} s for the slot, past the deadline"
     assert len(house.controller.sent) == 1
 
