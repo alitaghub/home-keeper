@@ -1,23 +1,26 @@
-"""Changes: what History lists, derived from Home Assistant's recorded rows.
-
-Home Assistant records a row for each state it writes. A change is two consecutive rows of
-one device whose state, availability, brightness or color differ. Pages run newest first;
-the cursor carries the window, so later pages stay in the window of the first.
-"""
+"""Changes: two consecutive Home Assistant rows of one device whose state, availability,
+brightness or color differ. Pages run newest first; the cursor carries the window, so later
+pages stay in the window of the first."""
 
 import base64
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import pairwise
 from typing import Self
 
 from pydantic import AwareDatetime, model_validator
 
 from home_keeper.models import ChangeRecord, EventsPage, Identity, Reading, WireModel, to_utc
-from home_keeper.reader import HistoryRow
+from home_keeper.reader import HistoryRow, Reader
 
 # Fields that do not tell one state from another.
 _SOURCE_TIMES = frozenset({"last_changed", "last_updated", "last_reported"})
+# History is read from just before a range's start, so a change at exactly the start has the
+# row before it.
+BEFORE_START = timedelta(milliseconds=1)
+# A page reads history newest first in ranges of this length, doubling each time, so a
+# page of recent changes does not read the whole window.
+FIRST_CHUNK = timedelta(days=1)
 
 
 class EventsCursor(WireModel):
@@ -59,6 +62,35 @@ def changes(
             )
         )
     return found
+
+
+def read_page(
+    reader: Reader,
+    devices: Sequence[Identity],
+    *,
+    start: datetime,
+    end: datetime,
+    after: EventsCursor | None,
+    limit: int,
+) -> EventsPage:
+    """The page of changes after the cursor in `[start, end)`. Reads no history newer than
+    the cursor, and stops once it has one change more than the page shows."""
+    # Changes at the cursor's own time can still follow it, by entity ID.
+    upper = end if after is None else min(end, to_utc(after.time) + BEFORE_START)
+    found: list[ChangeRecord] = []
+    chunk = FIRST_CHUNK
+    while devices and upper > start and len(found) <= limit:
+        # Comparing first keeps a range near year 1 from overflowing.
+        lower = start if upper - start <= chunk else upper - chunk
+        history = reader.history(devices, lower - BEFORE_START, upper)
+        found.extend(
+            change
+            for device in devices
+            for change in changes(device, history.get(device, []), lower, upper)
+            if after is None or _position(change) < (to_utc(after.time), after.entity_id)
+        )
+        upper, chunk = lower, chunk * 2
+    return events_page(found, start=start, end=end, after=after, limit=limit)
 
 
 def events_page(

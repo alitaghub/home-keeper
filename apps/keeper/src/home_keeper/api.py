@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import RequestResponseEndpoint
 
-from home_keeper.changes import changes, events_page, read_cursor
+from home_keeper.changes import BEFORE_START, read_cursor, read_page
 from home_keeper.commands import Commands, Refusal
 from home_keeper.control import Controller
 from home_keeper.models import (
@@ -43,9 +43,7 @@ from home_keeper.usage import device_usage
 UTC_ZONE = ZoneInfo("UTC")
 # History's window when a request names no start.
 HISTORY_WINDOW = timedelta(days=30)
-# The API reads history from just before `start`, so a change at exactly `start` has the row
-# before it.
-BEFORE_START = timedelta(milliseconds=1)
+EARLIEST_START = datetime.min.replace(tzinfo=UTC) + BEFORE_START
 
 # Fixed text for each reason Home Assistant cannot be read: never upstream text, URLs or tokens.
 UNREACHABLE_MESSAGES: dict[ReaderError, str] = {
@@ -219,8 +217,9 @@ def create_app(
                 window_start = to_utc(start) if start else window_end - HISTORY_WINDOW
                 if window_start > window_end:
                     raise ValueError("Reversed range")
-            # The row before `start` is the predecessor of a change at exactly `start`.
-            history_start = window_start - BEFORE_START
+            # History is read from just before the window start, which must stay a valid date.
+            if window_start < EARLIEST_START:
+                raise ValueError("Start before the calendar")
         # OverflowError: a timestamp near year 1 or 9999 can fall outside the calendar.
         except (ValueError, TypeError, OverflowError):
             raise HTTPException(422, "Invalid event scope") from None
@@ -229,13 +228,9 @@ def create_app(
             for device in monitoring.selection().entity_ids
             if entity_id is None or device == entity_id
         ]
-        history = reader.history(devices, history_start, window_end) if devices else {}
-        found = [
-            change
-            for device in devices
-            for change in changes(device, history.get(device, []), window_start, window_end)
-        ]
-        return events_page(found, start=window_start, end=window_end, after=after, limit=limit)
+        return read_page(
+            reader, devices, start=window_start, end=window_end, after=after, limit=limit
+        )
 
     @app.get("/api/usage", response_model=UsageReport, responses=needs_home_assistant)
     def usage(

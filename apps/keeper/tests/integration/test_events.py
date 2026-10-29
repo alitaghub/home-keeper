@@ -122,6 +122,12 @@ def key(change: dict[str, Any]) -> tuple[datetime, str]:
     return time_of(change), change["entity_id"]
 
 
+def read_span(home: House) -> tuple[datetime, datetime]:
+    """The earliest start and the latest end of the history reads so far."""
+    reads = home.reader.history_reads
+    return min(start for _ids, start, _end in reads), max(end for _ids, _start, end in reads)
+
+
 @pytest.mark.parametrize(
     ("before", "after", "old", "new"),
     [
@@ -278,6 +284,38 @@ def test_120_changes_page_as_50_50_20_newest_first_without_repeats_or_gaps(
         assert len(set(ids)) == 120
 
 
+def test_a_page_reads_history_newest_first_and_never_past_its_cursor(tmp_path: Path) -> None:
+    with house(tmp_path) as home:
+        home.select(DESK.id)
+        recent = [NOW - timedelta(minutes=n) for n in range(10, 0, -1)]
+        home.record(
+            DESK.id,
+            (NOW - timedelta(days=25), OFF),
+            (NOW - timedelta(days=20), {"state": "on"}),
+            *((at, {"state": "on" if index % 2 else "off"}) for index, at in enumerate(recent)),
+        )
+        reads = home.reader.history_reads
+
+        reads.clear()
+        first = home.page(limit=1)
+        # The last day holds enough changes for the page, so the 30-day window is not read.
+        assert [start for _ids, start, _end in reads] == [NOW - timedelta(days=1, milliseconds=1)]
+
+        cursor_time = time_of(first["events"][0])
+        reads.clear()
+        second = home.page(limit=1, cursor=first["next_cursor"])
+        assert time_of(second["events"][0]) < cursor_time
+        assert reads
+        assert all(end <= cursor_time + timedelta(milliseconds=1) for _ids, _start, end in reads)
+
+        # Every change still shows once, the 20-day-old one included.
+        pages = home.every_page(limit=4)
+        assert [time_of(change) for page in pages for change in page] == [
+            *reversed(recent),
+            NOW - timedelta(days=20),
+        ]
+
+
 def test_paging_keeps_its_window_while_time_moves_and_new_changes_arrive(
     tmp_path: Path,
 ) -> None:
@@ -302,13 +340,17 @@ def test_paging_keeps_its_window_while_time_moves_and_new_changes_arrive(
             (NOW + timedelta(minutes=10), {"state": "on", "brightness": 1}),
             (NOW + timedelta(minutes=20), OFF),
         )
+        home.reader.history_reads.clear()
         second = home.page(cursor=first["next_cursor"])
 
         assert [time_of(change) for change in first["events"]] == expected[:50]
         assert [time_of(change) for change in second["events"]] == expected[50:]
         assert second["next_cursor"] is None
-        [_ids, start, end] = home.reader.history_reads[-1]
-        assert (start, end) == (NOW - timedelta(days=30, milliseconds=1), NOW)
+        # The first page's window, read no later than its last change.
+        assert read_span(home) == (
+            NOW - timedelta(days=30, milliseconds=1),
+            expected[49] + timedelta(milliseconds=1),
+        )
         # A new first page shows the new changes.
         newest = home.changes()
         assert [time_of(change) for change in newest[:2]] == [
@@ -332,8 +374,7 @@ def test_without_start_the_window_is_the_30_days_before_end(tmp_path: Path) -> N
             NOW - timedelta(hours=1),
             NOW - timedelta(days=29),
         ]
-        [_ids, start, end] = home.reader.history_reads[-1]
-        assert (start, end) == (NOW - timedelta(days=30, milliseconds=1), NOW)
+        assert read_span(home) == (NOW - timedelta(days=30, milliseconds=1), NOW)
 
         end = NOW - timedelta(hours=2)
         assert [time_of(change) for change in home.changes(end=end.isoformat())] == [
@@ -408,6 +449,10 @@ def test_history_of_a_device_that_is_not_monitored_never_shows(tmp_path: Path) -
         pytest.param({"cursor": "Zm9vfGJhcg"}, id="encoded garbage cursor"),
         pytest.param({"limit": 0}, id="limit 0"),
         pytest.param({"limit": 101}, id="limit 101"),
+        pytest.param(
+            {"start": "0001-01-01T00:00:00Z", "end": "0001-01-02T00:00:00Z"},
+            id="start at the calendar's first instant",
+        ),
     ],
 )
 def test_an_invalid_history_request_is_422(tmp_path: Path, params: dict[str, str | int]) -> None:
