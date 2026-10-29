@@ -1,10 +1,11 @@
-"""Switches a monitored device through the controller and proves the result from readings.
+"""Switches a monitored device through the controller and confirms the result by reading
+the device's state from Home Assistant after the send.
 
-Database reads run in the shared thread pool and the controller send on its own few
-threads, so commands that wait never hold the workers that ingest the readings they
-wait for.
+Reads run in the shared thread pool and the controller send on its own few threads, so a
+slow send never takes every worker the API's other requests need.
 """
 
+import math
 import sqlite3
 import time
 from collections.abc import Callable
@@ -19,7 +20,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from home_keeper.control import Controller, ControllerUnreachable
 from home_keeper.models import (
-    BaselineRecord,
     CommandOutcome,
     CommandRecord,
     CommandRefusalCode,
@@ -27,15 +27,15 @@ from home_keeper.models import (
     CommandsPage,
     ControlStatus,
     DeviceKind,
-    EventRecord,
     Identity,
     LightCommand,
     LightReading,
     Reading,
     to_utc,
 )
-from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
-from home_keeper.store import Store, baseline_record, stored_json
+from home_keeper.monitoring import UnknownEntity, UnsupportedEntity
+from home_keeper.reader import LiveState, Reader, ReaderUnavailable
+from home_keeper.store import Store, stored_json, stored_kind
 from home_keeper_light_command import (
     ForwardedCommand,
     LightOff,
@@ -44,7 +44,6 @@ from home_keeper_light_command import (
 )
 
 command_record: TypeAdapter[CommandRecord] = TypeAdapter(CommandRecord)
-POLL_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -62,13 +61,6 @@ class _Accepted:
 
     controller: Controller
     forwarded: ForwardedCommand
-
-
-@dataclass(frozen=True)
-class _Observed:
-    """A reading that showed a command's result; `event_id` is None for a snapshot."""
-
-    event_id: str | None
 
 
 def shows(reading: Reading | None, command: LightCommand) -> bool:
@@ -101,54 +93,33 @@ def _forward(
     )
 
 
-def _received_after(reading: BaselineRecord | EventRecord, sent_at: datetime) -> bool:
-    return datetime.fromisoformat(reading.received_at) > sent_at
-
-
-def _find_observation(
-    db: sqlite3.Connection, entity_id: str, command: LightCommand, sent_at: datetime
-) -> _Observed | None:
-    """A reading of the device received after the send that shows the command's state."""
-    # The recorder rejects receipts later than persistence, so a reading received after the
-    # send was also stored after it; that narrows each query to the newest rows.
-    after = sent_at.isoformat()
-    for row in db.execute(
-        "SELECT data FROM events WHERE entity_id=? AND persisted_at>? ORDER BY persisted_at",
-        (entity_id, after),
-    ):
-        event = EventRecord.model_validate_json(row[0])
-        if _received_after(event, sent_at) and shows(event.new, command):
-            return _Observed(event.id)
-    for row in db.execute(
-        "SELECT data FROM baselines WHERE entity_id=? AND persisted_at>? ORDER BY persisted_at",
-        (entity_id, after),
-    ):
-        baseline = baseline_record.validate_json(row[0])
-        if _received_after(baseline, sent_at) and shows(baseline, command):
-            return _Observed(None)
-    return None
-
-
 class Commands:
     def __init__(
         self,
         store: Store,
         controller: Controller | None,
+        reader: Reader,
         *,
         now: Callable[[], datetime],
         retention_days: int,
         wait_seconds: float,
         stale_seconds: float,
+        poll_seconds: float = 0.5,
+        sleep: Callable[[float], None] = time.sleep,
         # Below the agent's 10-second request timeout, so a queued command never switches a
         # device after its caller gave up.
         queue_seconds: float = 3.0,
         slots: int = 4,
     ) -> None:
-        """`wait_seconds`: how long to wait for a reading that shows the result.
+        """`wait_seconds`: how long, by `now`, to read the device's state after a send.
+        `poll_seconds`: the pause between those reads, taken with `sleep`.
         `stale_seconds`: how old the controller's heartbeat may be while control stays on."""
         self.store = store
         self.controller = controller
+        self.reader = reader
         self.now = now
+        self.poll_seconds = poll_seconds
+        self.sleep = sleep
         self.retention_days = retention_days
         self.wait_seconds = wait_seconds
         self.queue_seconds = queue_seconds
@@ -207,7 +178,6 @@ class Commands:
                     "sender": request.sender,
                     "sent_at": sent_at.isoformat(),
                     "outcome": "pending",
-                    "event_id": None,
                 }
             )
             # Stored before the send, so a crash during it still leaves the command on record.
@@ -220,21 +190,15 @@ class Commands:
                 result = None
         finally:
             self._send_slots.release()
-        observed: _Observed | None = None
         outcome: CommandOutcome
         if result is None:
             outcome = "unreachable"
         elif result == "refused":
             outcome = "refused"
         else:
-            observed = await self._wait_for_observation(entity_id, request.command, sent_at)
-            outcome = "observed" if observed is not None else "not_observed"
-        record = record.model_copy(
-            update={
-                "outcome": outcome,
-                "event_id": observed.event_id if observed is not None else None,
-            }
-        )
+            confirmed = await self._confirm(entity_id, request.command)
+            outcome = "observed" if confirmed else "not_observed"
+        record = record.model_copy(update={"outcome": outcome})
         await anyio.to_thread.run_sync(self._save, record)
         return record
 
@@ -300,43 +264,55 @@ class Commands:
     def _accept(self, entity_id: str, command: LightCommand) -> _Accepted | Declined:  # noqa: PLR0911 -- one return per ordered check
         # Every refusal happens before anything is sent or stored.
         with self.store.transaction("DEFERRED") as db:
-            device = Monitoring.device(db, entity_id)
-            if device.entity is None:
+            selected = db.execute(
+                "SELECT device_kind FROM selection WHERE id=?", (entity_id,)
+            ).fetchone()
+            control_on = self._status(db).state == "on"
+        kind = stored_kind.validate_python(selected[0]) if selected else None
+        try:
+            entity = next((e for e in self.reader.catalog() if e.id == entity_id), None)
+        except ReaderUnavailable:
+            reachable = False
+        else:
+            reachable = True
+            if entity is None:
                 return UnknownEntity()
-            if not device.entity.supported:
+            if not entity.supported:
                 return UnsupportedEntity()
-            # Refusal messages call a plug or switch a device.
-            noun = "device" if device.kind == "switch" else "light"
-            if self.controller is None or self._status(db).state == "off":
-                return Refusal("control_off", "Light control is off")
-            if not device.monitored:
-                return Refusal("not_monitored", f"Monitor this {noun} before switching it")
-            reading = device.reading
-            if reading is None or reading.state not in ("on", "off", "unavailable"):
-                return Refusal("state_unknown", f"The {noun}'s current state is unknown")
-            # The reading's kind decides what can be forwarded, so it decides this check too.
-            if (
-                reading.device_kind == "switch"
-                and not isinstance(command, LightOff)
-                and command.brightness_pct is not None
-            ):
-                return Refusal("not_supported", "A plug or switch has no brightness")
-            if reading.state == "unavailable":
-                return Refusal("unavailable", f"The {noun} is unavailable")
-            # Home Assistant fires no change for these, so the outcome could never be observed.
-            if shows(reading, command):
-                return Refusal("already_in_state", f"The {noun} is already in that state")
-            source_entity_id = reading.source_entity_id or self.store.source_entity_id(
-                db, entity_id
-            )
-            if source_entity_id is None:
-                return Refusal("state_unknown", f"The {noun}'s current state is unknown")
+            kind = entity.device_kind or kind
+        # Refusal messages call a plug or switch a device.
+        noun = "device" if kind == "switch" else "light"
+        if self.controller is None or not control_on:
+            return Refusal("control_off", "Light control is off")
+        if selected is None:
+            return Refusal("not_monitored", f"Monitor this {noun} before switching it")
+        live: LiveState | None = None
+        if reachable:
             try:
-                forwarded = _forward(reading.device_kind, source_entity_id, command)
-            except ValidationError:
-                # Not an entity ID the controller takes for this kind of device.
-                return UnsupportedEntity()
-            return _Accepted(self.controller, forwarded)
+                live = self.reader.states([entity_id]).get(entity_id)
+            except ReaderUnavailable:
+                live = None
+        if live is None or live.reading.state not in ("on", "off", "unavailable"):
+            return Refusal("state_unknown", f"The {noun}'s current state is unknown")
+        reading = live.reading
+        # The reading's kind decides what can be forwarded, so it decides this check too.
+        if (
+            reading.device_kind == "switch"
+            and not isinstance(command, LightOff)
+            and command.brightness_pct is not None
+        ):
+            return Refusal("not_supported", "A plug or switch has no brightness")
+        if reading.state == "unavailable":
+            return Refusal("unavailable", f"The {noun} is unavailable")
+        # Home Assistant shows no change for these, so the outcome could never be observed.
+        if shows(reading, command):
+            return Refusal("already_in_state", f"The {noun} is already in that state")
+        try:
+            forwarded = _forward(reading.device_kind, live.source_entity_id, command)
+        except ValidationError:
+            # Not an entity ID the controller takes for this kind of device.
+            return UnsupportedEntity()
+        return _Accepted(self.controller, forwarded)
 
     def _save(self, record: CommandRecord) -> None:
         with self.store.transaction() as db:
@@ -345,21 +321,25 @@ class Commands:
                 (record.id, record.entity_id, record.sent_at, stored_json(record)),
             )
 
-    async def _wait_for_observation(
-        self, entity_id: str, command: LightCommand, sent_at: datetime
-    ) -> _Observed | None:
-        deadline = time.monotonic() + self.wait_seconds
-        while True:
-            observed = await anyio.to_thread.run_sync(
-                self._observation, entity_id, command, sent_at
-            )
-            remaining = deadline - time.monotonic()
-            if observed is not None or remaining <= 0:
-                return observed
-            await anyio.sleep(min(POLL_SECONDS, remaining))
+    async def _confirm(self, entity_id: str, command: LightCommand) -> bool:
+        """Read the device's state every `poll_seconds` until it shows the command or
+        `wait_seconds` have passed by `now`. A failed read counts as not showing it. The
+        reads are also counted, so a clock that stalls or steps back cannot extend the wait."""
+        deadline = self.now() + timedelta(seconds=self.wait_seconds)
+        # One read at the send and one per pause, the last pause cut short at the deadline.
+        reads = math.ceil(self.wait_seconds / self.poll_seconds - 1e-9) + 1
+        for read in range(1, reads + 1):
+            if await anyio.to_thread.run_sync(self._shows, entity_id, command):
+                return True
+            remaining = (deadline - self.now()).total_seconds()
+            if remaining <= 0 or read == reads:
+                break
+            await anyio.to_thread.run_sync(self.sleep, min(self.poll_seconds, remaining))
+        return False
 
-    def _observation(
-        self, entity_id: str, command: LightCommand, sent_at: datetime
-    ) -> _Observed | None:
-        with self.store.transaction("DEFERRED") as db:
-            return _find_observation(db, entity_id, command, sent_at)
+    def _shows(self, entity_id: str, command: LightCommand) -> bool:
+        try:
+            live = self.reader.states([entity_id]).get(entity_id)
+        except ReaderUnavailable:
+            return False
+        return live is not None and shows(live.reading, command)

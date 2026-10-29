@@ -45,13 +45,13 @@ def compose(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     )
 
 
-def wait_for_healthy_collector(client: httpx.Client) -> None:
+def wait_for_healthy_reader(client: httpx.Client) -> None:
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if client.get("/api/health").json()["status"] == "healthy":
             return
         time.sleep(1)
-    raise AssertionError("Collector never reported healthy against the bundled Home Assistant")
+    raise AssertionError("The reader never reported healthy against the bundled Home Assistant")
 
 
 def wait_until_control_on(client: httpx.Client) -> None:
@@ -114,7 +114,13 @@ def main() -> None:
         # The controller reaches Home Assistant and, over an internal network, only the API.
         assert set(services["controller"]["networks"]) == {"control", "home-assistant"}
         assert "control" in services["api"]["networks"]
-        assert "control" not in services["collector"]["networks"]
+        assert "control" not in services["reader"]["networks"]
+        assert "home-assistant" in services["reader"]["networks"]
+        # The reader keeps nothing: no data volume, and no published port.
+        assert not any(
+            volume["target"] == "/data" for volume in services["reader"].get("volumes", [])
+        )
+        assert services["api"]["environment"]["HOME_KEEPER_READER_URL"] == "http://reader:8080"
         assert config["networks"]["control"].get("internal") is True
         mounts = {
             (name, volume["source"], volume.get("read_only", False))
@@ -126,7 +132,7 @@ def main() -> None:
             ("ha-setup", "ha-token", False),
             ("ha-setup", "ha-owner", False),
             ("ha-setup", "ha-control-token", False),
-            ("collector", "ha-token", True),
+            ("reader", "ha-token", True),
             ("controller", "ha-control-token", True),
         }, mounts
         compose("up", "--build", "--wait", "--wait-timeout", "400")
@@ -136,7 +142,7 @@ def main() -> None:
         }
         assert states["ha-setup"]["ExitCode"] == 0
         with httpx.Client(base_url=KEEPER, timeout=5, trust_env=False) as client:
-            wait_for_healthy_collector(client)
+            wait_for_healthy_reader(client)
             catalog = client.get("/api/catalog").json()
             assert catalog["source_id"] == "home_assistant"
             assert catalog["home_assistant_url"] == HOME_ASSISTANT
@@ -149,7 +155,7 @@ def main() -> None:
             )
             assert login["Home Assistant"] == HOME_ASSISTANT
             assert log_in(login["Username"], login["Password"]) == "create_entry"
-            token = compose("exec", "-T", "collector", "cat", "/ha-token/token").stdout.strip()
+            token = compose("exec", "-T", "reader", "cat", "/ha-token/token").stdout.strip()
             assert token
             control = control_token()
             assert control
@@ -169,7 +175,8 @@ def main() -> None:
             assert control not in logs
             assert login["Password"] not in logs
 
-        # The API must not reach Home Assistant; only the collector and setup share its network.
+        # The API must not reach Home Assistant; only the reader, the controller and setup share
+        # its network.
         unreachable = compose(
             "exec",
             "-T",
@@ -182,13 +189,13 @@ def main() -> None:
         assert unreachable.returncode != 0
 
         # A restart removes HA's onboarding endpoint; setup must reuse both valid tokens.
-        compose("stop", "collector", "homeassistant")
+        compose("stop", "reader", "homeassistant")
         compose("up", "--wait")
         assert "stored tokens are valid" in compose("logs", "ha-setup").stdout
         assert log_in(login["Username"], login["Password"]) == "create_entry"
         # Re-running setup with both tokens stored changes neither.
         assert control_token() == control
-        assert compose("exec", "-T", "collector", "cat", "/ha-token/token").stdout.strip() == token
+        assert compose("exec", "-T", "reader", "cat", "/ha-token/token").stdout.strip() == token
 
         # Losing the token cannot be repaired silently: setup fails and says how to reset.
         compose("run", "--rm", "--no-deps", "--entrypoint", "rm", "ha-setup", "/ha-token/token")

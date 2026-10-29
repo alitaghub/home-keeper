@@ -53,9 +53,9 @@ drops the slider move.
 
 One click sends the command, with no confirmation and sender `dashboard`. The
 button reads **Sending…** and stays disabled until the API answers. The API
-waits up to 5 seconds for the light's reading, so with a slow controller the
-answer can take a few seconds more. Monitor, Stop monitoring and Refresh
-discovery keep working meanwhile. When the API answers, the button is free
+waits up to 5 seconds for the light's new state, so with a slow controller the
+answer can take a few seconds more. Monitor and Stop monitoring keep working
+meanwhile. When the API answers, the button is free
 again, the dashboard reloads in the background, and it shows one message:
 
 | Outcome        | Message                                                         |
@@ -74,9 +74,11 @@ Please retry."
 The message stays for 15 seconds, or until you send the next command. Collection
 status messages appear beside it and do not replace it.
 
-The button always follows the recorded state, not the requested one. Until the
-reload finishes, and after a `not_observed` until the collector records the new
-state, it still offers the old action.
+The button always follows the state Home Assistant reports, not the requested one.
+Until the reload finishes, and after a `not_observed` until Home Assistant shows the
+new state, it still offers the old action. While Home Assistant cannot be reached,
+every tab shows "Can't reach Home Assistant", cards show "State unknown" and
+switching is off.
 
 ## Send a command
 
@@ -109,14 +111,14 @@ record, not authentication. See [security.md](security.md).
 ### Outcome
 
 The API records the command as `pending`, forwards it to the controller, then
-waits up to 5 seconds for a recorded reading of that device. It answers `200`
+reads the device's state from Home Assistant every 0.5 seconds for up to 5 seconds. It answers `200`
 with the command record, which names the device's `device_kind`, and one
 `outcome`:
 
 | Outcome        | Meaning                                                                                      |
 | -------------- | -------------------------------------------------------------------------------------------- |
-| `observed`     | A reading received after the send shows the commanded state. `event_id` names the event, when an event showed it. |
-| `not_observed` | Home Assistant accepted the call, but no matching reading arrived within 5 seconds.         |
+| `observed`     | A state read after the send shows the commanded state.                                       |
+| `not_observed` | Home Assistant accepted the call, but no state read within 5 seconds showed it.              |
 | `refused`      | Home Assistant rejected the call.                                                            |
 | `unreachable`  | The controller or Home Assistant did not answer.                                             |
 
@@ -139,7 +141,7 @@ The API refuses these before it sends anything. It records nothing for them.
 | 422    | `Entity is unsupported`                   | Home Keeper cannot monitor this entity.                     |
 | 409    | code `control_off`                        | `GET /api/control` says `off`.                              |
 | 409    | code `not_monitored`                      | You do not monitor the device. Monitor it first.            |
-| 409    | code `state_unknown`                      | No state is recorded yet, or the state is `unknown`.        |
+| 409    | code `state_unknown`                      | Home Assistant cannot be reached or has no such entity, or the state is `unknown`. |
 | 409    | code `not_supported`                      | The command has a `brightness_pct` and the device is a plug or switch. |
 | 409    | code `unavailable`                        | The device's recorded state is `unavailable`.               |
 | 409    | code `already_in_state`                   | The device is already in that state, at that brightness.    |
@@ -175,9 +177,7 @@ Each row shows the light, plug or switch, the command (`Turn on`, `Turn on at 30
 `Turn off`), the outcome, the sender and the time sent. Today's rows show the
 time only; hover over it for the full date. The sender reads
 `Dashboard`, `Browser chat`, or the Telegram user's name and ID, such as
-`Sam (Telegram 12345)`. When a recorded change confirmed the command, the row
-also shows `Evidence ID:` with that change's ID, the same ID the change shows
-below. A command confirmed by a baseline snapshot has no evidence ID.
+`Sam (Telegram 12345)`.
 
 | Outcome        | Shown as                    |
 | -------------- | --------------------------- |
@@ -196,9 +196,9 @@ showed and the dashboard works on.
 
 ## The demo
 
-In the demo, the controller forwards each command to the demo collector. The
-collector switches the synthetic light or plug, records the change at once, and
-keeps that device out of its replay sequence for three collection passes. So a
+In the demo, the controller forwards each command to the demo reader. The
+reader switches the synthetic light or plug at once and keeps that device out of
+its replay sequence for three steps of 10 seconds. So a
 command on a monitored demo light or the monitored demo plug returns `observed`.
 
 ## Limits

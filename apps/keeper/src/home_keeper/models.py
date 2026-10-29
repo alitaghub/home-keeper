@@ -13,7 +13,7 @@ from pydantic import (
     model_validator,
 )
 
-# The command shape is shared with the controller and the demo collector.
+# The command shape is shared with the controller and the demo reader.
 from home_keeper_light_command import LightCommand, SwitchCommand
 
 Identity = Annotated[
@@ -81,7 +81,15 @@ class Catalog(WireModel):
         return self
 
 
+class Selection(WireModel):
+    """The devices the user monitors."""
+
+    entity_ids: list[Identity] = Field(max_length=500)
+
+
 class SelectionSnapshot(WireModel):
+    """The selection with the revisions the collector ingest routes still check."""
+
     revision: int = Field(strict=True, ge=0)
     refresh_revision: int = Field(default=0, strict=True, ge=0)
     entity_ids: list[Identity] = Field(max_length=500)
@@ -305,16 +313,23 @@ class Coverage(WireModel):
 # Public API responses. Records are stored as JSON and returned as stored, so timestamps
 # stay the exact ISO strings the API wrote instead of being re-serialized as datetimes.
 Timestamp = Annotated[str, Field(json_schema_extra={"format": "date-time"})]
-Freshness = Literal["pending", "fresh", "stale"]
+# Why Home Assistant could not be read: a collector error, or the reader service itself.
+ReaderError = CollectorError | Literal["reader_unreachable"]
 
 
 class CatalogResponse(WireModel):
     source_id: SourceId
     # Browser-facing Home Assistant origin, so the dashboard can link to it. None in the demo.
     home_assistant_url: str | None
-    refreshed_at: Timestamp | None
-    freshness: Freshness
     entities: list[Entity]
+
+
+class Unreachable(WireModel):
+    """The 503 body of a route that needs Home Assistant while it cannot be read."""
+
+    error: ReaderError
+    # Fixed text for the error code; never upstream text, URLs or credentials.
+    message: str
 
 
 class DiscoveryRefresh(WireModel):
@@ -480,13 +495,22 @@ class HealthReport(WireModel):
     persisted_at: Timestamp
 
 
-HealthStatus = Annotated[HealthPending | HealthReport, Field(discriminator="status")]
+class HealthStatus(WireModel):
+    """Whether Home Assistant answers through the reader, checked at request time."""
+
+    source_id: SourceId
+    status: Literal["healthy", "unreachable"]
+    error: ReaderError | None
+    checked_at: Timestamp
 
 
 class MonitoredEntity(Entity):
-    baseline: CurrentReading | None
-    freshness: Freshness
-    confirmed_at: Timestamp | None
+    # Home Assistant's entity ID, such as light.kitchen; None while it cannot be read.
+    source_entity_id: Identity | None
+    # What Home Assistant reports now; None when it cannot be read or has no such entity.
+    state: Reading | None
+    # Home Assistant no longer has the entity.
+    missing: bool
 
 
 class MonitoredEntities(WireModel):
@@ -615,8 +639,6 @@ class LightCommandRecord(WireModel):
     sender: Sender
     sent_at: Timestamp
     outcome: CommandOutcome
-    # The recorded event that showed the change, when an event (not a snapshot) showed it.
-    event_id: Identity | None
 
 
 class SwitchCommandRecord(WireModel):
@@ -627,7 +649,6 @@ class SwitchCommandRecord(WireModel):
     sender: Sender
     sent_at: Timestamp
     outcome: CommandOutcome
-    event_id: Identity | None
 
 
 CommandRecord = Annotated[

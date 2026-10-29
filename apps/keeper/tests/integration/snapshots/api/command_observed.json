@@ -7,7 +7,6 @@
     },
     "device_kind": "light",
     "entity_id": "bulb-a",
-    "event_id": "after-send",
     "id": "<uuid-1>",
     "outcome": "observed",
     "sender": {

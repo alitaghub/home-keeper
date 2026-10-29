@@ -25,7 +25,7 @@ def main() -> None:
         override.write_text(f"""services:
   api:
     ports: !override ["127.0.0.1:18001:8000"]
-  collector:
+  reader:
     depends_on:
       fake-ha:
         condition: service_started
@@ -87,64 +87,39 @@ def main() -> None:
             ) as client:
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    catalog = client.get("/api/catalog").json()
-                    if len(catalog["entities"]) == 2:
+                    response = client.get("/api/catalog")
+                    if response.status_code == 200:
                         break
                     time.sleep(0.2)
                 else:
-                    raise AssertionError("Live collector never published discovery")
+                    raise AssertionError("The reader never served the live catalog")
+                catalog = response.json()
+                assert len(catalog["entities"]) == 2
                 assert catalog["source_id"] == "home_assistant"
                 assert catalog["home_assistant_url"] == "http://ha.example.test:8123"
                 assert client.get("/api/selection").json()["entity_ids"] == []
                 client.put("/api/selection/ha:fixture", json={"selected": True}).raise_for_status()
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    monitored = client.get("/api/monitored").json()["entities"]
-                    if monitored and monitored[0]["freshness"] == "fresh":
-                        break
-                    time.sleep(0.2)
-                else:
-                    raise AssertionError("Selected live state never confirmed")
-                assert monitored[0]["baseline"]["source_entity_id"] == "light.fixture"
-                assert monitored[0]["baseline"]["state"] == "off"
-                deadline = time.monotonic() + 10
-                while time.monotonic() < deadline:
-                    events = client.get("/api/events").json()["events"]
-                    if events:
-                        break
-                    time.sleep(0.2)
-                else:
-                    raise AssertionError("Subscribed live brightness event not recorded")
-                assert events[0]["old"]["brightness"] != events[0]["new"]["brightness"]
-                assert events[0]["source_entity_id"] == "light.fixture"
+                # Read through the reader on this request: no collection pass to wait for.
+                [monitored] = client.get("/api/monitored").json()["entities"]
+                assert monitored["source_entity_id"] == "light.fixture"
+                assert monitored["state"]["state"] == "off"
+                assert monitored["missing"] is False
                 for endpoint in ("catalog", "monitored", "health", "selection"):
                     content = client.get(f"/api/{endpoint}").text
                     assert "synthetic-compose-token" not in content
                     assert "ADMIN_SENTINEL" not in content
-                assert client.get("/api/baselines?entity_id=ha:unsupported").json() == {
-                    "baselines": [],
-                    "next_cursor": None,
-                }
+                assert client.get("/api/health").json()["status"] == "healthy"
+
                 compose("stop", "fake-ha")
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline:
-                    health = client.get("/api/health").json()
-                    if health["status"] == "failed":
-                        break
-                    time.sleep(0.2)
-                else:
-                    raise AssertionError("Stopped HA fixture did not cause visible failure")
-                assert client.get("/api/catalog").json()["freshness"] == "stale"
-                gap_state = client.get("/api/coverage").json()
-                assert gap_state["state"] == "interrupted"
-                interrupted_ids = {
-                    gap["id"] for gap in gap_state["gaps"] if gap["recovered_at"] is None
-                }
-                assert interrupted_ids
-                assert not any(
-                    event["new"] and event["new"]["state"] == "unavailable"
-                    for event in client.get("/api/events").json()["events"]
-                )
+                health = client.get("/api/health").json()
+                assert health["status"] == "unreachable", health
+                assert health["error"]
+                unavailable = client.get("/api/catalog")
+                assert unavailable.status_code == 503, unavailable.text
+                assert set(unavailable.json()) == {"error", "message"}
+                [unknown] = client.get("/api/monitored").json()["entities"]
+                assert (unknown["id"], unknown["state"]) == ("ha:fixture", None)
+
                 compose("start", "fake-ha")
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
@@ -152,33 +127,23 @@ def main() -> None:
                         break
                     time.sleep(0.2)
                 else:
-                    raise AssertionError("Live connector did not recover")
-                coverage = client.get("/api/coverage").json()
-                assert coverage["state"] == "collecting"
-                assert all(
-                    gap["recovered_at"] for gap in coverage["gaps"] if gap["id"] in interrupted_ids
-                )
-                snapshots = client.get("/api/baselines?entity_id=ha:fixture").json()["baselines"]
-                assert any(
-                    snapshot["kind"] == "recovery" and snapshot["transition_time"] == "unknown"
-                    for snapshot in snapshots
-                )
+                    raise AssertionError("The reader did not reach Home Assistant again")
+                [recovered] = client.get("/api/monitored").json()["entities"]
+                assert recovered["state"]["state"] == "off"
+
+                # The selection is Home Keeper's own record and survives an API restart.
                 compose("restart", "api")
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     try:
-                        coverage = client.get("/api/coverage").json()
-                        if coverage["state"] == "collecting" and any(
-                            gap["reason"] == "restart" and gap["recovered_at"]
-                            for gap in coverage["gaps"]
-                        ):
+                        if client.get("/api/selection").json()["entity_ids"] == ["ha:fixture"]:
                             break
                     except (httpx.HTTPError, ValueError):
                         pass
                     time.sleep(0.2)
                 else:
-                    raise AssertionError("API restart did not persist and recover a gap")
-            logs = compose("logs", "--no-color", "api", "collector")
+                    raise AssertionError("The selection did not survive an API restart")
+            logs = compose("logs", "--no-color", "api", "reader")
             assert "synthetic-compose-token" not in logs
             print(
                 json.dumps(

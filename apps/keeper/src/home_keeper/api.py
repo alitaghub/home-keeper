@@ -43,23 +43,41 @@ from home_keeper.models import (
     HealthStatus,
     Identity,
     MonitoredEntities,
+    ReaderError,
+    Selection,
     SelectionChange,
     SelectionSnapshot,
+    Unreachable,
     UsageReport,
     to_utc,
 )
 from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
+from home_keeper.reader import Reader, ReaderUnavailable
 from home_keeper.recorder import Recorder, Rejected, update_current
 from home_keeper.store import Store, baseline_record, current_reading
 from home_keeper.usage import device_usage
 
 UTC_ZONE = ZoneInfo("UTC")
 
+# Fixed text for each reason Home Assistant cannot be read: never upstream text, URLs or tokens.
+UNREACHABLE_MESSAGES: dict[ReaderError, str] = {
+    "authentication": "Home Assistant rejected the reader's token.",
+    "connection": "Home Assistant does not answer. Check its address and the network.",
+    "tls": "The certificate of Home Assistant could not be verified.",
+    "timeout": "Home Assistant did not answer in time.",
+    "invalid_data": "Home Assistant sent data Home Keeper cannot read.",
+    "missing": "Home Assistant no longer has a device Home Keeper asked for.",
+    "discovery": "Home Assistant refused to list its devices.",
+    "configuration": "The reader's Home Assistant address or token file is invalid.",
+    "reader_unreachable": "The reader service does not answer.",
+}
+
 
 def create_app(
     db_path: Path,
     service_token: str,
     *,
+    reader: Reader,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     reconciliation_seconds: int = 60,
     source_id: str = "demo",
@@ -118,6 +136,7 @@ def create_app(
     device_commands = Commands(
         store,
         controller,
+        reader,
         now=now,
         retention_days=retention_days,
         wait_seconds=command_wait_seconds,
@@ -125,7 +144,7 @@ def create_app(
     )
     device_commands.interrupt_pending()
     recorder = Recorder(store, source_id, now)
-    monitoring = Monitoring(store, now=now, reconciliation_seconds=reconciliation_seconds)
+    monitoring = Monitoring(store, reader)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     next_cleanup = 0.0
@@ -191,39 +210,34 @@ def create_app(
     async def validation_error(_request: Request, _exc: RequestValidationError) -> JSONResponse:
         return JSONResponse({"detail": "Invalid request"}, status_code=422)
 
-    @app.get("/api/catalog", response_model=CatalogResponse)
-    def catalog():
-        with store.transaction() as db:
-            refreshed = db.execute("SELECT value FROM metadata WHERE key='catalog_at'").fetchone()
-            age = (
-                (now() - datetime.fromisoformat(refreshed[0])).total_seconds()
-                if refreshed
-                else None
-            )
-            return CatalogResponse(
-                source_id=source_id,
-                home_assistant_url=home_assistant_url,
-                refreshed_at=refreshed[0] if refreshed else None,
-                freshness="pending"
-                if age is None
-                else (
-                    "fresh"
-                    if 0 <= age <= 2 * reconciliation_seconds
-                    and get_health(db).status not in ("failed", "stale")
-                    else "stale"
-                ),
-                entities=store.entities(db),
-            )
+    @app.exception_handler(ReaderUnavailable)
+    async def unreachable(_request: Request, exc: ReaderUnavailable) -> JSONResponse:
+        body = Unreachable(error=exc.error, message=UNREACHABLE_MESSAGES[exc.error])
+        return JSONResponse(body.model_dump(), status_code=503)
 
-    @app.get("/api/selection", response_model=SelectionSnapshot)
+    needs_home_assistant: dict[int | str, dict[str, object]] = {503: {"model": Unreachable}}
+
+    @app.get("/api/catalog", response_model=CatalogResponse, responses=needs_home_assistant)
+    def catalog():
+        return CatalogResponse(
+            source_id=source_id,
+            home_assistant_url=home_assistant_url,
+            entities=reader.catalog(),
+        )
+
+    @app.get("/api/selection", response_model=Selection)
+    def selection():
+        return monitoring.selection()
+
     @app.get(
         "/internal/selection",
         response_model=SelectionSnapshot,
         dependencies=[Depends(internal_auth)],
         include_in_schema=False,
     )
-    def selection():
-        return monitoring.selection()
+    def internal_selection():
+        with store.transaction("DEFERRED") as db:
+            return store.selection(db)
 
     @app.post("/api/discovery/refresh", response_model=DiscoveryRefresh)
     def refresh_discovery():
@@ -239,7 +253,7 @@ def create_app(
             db.execute("UPDATE metadata SET value=? WHERE key='refresh_revision'", (str(revision),))
             return DiscoveryRefresh(refresh_revision=revision)
 
-    @app.put("/api/selection/{entity_id}", response_model=SelectionSnapshot)
+    @app.put("/api/selection/{entity_id}", response_model=Selection, responses=needs_home_assistant)
     def select(entity_id: str, change: SelectionChange):
         result = monitoring.select(entity_id, selected=change.selected)
         if isinstance(result, UnknownEntity):
@@ -600,15 +614,21 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthStatus)
     def health():
-        with store.transaction() as db:
-            return get_health(db)
+        checked_at = now().astimezone(UTC).isoformat()
+        try:
+            reader.health()
+        except ReaderUnavailable as error:
+            return HealthStatus(
+                source_id=source_id, status="unreachable", error=error.error, checked_at=checked_at
+            )
+        return HealthStatus(
+            source_id=source_id, status="healthy", error=None, checked_at=checked_at
+        )
 
+    # Readings omit unset light attributes; excluding unset fields keeps them absent.
     @app.get("/api/monitored", response_model=MonitoredEntities, response_model_exclude_unset=True)
     def monitored():
-        with store.transaction() as db:
-            # An expired heartbeat becomes a recorded gap before freshness is read.
-            health = get_health(db)
-        return monitoring.devices(collector_healthy=health.status not in ("failed", "stale"))
+        return monitoring.devices()
 
     @app.post("/internal/control", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_control(payload: ControlHeartbeat):

@@ -102,6 +102,11 @@ class Store:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS baseline_scope ON baselines(entity_id, persisted_at)"
             )
+            # Command records no longer name the event that showed them.
+            db.execute(
+                "UPDATE commands SET data=json_remove(data, '$.event_id') "
+                "WHERE json_type(data, '$.event_id') IS NOT NULL"
+            )
             # A new database starts in the current shape; `upgrade` marks an older one.
             db.execute(
                 "INSERT OR IGNORE INTO metadata VALUES('schema_version', ?)", (SCHEMA_VERSION,)

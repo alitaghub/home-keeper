@@ -76,7 +76,7 @@ class ForwardedSwitchCommand(_Wire):
     command: SwitchCommand
 
 
-# The body of `/internal/command` on the controller and the demo collector. Each kind
+# The body of `/internal/command` on the controller and the demo reader. Each kind
 # pairs its own entity ID pattern with its own commands, so no body mixes them.
 ForwardedCommand = Annotated[
     ForwardedLightCommand | ForwardedSwitchCommand, Field(discriminator="device_kind")

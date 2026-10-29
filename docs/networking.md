@@ -5,9 +5,9 @@
 The default stack uses four Compose networks:
 
 - `dashboard`: the API and the dashboard port.
-- `collection`: internal; the API and the collector.
+- `collection`: internal; the API and the reader.
 - `control`: internal; the API and, with `--profile control`, the controller.
-- `home-assistant`: Home Assistant, `ha-setup`, the collector and the
+- `home-assistant`: Home Assistant, `ha-setup`, the reader and the
   controller. The API never joins it and cannot even resolve the
   `homeassistant` name.
 
@@ -24,7 +24,7 @@ available to it.
 
 ## Your own Home Assistant
 
-Use an explicit address reachable from the collector container. Container
+Use an explicit address reachable from the reader container. Container
 `localhost` means that container, not the computer running Docker.
 
 - Windows/WSL2: run Compose in the WSL project with Docker Desktop WSL integration

@@ -6,7 +6,7 @@ const SCRIPT_ENTITY_ID = "light.hue_reading";
 const SCRIPT_NAME = "Reading light <script>alert('untrusted')</script>";
 const LAMP = "Reading lamp";
 
-// A collection pass runs every ~10 s, so the first baseline can take a few passes.
+// The demo reader answers at once; the margin covers a slow first start of the stack.
 const COLLECTION = { timeout: 45_000 };
 
 // A reused Compose volume can still hold the selection from an earlier run.
@@ -53,9 +53,9 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await expect(card).toBeVisible();
   const state = card.locator(".tile-state");
   await expect(state).toHaveText(/^(On|Off|Unavailable|Unknown)/, COLLECTION);
-  // The evidence sits behind the card's Details.
+  // The card shows what the demo home reports now; it names no recorded evidence.
   await card.getByText("Details").click();
-  await expect(card.getByText(/^Source: demo · Evidence ID: /)).toBeVisible();
+  await expect(card.getByText(/Evidence ID/)).toHaveCount(0);
 
   // Control is on, so a light with a recorded on/off state offers a toggle. The demo
   // replay can change the light between the read and the click; the API then refuses
@@ -80,7 +80,7 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   }
   expect(now, "every command attempt met a replay change").toBeDefined();
   await expect(page.locator("#message")).toHaveText(`${LAMP} is now ${now}.`, COLLECTION);
-  // The toggle shows the recorded state, so the card flips only once the change is recorded.
+  // The toggle shows the reported state, so the card flips once Home Assistant reports it.
   await expect(state).toHaveText(new RegExp(`^${now === "on" ? "On" : "Off"}`), COLLECTION);
 
   // The card draws its last day from /api/usage; its usage history opens in a dialog.

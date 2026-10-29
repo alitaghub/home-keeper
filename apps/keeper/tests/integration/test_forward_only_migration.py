@@ -8,11 +8,12 @@ from collections.abc import Generator
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 from support.api import AUTH, NOW, TOKEN
+from support.recorded_reader import RecordedReader
 
 from home_keeper.api import create_app
 from home_keeper.events import change_event
@@ -266,9 +267,42 @@ def stored(path: Path, table: str) -> dict[str, dict[str, Any]]:
     return {entity: json.loads(data) for entity, data in rows}
 
 
+# Public fields ticket 01 removed, or added in their place, by route. The migration's
+# promise covers the fields both releases return.
+CHANGED_FIELDS: dict[str, set[str]] = {
+    "catalog": {"refreshed_at", "freshness"},
+    # A device gone from Home Assistant is now `missing`, not unsupported with a reason.
+    "monitored": {
+        "baseline",
+        "freshness",
+        "confirmed_at",
+        "source_entity_id",
+        "state",
+        "missing",
+        "supported",
+        "reason",
+    },
+    "commands": {"event_id"},
+}
+
+
+def without_changed_fields(bodies: dict[str, Any]) -> dict[str, Any]:
+    """`bodies` without the fields in CHANGED_FIELDS, at the top level or in each record."""
+
+    def strip(value: object, fields: set[str]) -> object:
+        if isinstance(value, dict):
+            record = cast(dict[str, object], value)
+            return {key: strip(item, fields) for key, item in record.items() if key not in fields}
+        if isinstance(value, list):
+            return [strip(item, fields) for item in cast(list[object], value)]
+        return value
+
+    return {name: strip(body, CHANGED_FIELDS.get(name, set())) for name, body in bodies.items()}
+
+
 @contextmanager
 def started(path: Path, at: datetime = STARTED) -> Generator[TestClient]:
-    with TestClient(create_app(path, TOKEN, now=lambda: at)) as client:
+    with TestClient(create_app(path, TOKEN, now=lambda: at, reader=RecordedReader(path))) as client:
         yield client
 
 
@@ -287,7 +321,7 @@ def test_a_migrated_database_reads_back_as_before_with_every_kind_stored(
     # The base response has no usage periods, so the comparison drops that additive field.
     for device in bodies["usage"]["devices"]:
         assert device.pop("periods") is not None
-    assert bodies == json.loads(BEFORE.read_text())
+    assert without_changed_fields(bodies) == without_changed_fields(json.loads(BEFORE.read_text()))
     assert not SIDE_TABLES & set(contents(path)), "the side tables must be gone"
     assert metadata(path, "schema_version") is not None
     for table in ("current_state", "baselines", "events", "commands"):
@@ -373,7 +407,7 @@ def test_a_row_that_cannot_be_converted_leaves_the_database_as_it_was(
 
     # The failing table's name in the message is the contract, not an exception type.
     with pytest.raises(Exception, match="commands"):
-        create_app(path, TOKEN, now=lambda: STARTED)
+        create_app(path, TOKEN, now=lambda: STARTED, reader=RecordedReader(path))
 
     assert contents(path) == before
     assert metadata(path, "schema_version") is None
@@ -396,7 +430,7 @@ def test_a_catalog_entry_or_event_state_that_is_not_an_object_stops_the_migratio
     before = contents(path)
 
     with pytest.raises(Exception, match=table):
-        create_app(path, TOKEN, now=lambda: STARTED)
+        create_app(path, TOKEN, now=lambda: STARTED, reader=RecordedReader(path))
 
     assert contents(path) == before
     assert metadata(path, "schema_version") is None

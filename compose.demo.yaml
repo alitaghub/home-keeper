@@ -16,6 +16,7 @@ services:
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
       HOME_KEEPER_CONTROLLER_URL: http://controller:8080
+      HOME_KEEPER_READER_URL: http://reader:8080
     volumes:
       - data:/data
       - service-secret:/secrets
@@ -29,12 +30,13 @@ services:
       interval: 5s
       timeout: 4s
       retries: 10
-  collector:
+  # Serves the synthetic home to the API, like the reader of compose.yaml serves Home Assistant.
+  reader:
     build: .
-    command: [python, -m, home_keeper.demo]
+    command: [python, -m, home_keeper.reader_service]
+    restart: unless-stopped
     environment:
-      HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
-      HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
+      HOME_KEEPER_READER_BACKEND: demo
     volumes:
       - service-secret:/secrets:ro
     # `control` carries the demo controller's commands to the synthetic home.
@@ -46,7 +48,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
-  # Opt-in light control: forwards the API's commands to the demo collector.
+  # Opt-in light control: forwards the API's commands to the demo reader.
   controller:
     profiles: [control]
     build:
@@ -67,13 +69,13 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      collector:
+      reader:
         condition: service_started
 networks:
   dashboard:
   collection:
     internal: true
-  # The API, the controller and the demo collector.
+  # The API, the controller and the demo reader.
   control:
     internal: true
 volumes:

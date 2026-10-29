@@ -77,11 +77,17 @@ def command(client: httpx.Client, action: dict[str, object], entity: str = LIGHT
     )
 
 
-def current_state(client: httpx.Client, entity: str = LIGHT) -> Any:
+def reading(client: httpx.Client, entity: str = LIGHT) -> Any:
+    """The state the demo home reports for `entity` now, or None."""
     for entry in client.get("/api/monitored").json()["entities"]:
-        if entry["id"] == entity and entry["baseline"]:
-            return entry["baseline"]["state"]
+        if entry["id"] == entity and entry["state"]:
+            return entry["state"]
     return None
+
+
+def current_state(client: httpx.Client, entity: str = LIGHT) -> Any:
+    state = reading(client, entity)
+    return state["state"] if state else None
 
 
 def switch(
@@ -109,12 +115,12 @@ def assert_observed(
     assert record["entity_id"] == entity
     assert record["device_kind"] == ("switch" if entity == PLUG else "light"), record
     assert record["command"] == action
-    assert record["event_id"], record
-    events = client.get("/api/events", params={"entity_id": entity, "limit": 100}).json()["events"]
-    [recorded] = [item for item in events if item["id"] == record["event_id"]]
-    assert recorded["new"]["state"] == action["action"], recorded
+    assert "event_id" not in record, record
+    # Observed means the device's state, read after the send, showed the command.
+    shown = reading(client, entity)
+    assert shown["state"] == action["action"], shown
     if action is ON_37:
-        assert abs(recorded["new"]["brightness"] - BRIGHTNESS_37) <= 2, recorded
+        assert abs(shown["brightness"] - BRIGHTNESS_37) <= 2, shown
 
 
 def main() -> None:
@@ -128,7 +134,7 @@ def main() -> None:
         controller_networks = set(services["controller"]["networks"])
         assert controller_networks == {"control"}, controller_networks
         assert "control" in services["api"]["networks"]
-        assert "control" in services["collector"]["networks"]
+        assert "control" in services["reader"]["networks"]
         assert config["networks"]["control"].get("internal") is True
 
         # Without the profile nothing can switch a light.
@@ -149,7 +155,7 @@ def main() -> None:
             client.put(
                 f"/api/selection/{LIGHT}", json={"selected": True}, headers=WRITE
             ).raise_for_status()
-            wait_until("a baseline for the light", lambda: current_state(client))
+            wait_until("a state for the light", lambda: current_state(client))
 
             first_action, first = switch(client)
             assert_observed(client, first_action, first)
@@ -164,7 +170,7 @@ def main() -> None:
             client.put(
                 f"/api/selection/{PLUG}", json={"selected": True}, headers=WRITE
             ).raise_for_status()
-            wait_until("a baseline for the plug", lambda: current_state(client, PLUG))
+            wait_until("a state for the plug", lambda: current_state(client, PLUG))
 
             def dimmed_plug() -> bool:
                 response = command(client, ON_37, PLUG)

@@ -16,7 +16,7 @@ services:
     networks: [home-assistant]
     security_opt: [no-new-privileges:true]
     stop_grace_period: 60s
-  # Onboards Home Assistant once and stores the collector's and the controller's tokens.
+  # Onboards Home Assistant once and stores the reader's and the controller's tokens.
   # Exits when done.
   ha-setup:
     build: .
@@ -51,10 +51,11 @@ services:
       HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
       HOME_KEEPER_CONTROLLER_URL: http://controller:8080
+      HOME_KEEPER_READER_URL: http://reader:8080
     volumes:
       - data:/data
       - service-secret:/secrets
-    # `control` reaches the controller. Never the home-assistant network.
+    # `collection` reaches the reader and `control` the controller. Never home-assistant.
     networks: [dashboard, collection, control]
     read_only: true
     tmpfs: [/tmp]
@@ -65,12 +66,13 @@ services:
       interval: 5s
       timeout: 4s
       retries: 10
-  collector:
+  # Reads Home Assistant for the API: the only keeper container with the owner token.
+  # Stateless: no /data, no loop. No published port: only the API reaches it, over `collection`.
+  reader:
     build: .
-    command: [python, -m, home_keeper.live]
+    command: [python, -m, home_keeper.reader_service]
+    restart: unless-stopped
     environment:
-      HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
-      HOME_KEEPER_RECONCILIATION_SECONDS: ${HOME_KEEPER_RECONCILIATION_SECONDS:-10}
       HOME_KEEPER_HA_URL: http://homeassistant:8123
       HOME_KEEPER_HA_TOKEN_FILE: /ha-token/token
     volumes:
@@ -119,7 +121,7 @@ networks:
   # The API and the controller only.
   control:
     internal: true
-  # Home Assistant, the collector and the controller; the API never joins it.
+  # Home Assistant, the reader and the controller; the API never joins it.
   home-assistant:
 volumes:
   data:

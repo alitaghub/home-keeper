@@ -17,7 +17,7 @@ from typing import Any, NoReturn, Protocol
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import ClientConnection, connect
 
@@ -27,6 +27,8 @@ from home_keeper.models import (
     ChangeEvent,
     DeviceObservation,
     Entity,
+    LightState,
+    SwitchState,
     device_kind_of,
 )
 
@@ -405,18 +407,63 @@ class HomeAssistantConnector:
 
         except ConnectorError:
             raise
-        except (httpx.TimeoutException, TimeoutError):
-            raise ConnectorError("timeout") from None
-        except httpx.HTTPError as error:
-            # httpx wraps TLS errors; inspect types, never stringify secrets-bearing causes.
-            cause = error
-            while cause is not None:
-                if isinstance(cause, ssl.SSLError):
-                    raise ConnectorError("tls") from None
-                cause = cause.__cause__
-            raise ConnectorError("connection") from None
-        except (ValueError, TypeError, ValidationError):
-            raise ConnectorError("invalid_data") from None
+        except (httpx.HTTPError, TimeoutError, ValueError, TypeError) as error:
+            raise _read_failure(error) from None
+
+    @property
+    def source_entity_ids(self) -> dict[str, str]:
+        """Each identity's Home Assistant entity ID, from the latest successful discovery."""
+        return dict(self._entities)
+
+    def read_state(self, source_entity_id: str) -> LightState | SwitchState | None:
+        """The current state of a light or switch; None when Home Assistant has no such
+        entity. Unlike `read_selected`, it needs no approval: the reader serves the API,
+        which checks the selection itself."""
+        if not _DEVICE_ID.fullmatch(source_entity_id):
+            raise ConnectorError("configuration")
+        try:
+            status, payload = self._read_state(source_entity_id)
+            if status in {401, 403}:
+                raise ConnectorError("authentication")
+            if status == HTTPStatus.NOT_FOUND:
+                return None
+            if status != HTTPStatus.OK:
+                raise ConnectorError("connection")
+            value = device_state(json.loads(payload), source_entity_id)
+        except ConnectorError:
+            raise
+        except (httpx.HTTPError, TimeoutError, ValueError, TypeError) as error:
+            raise _read_failure(error) from None
+        if value is None:
+            raise ConnectorError("invalid_data")
+        return value
+
+    def check(self) -> None:
+        """Return when Home Assistant's API answers and accepts the token."""
+        try:
+            response = self._http.get("/api/")
+        except (httpx.HTTPError, TimeoutError) as error:
+            raise _read_failure(error) from None
+        if response.status_code in {401, 403}:
+            raise ConnectorError("authentication")
+        if response.status_code != HTTPStatus.OK:
+            raise ConnectorError("connection")
+
+
+def _read_failure(error: Exception) -> ConnectorError:
+    """The safe code for a failed HTTP read: a type check, never the error's text."""
+    if isinstance(error, (httpx.TimeoutException, TimeoutError)):
+        return ConnectorError("timeout")
+    if isinstance(error, httpx.HTTPError):
+        # httpx wraps TLS errors; inspect types, never stringify secrets-bearing causes.
+        cause: BaseException | None = error
+        while cause is not None:
+            if isinstance(cause, ssl.SSLError):
+                return ConnectorError("tls")
+            cause = cause.__cause__
+        return ConnectorError("connection")
+    # ValueError covers pydantic's ValidationError and JSON decoding.
+    return ConnectorError("invalid_data")
 
 
 class SelectedSubscription:

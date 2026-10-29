@@ -8,7 +8,9 @@ from queue import Empty, Queue
 from threading import Event, Thread
 
 from fastapi.testclient import TestClient
+from support.api import recorded_current
 from support.home_assistant import Frame
+from support.recorded_reader import RecordedReader
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 from websockets.sync.server import ServerConnection, serve
@@ -82,7 +84,11 @@ def test_snapshot_read_after_buffered_event_does_not_record_gap(tmp_path: Path) 
         connector = HomeAssistantConnector(
             f"http://127.0.0.1:{server.socket.getsockname()[1]}", token
         )
-        app = create_app(tmp_path / "gaps.sqlite", "internal-secret", source_id="home_assistant")
+        db = tmp_path / "gaps.sqlite"
+        # The collector still posts the catalog; the reader serves it back for selection.
+        app = create_app(
+            db, "internal-secret", source_id="home_assistant", reader=RecordedReader(db)
+        )
         try:
             with TestClient(app, headers={"Authorization": "Bearer internal-secret"}) as api:
                 session = CollectionSession(api, connector)
@@ -188,7 +194,8 @@ class EventAfterReadConnector:
 
 def test_event_received_after_read_keeps_pass_and_recovers_gap(tmp_path: Path) -> None:
     connector = EventAfterReadConnector()
-    app = create_app(tmp_path / "race.sqlite", "internal-secret", source_id="home_assistant")
+    db = tmp_path / "race.sqlite"
+    app = create_app(db, "internal-secret", source_id="home_assistant", reader=RecordedReader(db))
     with TestClient(app, headers={"Authorization": "Bearer internal-secret"}) as api:
         session = CollectionSession(api, connector)
         try:
@@ -215,8 +222,7 @@ def test_event_received_after_read_keeps_pass_and_recovers_gap(tmp_path: Path) -
             assert [(gap["id"], gap["recovered_at"] is not None) for gap in gaps] == [
                 (seeded["id"], True)
             ]
-            [light] = api.get("/api/monitored").json()["entities"]
-            assert light["baseline"]["brightness"] == 180
+            assert recorded_current(db, "ha:a")["brightness"] == 180
             # The race only happened if the event was saved before the older snapshot.
             [event] = api.get("/api/events").json()["events"]
             recovery = api.get("/api/baselines", params={"entity_id": "ha:a"}).json()["baselines"][

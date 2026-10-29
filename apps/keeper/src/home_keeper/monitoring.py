@@ -1,25 +1,25 @@
-"""The selection: which devices the user monitors, and what Home Keeper knows of each one.
+"""The selection: which devices the user monitors, and what Home Assistant reports for each.
 
-Selecting a device bumps the selection revision and makes it wait for a new confirmation.
-`device` and `admits` read inside the caller's transaction, so a recorder or a command can
-check a device and act on it with no select slipping in between.
+Selecting a device checks Home Assistant's catalog through the reader. `device` and
+`admits` serve the collector ingest routes: they read inside the caller's transaction, so a
+recorder can check a device and act on it with no select slipping in between.
 """
 
 import sqlite3
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 
 from home_keeper.models import (
     CurrentReading,
     DeviceKind,
     Entity,
-    Freshness,
     MonitoredEntities,
     MonitoredEntity,
-    SelectionSnapshot,
+    Selection,
 )
+from home_keeper.reader import Reader, ReaderUnavailable
 from home_keeper.store import Store, stored_kind
+
+MISSING_REASON = "Missing from Home Assistant"
 
 
 @dataclass(frozen=True)
@@ -45,39 +45,37 @@ class Device:
 
 
 class Monitoring:
-    def __init__(
-        self, store: Store, *, now: Callable[[], datetime], reconciliation_seconds: int
-    ) -> None:
-        """`reconciliation_seconds`: a monitored device whose newest confirmation is older
-        than two of these is stale."""
+    def __init__(self, store: Store, reader: Reader) -> None:
         self.store = store
-        self.now = now
-        self.reconciliation_seconds = reconciliation_seconds
+        self.reader = reader
 
-    def selection(self) -> SelectionSnapshot:
-        with self.store.transaction() as db:
-            return self.store.selection(db)
+    def selection(self) -> Selection:
+        with self.store.transaction("DEFERRED") as db:
+            return Selection(entity_ids=self.store.selection(db).entity_ids)
 
     def select(
         self, entity_id: str, *, selected: bool
-    ) -> SelectionSnapshot | UnknownEntity | UnsupportedEntity:
-        """Start or stop monitoring a device. A device that left discovery can still be
-        stopped."""
+    ) -> Selection | UnknownEntity | UnsupportedEntity:
+        """Start or stop monitoring a device. Starting checks Home Assistant's catalog and
+        raises ReaderUnavailable when it cannot be read; stopping needs no reader, so a
+        device that left Home Assistant can still be stopped."""
+        kind: DeviceKind | None = None
+        if selected:
+            entity = next((e for e in self.reader.catalog() if e.id == entity_id), None)
+            if entity is None:
+                return UnknownEntity()
+            if not entity.supported:
+                return UnsupportedEntity()
+            kind = entity.device_kind
         store = self.store
         with store.transaction() as db:
-            entity = store.entity(db, entity_id)
             current = store.selection(db)
-            if entity is None and (selected or entity_id not in current.entity_ids):
-                return UnknownEntity()
-            if selected and entity is not None and not entity.supported:
-                return UnsupportedEntity()
             if selected != (entity_id in current.entity_ids):
                 if selected:
                     db.execute(
-                        "INSERT INTO selection(id, device_kind) VALUES(?, ?)",
-                        (entity_id, entity.device_kind if entity else None),
+                        "INSERT INTO selection(id, device_kind) VALUES(?, ?)", (entity_id, kind)
                     )
-                    # A fresh selection awaits a new confirmation, even if history exists.
+                    # The collector ingest routes still record into these until they go.
                     db.execute("DELETE FROM confirmed WHERE entity_id=?", (entity_id,))
                     db.execute("DELETE FROM current_state WHERE entity_id=?", (entity_id,))
                 else:
@@ -86,47 +84,58 @@ class Monitoring:
                     "UPDATE metadata SET value=? WHERE key='revision'",
                     (str(current.revision + 1),),
                 )
-            return store.selection(db)
+            return Selection(entity_ids=store.selection(db).entity_ids)
 
-    def devices(self, *, collector_healthy: bool) -> MonitoredEntities:
-        """Every monitored device with its newest confirmed reading and its freshness. A
-        device is fresh only while the collector is healthy."""
-        store = self.store
-        results: list[MonitoredEntity] = []
-        with store.transaction("DEFERRED") as db:
-            for entity_id in store.selection(db).entity_ids:
-                device = self.device(db, entity_id)
-                entity = device.entity or Entity(
-                    id=entity_id,
-                    name=entity_id,
-                    device_id=None,
-                    device_name=None,
-                    device_kind=device.kind,
-                    supported=False,
-                    reason="Entity missing from latest discovery",
-                )
-                confirmed = db.execute(
-                    "SELECT * FROM confirmed WHERE entity_id=?", (entity_id,)
-                ).fetchone()
-                freshness: Freshness = "pending"
-                if confirmed:
-                    fresh = (
-                        self._recent(confirmed["received_at"])
-                        and self._recent(confirmed["persisted_at"])
-                        and collector_healthy
-                        and not store.open_gaps(db, entity_id)
-                        and device.entity is not None
-                        and entity.supported
-                    )
-                    freshness = "fresh" if fresh else "stale"
-                results.append(
+    def devices(self) -> MonitoredEntities:
+        """Every monitored device with what Home Assistant reports for it now. While Home
+        Assistant cannot be read, each device is listed by its ID with no state."""
+        with self.store.transaction("DEFERRED") as db:
+            rows = db.execute("SELECT id, device_kind FROM selection ORDER BY id").fetchall()
+        kinds: dict[str, DeviceKind | None] = {
+            row[0]: stored_kind.validate_python(row[1]) for row in rows
+        }
+        try:
+            catalog = {entity.id: entity for entity in self.reader.catalog()}
+            states = self.reader.states(list(kinds))
+        except ReaderUnavailable:
+            return MonitoredEntities(
+                entities=[
                     MonitoredEntity(
-                        **entity.model_dump(),
-                        baseline=device.reading if confirmed else None,
-                        freshness=freshness,
-                        confirmed_at=confirmed["received_at"] if confirmed else None,
+                        id=entity_id,
+                        name=entity_id,
+                        device_id=None,
+                        device_name=None,
+                        device_kind=kind,
+                        supported=True,
+                        reason=None,
+                        source_entity_id=None,
+                        state=None,
+                        missing=False,
                     )
+                    for entity_id, kind in kinds.items()
+                ]
+            )
+        results: list[MonitoredEntity] = []
+        for entity_id, kind in kinds.items():
+            entity = catalog.get(entity_id)
+            live = states.get(entity_id)
+            described = entity or Entity(
+                id=entity_id,
+                name=entity_id,
+                device_id=None,
+                device_name=None,
+                device_kind=kind,
+                supported=False,
+                reason=MISSING_REASON,
+            )
+            results.append(
+                MonitoredEntity(
+                    **described.model_dump(),
+                    source_entity_id=live.source_entity_id if live else None,
+                    state=live.reading if live else None,
+                    missing=entity is None or live is None,
                 )
+            )
         return MonitoredEntities(entities=results)
 
     @staticmethod
@@ -162,7 +171,3 @@ class Monitoring:
             and entity is not None
             and entity.supported
         )
-
-    def _recent(self, timestamp: str) -> bool:
-        age = (self.now() - datetime.fromisoformat(timestamp)).total_seconds()
-        return 0 <= age <= 2 * self.reconciliation_seconds

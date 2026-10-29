@@ -138,7 +138,7 @@ token for the collector. Then:
    groups or rooms.
    Pairing a Hue Bridge, for example, needs one press of its button.
 3. Open the dashboard at <http://localhost:8000>. On the **Setup** tab, click
-   **Refresh discovery**, then **Monitor** on a lamp.
+   **Monitor** on a lamp.
 
 If port 8000 or 8123 is taken, set `HOME_KEEPER_PORT` or `HA_PORT`, for example
 `HOME_KEEPER_PORT=18000 HA_PORT=18123 docker compose up --build --wait`.

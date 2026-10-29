@@ -35,9 +35,10 @@ class MonitoredLight(Wire):
     device_kind: DeviceKind = None
     supported: bool
     reason: str | None = None
-    baseline: Reading | None
-    freshness: Literal["pending", "fresh", "stale"]
-    confirmed_at: str | None
+    # What Home Assistant reports now; None while it cannot be read or has no such entity.
+    state: Reading | None
+    # Home Assistant no longer has the entity.
+    missing: bool
 
 
 class Monitored(Wire):
@@ -118,9 +119,9 @@ class CoverageReport(Wire):
 
 
 class Health(Wire):
-    status: Literal["pending", "healthy", "failed", "stale"]
+    status: Literal["healthy", "unreachable"]
     error: str | None = None
-    received_at: str | None = None
+    checked_at: str
 
 
 class Device(Wire):
@@ -133,8 +134,6 @@ class Device(Wire):
 
 
 class Catalog(Wire):
-    refreshed_at: str | None
-    freshness: Literal["pending", "fresh", "stale"]
     entities: list[Device]
 
 
@@ -192,6 +191,13 @@ class ErrorBody(Wire):
     detail: str | Conflict
 
 
+class Unreachable(Wire):
+    """The 503 body while Home Assistant cannot be read."""
+
+    error: str
+    message: str
+
+
 type Params = dict[str, str | int | list[str]]
 
 
@@ -234,6 +240,13 @@ class KeeperClient:
 
 def _failure(response: httpx.Response) -> str:
     message = f"HTTP {response.status_code}"
+    try:
+        unreachable = Unreachable.model_validate_json(response.content)
+    except ValidationError:
+        pass
+    else:
+        # A fixed message the keeper writes for each reason.
+        return f"{message}: {unreachable.message}"
     try:
         detail = ErrorBody.model_validate_json(response.content).detail
     except ValidationError:

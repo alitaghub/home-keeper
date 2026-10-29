@@ -1,10 +1,15 @@
 // API responses for dashboard tests. Shapes and values follow the recorded API
 // snapshots in apps/keeper/tests/integration/snapshots/api/*.json.
 import type { components } from "../api/schema";
+import type { ResponseBody } from "./fake-api";
 
 type Schemas = components["schemas"];
 // A light's or a switch's command record. The union has no schema name of its own.
 type CommandRecord = Schemas["CommandsPage"]["commands"][number];
+// Taken from the routes, so a renamed schema does not break the fixtures.
+type Health = ResponseBody<"GET /api/health">;
+type MonitoredEntity = ResponseBody<"GET /api/monitored">["entities"][number];
+type Reading = NonNullable<MonitoredEntity["state"]>;
 
 export const desk = {
   id: "light.hue_desk",
@@ -58,16 +63,12 @@ export const smartPlug = {
 export const catalog = {
   source_id: "demo",
   home_assistant_url: null,
-  freshness: "fresh",
-  refreshed_at: "2026-10-12T10:00:07+00:00",
   entities: [desk, reading, roomGroup, ungroupedSensor],
-} satisfies Schemas["CatalogResponse"];
+} satisfies ResponseBody<"GET /api/catalog">;
 
 export const emptySelection = {
   entity_ids: [],
-  refresh_revision: 0,
-  revision: 0,
-} satisfies Schemas["SelectionSnapshot"];
+} satisfies ResponseBody<"GET /api/selection">;
 
 export const emptyMonitored = {
   entities: [],
@@ -77,14 +78,21 @@ export const health = {
   status: "healthy",
   error: null,
   source_id: "demo",
-  received_at: "2026-10-12T10:00:08Z",
-  persisted_at: "2026-10-12T10:00:08+00:00",
-} satisfies Schemas["HealthReport"];
+  checked_at: "2026-10-12T10:00:08+00:00",
+} satisfies Health;
 
-export const pendingHealth = {
-  status: "pending",
-  source_id: "demo",
-} satisfies Schemas["HealthPending"];
+/** Health while the reader or Home Assistant cannot be reached. */
+export const unreachableHealth = {
+  ...health,
+  status: "unreachable",
+  error: "connection",
+} satisfies Health;
+
+/** The 503 body of /api/catalog and selecting while Home Assistant cannot be reached. */
+export const unreachableBody = {
+  error: "connection",
+  message: "Can't reach Home Assistant",
+};
 
 export const openGap = {
   id: "gap-open",
@@ -220,7 +228,7 @@ export const emptyEvents = {
 
 export const discoveryRefresh = {
   refresh_revision: 1,
-} satisfies Schemas["DiscoveryRefresh"];
+} satisfies ResponseBody<"POST /api/discovery/refresh">;
 
 /** The dashboard's `toLocaleString` rendering of an API timestamp. */
 export const localTime = (value: string): string => new Date(value).toLocaleString();
@@ -232,57 +240,68 @@ export const controlOn = {
   heartbeat_at: "2026-10-12T10:00:08+00:00",
 } satisfies Schemas["ControlStatus"];
 
-/** A monitored light whose recorded reading has the given state and availability. */
+const reportedAt = "2026-10-12T10:00:06+00:00";
+
+/** A monitored light in the state Home Assistant reports now. */
 export const monitoredLight = (
   entity: Schemas["Entity"],
-  state: Schemas["LightBaseline"]["state"],
-  availability: Schemas["LightBaseline"]["availability"] = "available",
+  state: Reading["state"],
+  availability: Reading["availability"] = "available",
+  brightness?: number,
 ) =>
   ({
     ...entity,
-    baseline: {
-      kind: "baseline",
+    source_entity_id: entity.id,
+    state: {
       device_kind: "light",
-      id: `baseline-${entity.id}`,
-      entity_id: entity.id,
-      source_entity_id: null,
-      source_id: "demo",
       state,
       availability,
-      collection_started_at: null,
-      coverage_gap_ids: [],
-      received_at: "2026-10-12T10:00:06Z",
-      persisted_at: "2026-10-12T10:00:06+00:00",
+      last_changed: reportedAt,
+      last_updated: reportedAt,
+      ...(brightness === undefined ? {} : { brightness }),
     },
-    freshness: "fresh",
-    confirmed_at: "2026-10-12T10:00:06+00:00",
-  }) satisfies Schemas["MonitoredEntity"];
+    missing: false,
+  }) satisfies MonitoredEntity;
 
-/** A monitored plug or switch whose recorded reading has the given state and availability. */
+/** A monitored plug or switch in the state Home Assistant reports now. */
 export const monitoredSwitch = (
   entity: Schemas["Entity"] & { device_kind: "switch" },
-  state: Schemas["SwitchBaseline"]["state"],
-  availability: Schemas["SwitchBaseline"]["availability"] = "available",
+  state: Reading["state"],
+  availability: Reading["availability"] = "available",
 ) =>
   ({
     ...entity,
-    baseline: {
-      kind: "baseline",
+    source_entity_id: entity.id,
+    state: {
       device_kind: "switch",
-      id: `baseline-${entity.id}`,
-      entity_id: entity.id,
-      source_entity_id: null,
-      source_id: "demo",
       state,
       availability,
-      collection_started_at: null,
-      coverage_gap_ids: [],
-      received_at: "2026-10-12T10:00:06Z",
-      persisted_at: "2026-10-12T10:00:06+00:00",
+      last_changed: reportedAt,
+      last_updated: reportedAt,
     },
-    freshness: "fresh",
-    confirmed_at: "2026-10-12T10:00:06+00:00",
-  }) satisfies Schemas["MonitoredEntity"];
+    missing: false,
+  }) satisfies MonitoredEntity;
+
+/** A monitored device while Home Assistant cannot be reached: listed, with no state. */
+export const unknownDevice = (entity: Schemas["Entity"]) =>
+  ({
+    ...entity,
+    name: entity.id,
+    device_id: null,
+    device_name: null,
+    source_entity_id: null,
+    state: null,
+    missing: false,
+  }) satisfies MonitoredEntity;
+
+/** A monitored device Home Assistant no longer has. */
+export const missingDevice = (entity: Schemas["Entity"]) =>
+  ({
+    ...entity,
+    source_entity_id: null,
+    state: null,
+    missing: true,
+  }) satisfies MonitoredEntity;
 
 /** The command record the controller returns for a light command. */
 export const commandRecord = (
@@ -297,7 +316,6 @@ export const commandRecord = (
     sender: { kind: "dashboard" },
     sent_at: "2026-10-12T10:01:00+00:00",
     outcome,
-    event_id: outcome === "observed" ? "change-4" : null,
   }) satisfies Schemas["LightCommandRecord"];
 
 /** The command record the controller returns for a smart plug command. */
@@ -313,7 +331,6 @@ export const switchCommandRecord = (
     sender: { kind: "dashboard" },
     sent_at: "2026-10-12T10:01:00+00:00",
     outcome,
-    event_id: outcome === "observed" ? "change-plug" : null,
   }) satisfies Schemas["SwitchCommandRecord"];
 
 /** A command history row; override any field. */
@@ -328,7 +345,6 @@ export const historyCommand = (
   sender: { kind: "dashboard" },
   sent_at: "2026-10-12T10:01:00+00:00",
   outcome: "not_observed",
-  event_id: null,
   ...overrides,
 });
 

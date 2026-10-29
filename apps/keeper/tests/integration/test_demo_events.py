@@ -3,6 +3,7 @@ from threading import Thread
 
 import httpx
 from fastapi.testclient import TestClient
+from support.recorded_reader import RecordedReader
 
 from home_keeper.api import create_app
 from home_keeper.demo import DemoReplay, command_server, reconcile
@@ -11,7 +12,11 @@ from home_keeper.demo import DemoReplay, command_server, reconcile
 def test_demo_records_selected_repeatable_transitions_and_deduplicates(tmp_path: Path) -> None:
     replay = DemoReplay()
     with TestClient(
-        create_app(tmp_path / "demo.sqlite", "service-token"),
+        create_app(
+            tmp_path / "demo.sqlite",
+            "service-token",
+            reader=RecordedReader(tmp_path / "demo.sqlite"),
+        ),
         headers={"Authorization": "Bearer service-token"},
     ) as client:
         reconcile(client, replay)
@@ -48,7 +53,11 @@ def test_demo_records_selected_repeatable_transitions_and_deduplicates(tmp_path:
 def test_demo_offers_its_smart_plug_and_records_its_on_off_changes(tmp_path: Path) -> None:
     replay = DemoReplay()
     with TestClient(
-        create_app(tmp_path / "demo.sqlite", "service-token"),
+        create_app(
+            tmp_path / "demo.sqlite",
+            "service-token",
+            reader=RecordedReader(tmp_path / "demo.sqlite"),
+        ),
         headers={"Authorization": "Bearer service-token"},
     ) as client:
         reconcile(client, replay)
@@ -79,7 +88,7 @@ def test_demo_offers_its_smart_plug_and_records_its_on_off_changes(tmp_path: Pat
                     assert "brightness" not in reading
         assert {event["new"]["state"] for event in events} >= {"on", "off"}
         [monitored] = client.get("/api/monitored").json()["entities"]
-        assert monitored["baseline"]["device_kind"] == "switch"
+        assert monitored["state"]["device_kind"] == "switch"
 
 
 def test_demo_switches_its_smart_plug_on_a_switch_command_and_records_the_change(
@@ -87,7 +96,11 @@ def test_demo_switches_its_smart_plug_on_a_switch_command_and_records_the_change
 ) -> None:
     replay = DemoReplay()
     with TestClient(
-        create_app(tmp_path / "demo.sqlite", "service-token"),
+        create_app(
+            tmp_path / "demo.sqlite",
+            "service-token",
+            reader=RecordedReader(tmp_path / "demo.sqlite"),
+        ),
         headers={"Authorization": "Bearer service-token"},
     ) as client:
         reconcile(client, replay)

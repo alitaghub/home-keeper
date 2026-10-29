@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.13.0 AS uv
 
-# The light controller, a separate image so the collector image holds no control code.
+# The light controller, a separate image so the keeper image holds no control code.
 # Build from the repository root:
 #   docker build -f apps/controller/Dockerfile .
 FROM python:3.13-slim

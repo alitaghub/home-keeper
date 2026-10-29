@@ -9,7 +9,7 @@ import {
 } from "./api/client";
 import { Catalog, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
-import { Coverage, openGaps } from "./components/Coverage";
+import { Coverage } from "./components/Coverage";
 import { HistoryDialog } from "./components/History";
 import { type DeviceCommand, Monitored } from "./components/Monitored";
 import { Timeline } from "./components/Timeline";
@@ -30,18 +30,17 @@ type Tab = (typeof TABS)[number]["id"];
 const tabFromHash = (): Tab =>
   TABS.find((tab) => `#${tab.id}` === window.location.hash)?.id ?? "home";
 
-const collectionErrors: Record<NonNullable<Schemas["HealthReport"]["error"]>, string> = {
-  authentication:
-    "Home Assistant rejected authentication. Check the connector token and its user permissions.",
-  connection:
-    "The connector cannot reach Home Assistant. Check its address and container networking.",
-  tls: "Certificate verification failed. Configure a trusted certificate; verification remains enabled.",
-  timeout: "Home Assistant did not respond in time. Collection will retry.",
-  invalid_data:
-    "Home Assistant returned unsupported or invalid data. No affected observation was stored.",
-  missing: "A selected entity could not be read. This does not prove a physical device outage.",
-  discovery: "Discovery failed. The last validated catalog remains visible.",
-  configuration: "The connector configuration is invalid. Check the origin and token file.",
+// Why Home Assistant cannot be read, from /api/health. Fixed text, never upstream text.
+const unreachableMessages: Record<NonNullable<Schemas["HealthStatus"]["error"]>, string> = {
+  authentication: "Home Assistant rejected the reader's token. Check the token and its user.",
+  connection: "Home Assistant does not answer. Check its address and container networking.",
+  tls: "The certificate of Home Assistant could not be verified. Configure a trusted certificate.",
+  timeout: "Home Assistant did not answer in time.",
+  invalid_data: "Home Assistant sent data Home Keeper cannot read.",
+  missing: "Home Assistant no longer has a device Home Keeper asked for.",
+  discovery: "Home Assistant refused to list its devices.",
+  configuration: "The reader's Home Assistant address or token file is invalid.",
+  reader_unreachable: "The reader service does not answer.",
 };
 
 // The API answers a command with a final outcome; `pending` and `interrupted`
@@ -90,28 +89,17 @@ async function sendDeviceCommand(
 }
 
 type Snapshot = {
-  catalog: Schemas["CatalogResponse"];
-  selection: Schemas["SelectionSnapshot"];
+  // Null while Home Assistant cannot be read: an earlier catalog is never shown as current.
+  catalog: Schemas["CatalogResponse"] | null;
+  selection: Schemas["Selection"];
   monitored: Schemas["MonitoredEntities"];
-  health: Schemas["HealthPending"] | Schemas["HealthReport"];
+  health: Schemas["HealthStatus"];
   coverage: Schemas["CoverageReport"];
 };
 
 // Polls overlap when a response is slow. Each load takes a number, and a result
 // is applied only if no later load has applied its own.
 type LoadOrder = { started: number; snapshot: number; control: number };
-
-function catalogStatus({ freshness, refreshed_at }: Schemas["CatalogResponse"]) {
-  return freshness === "stale"
-    ? `Discovery is stale. Showing the last validated catalog from ${date(refreshed_at)}.`
-    : `Discovery: ${freshness} · Last refreshed: ${date(refreshed_at)}`;
-}
-
-type DiscoveryState = {
-  refreshPending: boolean;
-  lastCatalogRefresh: string | null;
-  requestedAfter: string | null;
-};
 
 export function App() {
   const [tab, setTab] = useState<Tab>(tabFromHash);
@@ -128,18 +116,13 @@ export function App() {
   const { load: loadTimeline, showingOlder } = timeline;
   const commands = useCommands();
   const { load: loadCommands, showingOlder: showingOlderCommands } = commands;
-  // One mutation at a time, shared by selection toggles and discovery refresh.
+  // One selection change at a time.
   const busy = useRef(false);
   // A command takes several seconds (the send, then up to 5 s of waiting for the
   // change), so commands lock per device, apart from `busy`.
   const sending = useRef(new Set<string>());
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const [historyFor, setHistoryFor] = useState<Schemas["MonitoredEntity"] | null>(null);
-  const discovery = useRef<DiscoveryState>({
-    refreshPending: false,
-    lastCatalogRefresh: null,
-    requestedAfter: null,
-  });
 
   const load = useCallback(async () => {
     const seq = ++order.current.started;
@@ -155,39 +138,23 @@ export function App() {
     );
     try {
       const [catalog, selection, monitored, health, coverage] = await Promise.all([
-        unwrap(api.GET("/api/catalog")),
+        // The catalog answers 503 while Home Assistant cannot be read; the rest still load.
+        unwrap(api.GET("/api/catalog")).catch(() => null),
         unwrap(api.GET("/api/selection")),
         unwrap(api.GET("/api/monitored")),
         unwrap(api.GET("/api/health")),
         unwrap(api.GET("/api/coverage", { params: { query: { limit: 20 } } })),
       ]);
       if (!isLatest("snapshot")) return;
-      const state = discovery.current;
-      state.lastCatalogRefresh = catalog.refreshed_at;
-      if (
-        state.refreshPending &&
-        catalog.refreshed_at &&
-        catalog.refreshed_at !== state.requestedAfter
-      ) {
-        state.refreshPending = false;
-      }
-      const healthError = health.status === "pending" ? null : health.error;
       setSnapshot({ catalog, selection, monitored, health, coverage });
-      setMessage(
-        (healthError && collectionErrors[healthError]) ||
-          (state.refreshPending
-            ? "Discovery refresh requested. The collector checks on its next collection pass."
-            : ""),
-      );
+      setMessage("");
       await Promise.all([
         showingOlder.current ? null : loadTimeline(),
         showingOlderCommands.current ? null : loadCommands(),
       ]);
     } catch {
       if (!isLatest("snapshot")) return;
-      setMessage(
-        "Cannot reach Home Keeper. Collection freshness is unknown until connection returns.",
-      );
+      setMessage("Cannot reach Home Keeper. States are unknown until the connection returns.");
     }
   }, [loadTimeline, showingOlder, loadCommands, showingOlderCommands]);
 
@@ -234,13 +201,6 @@ export function App() {
       );
     });
 
-  const refreshDiscovery = () =>
-    mutate(async () => {
-      await unwrap(api.POST("/api/discovery/refresh", { headers: mutationHeaders }));
-      discovery.current.requestedAfter = discovery.current.lastCatalogRefresh;
-      discovery.current.refreshPending = true;
-    });
-
   const showCommandNotice = (notice: string) => {
     clearTimeout(noticeTimer.current);
     setCommandNotice(notice);
@@ -266,11 +226,12 @@ export function App() {
     if (result.reload) void load();
   };
 
-  const live = snapshot?.catalog.source_id === "home_assistant";
-  const controlOn = snapshot !== null && control === "on";
   const health = snapshot?.health;
+  const live = (snapshot?.catalog ?? health)?.source_id === "home_assistant";
+  const unreachable = health?.status === "unreachable";
+  const controlOn = snapshot !== null && control === "on";
   const names = new Map(
-    [...(snapshot?.catalog.entities ?? []), ...(snapshot?.monitored.entities ?? [])].map(
+    [...(snapshot?.catalog?.entities ?? []), ...(snapshot?.monitored.entities ?? [])].map(
       (entity) => [entity.id, lightName(entity)],
     ),
   );
@@ -279,15 +240,14 @@ export function App() {
   const usage = useRecentUsage(
     snapshot &&
       JSON.stringify(
-        snapshot.monitored.entities.map(({ id, baseline }) => [
+        snapshot.monitored.entities.map(({ id, state }) => [
           id,
-          baseline?.state,
-          baseline?.device_kind === "light" ? baseline.brightness : null,
+          state?.state,
+          state?.device_kind === "light" ? state.brightness : null,
         ]),
       ),
   );
 
-  const interrupted = openGaps(snapshot?.coverage ?? null);
   const panel = (id: Tab) => ({
     id: `panel-${id}`,
     role: "tabpanel",
@@ -324,20 +284,21 @@ export function App() {
         <p id="message" className="message" role="status" aria-live="polite">
           {[commandNotice, message].filter(Boolean).join(" ")}
         </p>
-        {interrupted.length > 0 && (
-          <p id="interrupted" className="alert">
-            {`Recording is interrupted since ${time(interrupted[0]?.last_confirmed_at)}. Lights may change without a record.`}{" "}
-            <button type="button" className="quiet" onClick={() => openTab("history")}>
-              See history
-            </button>
+        {unreachable && (
+          <p id="unreachable" className="alert" role="alert">
+            <strong>Can't reach Home Assistant</strong>
+            {health.error ? ` ${unreachableMessages[health.error]}` : ""}
           </p>
         )}
 
         <section {...panel("home")}>
           <p id="status-line" className="status-line">
-            <span className={`dot ${health?.status ?? "pending"}`} aria-hidden="true" />
+            <span
+              className={`dot ${health?.status === "unreachable" ? "failed" : (health?.status ?? "pending")}`}
+              aria-hidden="true"
+            />
             {health
-              ? `Collector ${health.status} · last reading ${time(health.status === "pending" ? null : health.received_at)}`
+              ? `Home Assistant ${health.status} · checked ${time(health.checked_at)}`
               : "Connecting…"}
             <span className="tag">{controlOn ? "CONTROL ON" : "READ ONLY"}</span>
           </p>
@@ -346,7 +307,11 @@ export function App() {
             usage={usage}
             onHistory={setHistoryFor}
             onStop={(id) => void toggle(id, false)}
-            onSwitch={controlOn ? (entity, command) => void sendCommand(entity, command) : null}
+            onSwitch={
+              controlOn && !unreachable
+                ? (entity, command) => void sendCommand(entity, command)
+                : null
+            }
             onChooseLights={() => openTab("setup")}
             sending={sendingIds}
           />
@@ -404,13 +369,10 @@ export function App() {
         <section {...panel("setup")}>
           <div className="section-heading">
             <h2 id="lights-heading">Setup</h2>
-            <button id="refresh" type="button" onClick={() => void refreshDiscovery()}>
-              Refresh discovery
-            </button>
           </div>
           <p id="source-notice" className="notice">
             {!snapshot
-              ? "Waiting for the configured collector."
+              ? "Waiting for Home Assistant."
               : live
                 ? controlOn
                   ? "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is on for monitored lights."
@@ -420,22 +382,22 @@ export function App() {
                   : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records."}
           </p>
           <p id="catalog-status" className="history-status" role="status" aria-live="polite">
-            {snapshot && catalogStatus(snapshot.catalog)}
+            {snapshot && !snapshot.catalog
+              ? "Devices cannot be listed while Home Assistant cannot be reached."
+              : ""}
           </p>
           <div className="stats">
             <section>
-              <span>Collector</span>
+              <span>Home Assistant</span>
               <strong id="health">{health ? health.status : "Connecting…"}</strong>
               <small id="heartbeat">
-                {health
-                  ? `Last collection: ${date(health.status === "pending" ? null : health.received_at)}`
-                  : "Waiting for collection"}
+                {health ? `Last checked: ${date(health.checked_at)}` : "Waiting for Home Assistant"}
               </small>
             </section>
             <section>
               <span>Supported devices</span>
               <strong id="count">
-                {snapshot
+                {snapshot?.catalog
                   ? String(snapshot.catalog.entities.filter((entity) => entity.supported).length)
                   : "—"}
               </strong>
@@ -450,8 +412,8 @@ export function App() {
           <section className="panel" aria-labelledby="choose-heading">
             <h3 id="choose-heading">Choose lights to monitor</h3>
             <Catalog
-              entities={snapshot?.catalog.entities ?? null}
-              homeAssistantUrl={snapshot?.catalog.home_assistant_url ?? null}
+              entities={snapshot?.catalog?.entities ?? null}
+              homeAssistantUrl={snapshot?.catalog?.home_assistant_url ?? null}
               selected={snapshot?.selection.entity_ids ?? []}
               onToggle={(id, selected) => void toggle(id, selected)}
             />

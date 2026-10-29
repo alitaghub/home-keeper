@@ -3,18 +3,24 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { components } from "./api/schema";
-import { type ApiCall, type FakeApi, installFakeApi, type Replies } from "./test/fake-api";
+import {
+  type ApiCall,
+  type FakeApi,
+  installFakeApi,
+  type Replies,
+  type ResponseBody,
+} from "./test/fake-api";
 import * as fixtures from "./test/fixtures";
 import { localTime } from "./test/fixtures";
 
 type Schemas = components["schemas"];
+type Reading = NonNullable<ResponseBody<"GET /api/monitored">["entities"][number]["state"]>;
 
-const UNREACHABLE =
-  "Cannot reach Home Keeper. Collection freshness is unknown until connection returns.";
+const UNREACHABLE = "Cannot reach Home Keeper. States are unknown until the connection returns.";
 const HISTORY_FAILED =
   "Cannot load recorded history. Previously displayed entries may be out of date.";
-const REFRESH_PENDING =
-  "Discovery refresh requested. The collector checks on its next collection pass.";
+// The banner every tab shows while the reader or Home Assistant cannot be reached.
+const CANT_REACH_HA = /^Can't reach Home Assistant/;
 
 let api: FakeApi;
 
@@ -67,29 +73,23 @@ describe("ported from test_dashboard.py", () => {
       ...unsupported,
       id: "ha:gone",
       name: "ha:gone",
-      reason: "Entity missing from latest discovery",
+      supported: true,
+      reason: null,
     } satisfies Schemas["Entity"];
-    const pending = { baseline: null, freshness: "stale", confirmed_at: null } as const;
     const { api } = renderDashboard({
       "GET /api/catalog": {
         source_id: "home_assistant",
         home_assistant_url: null,
-        refreshed_at: null,
-        freshness: "pending",
         entities: [disabled],
       },
-      "GET /api/selection": {
-        revision: 2,
-        refresh_revision: 0,
-        entity_ids: [disabled.id, missing.id],
-      },
+      "GET /api/selection": { entity_ids: [disabled.id, missing.id] },
       "GET /api/monitored": {
         entities: [
-          { ...disabled, ...pending },
-          { ...missing, ...pending },
+          { ...disabled, source_entity_id: null, state: null, missing: false },
+          fixtures.missingDevice(missing),
         ],
       },
-      "GET /api/health": { status: "pending", source_id: "home_assistant" },
+      "GET /api/health": { ...fixtures.health, source_id: "home_assistant" },
     });
 
     const stopButtons = await screen.findAllByRole("button", { name: /^Stop monitoring / });
@@ -177,30 +177,10 @@ describe("dashboard behavior", () => {
   it("monitors a lamp and stops monitoring it", async () => {
     startOn("setup");
     let selected: string[] = [];
-    const recoveryBaseline = {
-      kind: "recovery",
-      device_kind: "light",
-      id: "baseline-1",
-      entity_id: fixtures.desk.id,
-      source_entity_id: null,
-      source_id: "demo",
-      state: "off",
-      availability: "available",
-      collection_started_at: null,
-      coverage_gap_ids: [fixtures.openGap.id],
-      transition_time: "unknown",
-      received_at: "2026-10-12T10:00:06Z",
-      persisted_at: "2026-10-12T10:00:06+00:00",
-    } satisfies Schemas["LightBaseline"];
     const { api, user } = renderDashboard({
       "GET /api/selection": () => ({ ...fixtures.emptySelection, entity_ids: selected }),
       "GET /api/monitored": () => ({
-        entities: selected.map(() => ({
-          ...fixtures.desk,
-          baseline: recoveryBaseline,
-          freshness: "stale",
-          confirmed_at: "2026-10-12T10:00:06+00:00",
-        })),
+        entities: selected.map(() => fixtures.monitoredLight(fixtures.desk, "off")),
       }),
       "PUT /api/selection/{entity_id}": () => {
         selected = selected.length ? [] : [fixtures.desk.id];
@@ -222,14 +202,9 @@ describe("dashboard behavior", () => {
     openTab("Home");
     const monitored = within(byId("monitored"));
     expect(monitored.getByRole("heading", { name: "Desk lamp" })).toBeInTheDocument();
-    expect(monitored.getByText("stale")).toHaveClass("tag", "stale");
     expect(monitored.getByText("Off")).toBeInTheDocument();
-    expect(monitored.getByText("Recovery snapshot; transition time unknown")).toBeInTheDocument();
-    expect(
-      monitored.getByText(
-        `Related gap evidence: ${fixtures.openGap.id}. Changes during this gap have unknown timing.`,
-      ),
-    ).toBeInTheDocument();
+    // Home shows what Home Assistant reports now, not a recorded evidence trail.
+    expect(byId("monitored")).not.toHaveTextContent("Evidence ID");
 
     await user.click(monitored.getByRole("button", { name: "Stop monitoring Desk lamp" }));
 
@@ -247,67 +222,26 @@ describe("dashboard behavior", () => {
     expect(byId("selected-count")).toHaveTextContent("0");
   });
 
-  it("shows a pending discovery refresh until the catalog is refreshed", async () => {
-    startOn("setup");
-    const { api, user } = renderDashboard();
-    await waitFor(() => expect(byId("count")).toHaveTextContent("2"));
-
-    await user.click(screen.getByRole("button", { name: "Refresh discovery" }));
-
-    await waitFor(() => expect(byId("message")).toHaveTextContent(REFRESH_PENDING));
-    const [refresh] = api.callsTo("POST /api/discovery/refresh");
-    expect(refresh?.headers.get("X-Home-Keeper")).toBe("1");
-
-    await nextPoll();
-    expect(byId("message")).toHaveTextContent(REFRESH_PENDING);
-
-    api.reply("GET /api/catalog", {
-      ...fixtures.catalog,
-      refreshed_at: "2026-10-12T10:05:00+00:00",
-    });
-    await nextPoll();
-    await waitFor(() => expect(byId("message").textContent).toBe(""));
-  });
-
-  it("labels the synthetic demo source, collector heartbeat and catalog freshness", async () => {
+  it("labels the synthetic demo source and shows no Home Assistant warning while it answers", async () => {
     renderDashboard();
 
     await waitFor(() => expect(byId("source")).toHaveTextContent("SYNTHETIC DEMO"));
     expect(byId("source-notice")).toHaveTextContent(
-      "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only records.",
+      "Demo data only. No hardware or Home Assistant is connected.",
     );
-    expect(byId("health")).toHaveTextContent("healthy");
-    expect(byId("heartbeat")).toHaveTextContent(
-      `Last collection: ${localTime(fixtures.health.received_at)}`,
-    );
-    expect(byId("catalog-status")).toHaveTextContent(
-      `Discovery: fresh · Last refreshed: ${localTime(fixtures.catalog.refreshed_at)}`,
-    );
+    expect(screen.queryByText(CANT_REACH_HA)).toBeNull();
     expect(byId("message").textContent).toBe("");
   });
 
-  it("labels the Home Assistant source, a stale catalog and collector errors", async () => {
+  it("labels the Home Assistant source", async () => {
     renderDashboard({
-      "GET /api/catalog": { ...fixtures.catalog, source_id: "home_assistant", freshness: "stale" },
-      "GET /api/health": {
-        ...fixtures.health,
-        source_id: "home_assistant",
-        status: "failed",
-        error: "authentication",
-      },
+      "GET /api/catalog": { ...fixtures.catalog, source_id: "home_assistant" },
+      "GET /api/health": { ...fixtures.health, source_id: "home_assistant" },
     });
 
     await waitFor(() => expect(byId("source")).toHaveTextContent("HOME ASSISTANT"));
-    expect(byId("source-notice")).toHaveTextContent(
-      "Home Assistant discovery. Only selected lights, plugs and switches are recorded. Light control is off: Home Keeper only records.",
-    );
-    expect(byId("catalog-status")).toHaveTextContent(
-      `Discovery is stale. Showing the last validated catalog from ${localTime(fixtures.catalog.refreshed_at)}.`,
-    );
-    expect(byId("health")).toHaveTextContent("failed");
-    expect(byId("message")).toHaveTextContent(
-      "Home Assistant rejected authentication. Check the connector token and its user permissions.",
-    );
+    expect(byId("source-notice")).toHaveTextContent("Home Assistant discovery.");
+    expect(screen.queryByText(CANT_REACH_HA)).toBeNull();
   });
 
   it("points to Home Assistant when no supported device is connected yet", async () => {
@@ -325,7 +259,7 @@ describe("dashboard behavior", () => {
     expect(link).toHaveTextContent("Connect your devices in Home Assistant");
     expect(link).toHaveAttribute("href", "http://127.0.0.1:8123/config/integrations/dashboard");
     expect(byId("catalog")).toHaveTextContent(
-      "then refresh discovery. Home Keeper records single lights, plugs and switches, not groups or rooms.",
+      ". They appear here within seconds. Home Keeper monitors single lights, plugs and switches, not groups or rooms.",
     );
     expect(byId("count").parentElement).toHaveTextContent(
       "Single lights, plugs and switches, without groups or rooms",
@@ -461,11 +395,12 @@ describe("dashboard behavior", () => {
 
   it("says Home Keeper is unreachable when the main load fails, and recovers", async () => {
     const { api } = renderDashboard();
-    api.fail("GET /api/catalog", 503);
+    // A 503 from the catalog means Home Assistant is down; a dropped request means Home Keeper is.
+    api.fail("GET /api/monitored", "network");
 
     await waitFor(() => expect(byId("message")).toHaveTextContent(UNREACHABLE));
 
-    api.reply("GET /api/catalog", fixtures.catalog);
+    api.reply("GET /api/monitored", fixtures.emptyMonitored);
     await nextPoll();
     await waitFor(() => expect(byId("count")).toHaveTextContent("2"));
     expect(byId("message").textContent).toBe("");
@@ -664,18 +599,9 @@ describe("light control from the dashboard", () => {
     expect(toggles()).toEqual([]);
   });
 
-  it("shows no toggle for a light without a baseline yet", async () => {
+  it("shows no toggle for a light Home Assistant no longer has", async () => {
     renderControl();
-    api.reply("GET /api/monitored", {
-      entities: [
-        {
-          ...fixtures.desk,
-          baseline: null,
-          freshness: "pending",
-          confirmed_at: null,
-        },
-      ],
-    });
+    api.reply("GET /api/monitored", { entities: [fixtures.missingDevice(fixtures.desk)] });
     await loaded();
     await nextPoll();
 
@@ -1055,7 +981,7 @@ describe("command history in the timeline", () => {
 
   it("renders time, light name, action, sender and outcome for each sender and outcome", async () => {
     const rows = [
-      command("c1", { sender: { kind: "dashboard" }, outcome: "observed", event_id: "change-3" }),
+      command("c1", { sender: { kind: "dashboard" }, outcome: "observed" }),
       command("c2", { sender: { kind: "browser_chat" }, outcome: "not_observed" }),
       command("c3", {
         sender: { kind: "telegram", id: 4242, name: "Maria" },
@@ -1116,18 +1042,19 @@ describe("command history in the timeline", () => {
     expect(c2).toHaveTextContent("light.removed_lamp");
   });
 
-  it("shows the evidence ID only when the command matched an event", async () => {
+  it("shows no evidence ID for any command, observed or not", async () => {
     renderDashboard({
       [COMMANDS]: commandsPage([
-        command("c1", { outcome: "observed", event_id: "change-3" }),
-        command("c2", { outcome: "not_observed", event_id: null }),
+        command("c1", { outcome: "observed" }),
+        command("c2", { outcome: "not_observed" }),
       ]),
     });
 
     await waitFor(() => expect(articles()).toHaveLength(2));
-    const [observed, missing] = articles();
-    expect(observed).toHaveTextContent("Evidence ID: change-3");
-    expect(missing).not.toHaveTextContent("Evidence ID");
+    const [observed, notObserved] = articles();
+    expect(observed).toHaveTextContent("Observed");
+    expect(byId("commands")).not.toHaveTextContent("Evidence ID");
+    expect(notObserved).not.toHaveTextContent("Evidence ID");
   });
 
   it("renders a Telegram name with markup as literal text", async () => {
@@ -1281,7 +1208,7 @@ describe("command history in the timeline", () => {
       COMMANDS,
       commandsPage([
         command("c2", { sender: { kind: "browser_chat" } }),
-        command("c1", { outcome: "observed", event_id: "change-3" }),
+        command("c1", { outcome: "observed" }),
       ]),
     );
     await nextPoll();
@@ -1290,7 +1217,6 @@ describe("command history in the timeline", () => {
     expect(articles()[0]).toHaveTextContent("Browser chat");
     expect(articles()[1]).toHaveTextContent("Observed");
     expect(articles()[1]).not.toHaveTextContent("Pending");
-    expect(articles()[1]).toHaveTextContent("Evidence ID: change-3");
   });
 
   it("keeps the last command list when a later read fails", async () => {
@@ -1312,7 +1238,7 @@ describe("tabs, brightness and plain history", () => {
 
   /** The desk lamp, monitored and recorded `state`, with control on unless told otherwise. */
   function renderLamp(
-    state: Schemas["LightBaseline"]["state"] = "on",
+    state: Reading["state"] = "on",
     control: Schemas["ControlStatus"] = fixtures.controlOn,
   ) {
     return renderDashboard({
@@ -1331,13 +1257,13 @@ describe("tabs, brightness and plain history", () => {
     await within(byId("monitored")).findByRole("heading", { name: "Desk lamp" });
 
     expect(tab("Home")).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("button", { name: "Refresh discovery" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Choose lights to monitor" })).toBeNull();
 
     openTab("Setup");
 
     expect(tab("Setup")).toHaveAttribute("aria-selected", "true");
     expect(window.location.hash).toBe("#setup");
-    expect(screen.getByRole("button", { name: "Refresh discovery" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose lights to monitor" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Desk lamp" })).toBeNull();
   });
 
@@ -1411,15 +1337,10 @@ describe("tabs, brightness and plain history", () => {
     expect(screen.queryByRole("slider")).toBeNull();
   });
 
-  it("shows the recorded brightness as a percent", async () => {
+  it("shows the reported brightness as a percent", async () => {
     renderDashboard({
       "GET /api/monitored": {
-        entities: [
-          {
-            ...fixtures.monitoredLight(fixtures.desk, "on"),
-            baseline: { ...fixtures.monitoredLight(fixtures.desk, "on").baseline, brightness: 102 },
-          },
-        ],
+        entities: [fixtures.monitoredLight(fixtures.desk, "on", "available", 102)],
       },
     });
 
@@ -1432,20 +1353,6 @@ describe("tabs, brightness and plain history", () => {
     await user.click(await screen.findByRole("button", { name: "Choose lights" }));
 
     expect(tab("Setup")).toHaveAttribute("aria-selected", "true");
-  });
-
-  it("warns on every tab while recording is interrupted and links to History", async () => {
-    const { user } = renderDashboard({ "GET /api/coverage": fixtures.coverage });
-
-    await waitFor(() =>
-      expect(byId("interrupted")).toHaveTextContent("Recording is interrupted since"),
-    );
-    await user.click(screen.getByRole("button", { name: "See history" }));
-    expect(tab("History")).toHaveAttribute("aria-selected", "true");
-
-    api.reply("GET /api/coverage", fixtures.emptyCoverage);
-    await nextPoll();
-    await waitFor(() => expect(document.getElementById("interrupted")).toBeNull());
   });
 
   it("names each change by its light and says it in words", async () => {
@@ -1837,5 +1744,129 @@ describe("device history", () => {
     expect(
       await within(dialog).findByRole("img", { name: "Last 30 days: on 1h 0m, unknown 30m" }),
     ).toBeVisible();
+  });
+});
+
+describe("when Home Assistant cannot be reached", () => {
+  const COMMAND = "POST /api/devices/{entity_id}/command";
+  const switchButtons = () => screen.queryAllByRole("button", { name: /^Turn (on|off) / });
+  const banner = () => screen.queryByText(CANT_REACH_HA);
+
+  /** The desk lamp on and the smart plug off, monitored, with control on. */
+  function renderReachable() {
+    return renderDashboard({
+      "GET /api/control": fixtures.controlOn,
+      "GET /api/catalog": { ...fixtures.catalog, entities: [fixtures.desk, fixtures.smartPlug] },
+      "GET /api/selection": { entity_ids: [fixtures.desk.id, fixtures.smartPlug.id] },
+      "GET /api/monitored": {
+        entities: [
+          fixtures.monitoredLight(fixtures.desk, "on", "available", 255),
+          fixtures.monitoredSwitch(fixtures.smartPlug, "off"),
+        ],
+      },
+      [COMMAND]: fixtures.commandRecord("observed"),
+    });
+  }
+
+  /** What the API answers while the reader or Home Assistant is down. */
+  function loseHomeAssistant(api: FakeApi) {
+    api.fail("GET /api/catalog", { status: 503, body: fixtures.unreachableBody });
+    api.fail("PUT /api/selection/{entity_id}", { status: 503, body: fixtures.unreachableBody });
+    api.reply("GET /api/health", fixtures.unreachableHealth);
+    api.reply("GET /api/monitored", {
+      entities: [fixtures.unknownDevice(fixtures.desk), fixtures.unknownDevice(fixtures.smartPlug)],
+    });
+  }
+
+  function recover(api: FakeApi) {
+    api.reply("GET /api/catalog", {
+      ...fixtures.catalog,
+      entities: [fixtures.desk, fixtures.smartPlug],
+    });
+    api.reply("PUT /api/selection/{entity_id}", { entity_ids: [fixtures.desk.id] });
+    api.reply("GET /api/health", fixtures.health);
+    api.reply("GET /api/monitored", {
+      entities: [
+        fixtures.monitoredLight(fixtures.desk, "on", "available", 255),
+        fixtures.monitoredSwitch(fixtures.smartPlug, "off"),
+      ],
+    });
+  }
+
+  it("drops the old states, stops switching and warns on every tab, then recovers", async () => {
+    const { api } = renderReachable();
+    const monitored = within(byId("monitored"));
+    expect(await monitored.findByText("On · 100%")).toBeInTheDocument();
+    await waitFor(() => expect(switchButtons().length).toBeGreaterThan(0));
+    expect(switchButtons().every((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
+    expect(banner()).toBeNull();
+
+    loseHomeAssistant(api);
+    await nextPoll();
+
+    // The catalog's 503 must not keep the last snapshot on screen.
+    await waitFor(() => expect(banner()).toBeVisible());
+    expect(monitored.queryByText("On · 100%")).toBeNull();
+    expect(screen.queryByText("Off")).toBeNull();
+    expect(monitored.getAllByText("State unknown").length).toBeGreaterThan(0);
+    expect(switchButtons().every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.queryByRole("slider", { name: /^Brightness of / })).toBeNull();
+
+    for (const name of ["History", "Setup", "Home"] as const) {
+      openTab(name);
+      expect(banner()).toBeVisible();
+    }
+
+    recover(api);
+    await nextPoll();
+
+    await waitFor(() => expect(banner()).toBeNull());
+    expect(await monitored.findByText("On · 100%")).toBeInTheDocument();
+    await waitFor(() => expect(switchButtons().length).toBeGreaterThan(0));
+    expect(switchButtons().every((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it("sends no command while Home Assistant cannot be reached", async () => {
+    const { api } = renderReachable();
+    await within(byId("monitored")).findByText("On · 100%");
+
+    loseHomeAssistant(api);
+    await nextPoll();
+    await waitFor(() => expect(banner()).toBeVisible());
+    for (const button of switchButtons()) fireEvent.click(button);
+    await act(() => vi.advanceTimersByTimeAsync(500));
+
+    expect(api.callsTo(COMMAND)).toEqual([]);
+  });
+
+  it("still lists the monitored devices and lets you stop monitoring one", async () => {
+    const { api, user } = renderReachable();
+    await within(byId("monitored")).findByText("On · 100%");
+
+    loseHomeAssistant(api);
+    api.reply("PUT /api/selection/{entity_id}", { entity_ids: [fixtures.smartPlug.id] });
+    await nextPoll();
+    await waitFor(() => expect(banner()).toBeVisible());
+
+    await user.click(screen.getByRole("button", { name: `Stop monitoring ${fixtures.desk.id}` }));
+    const [stop] = api.callsTo("PUT /api/selection/{entity_id}");
+    expect(stop?.body).toEqual({ selected: false });
+    expect(stop?.url.pathname).toBe(`/api/selection/${fixtures.desk.id}`);
+  });
+
+  it("shows no state and no switch for a device Home Assistant no longer has", async () => {
+    renderDashboard({
+      "GET /api/control": fixtures.controlOn,
+      "GET /api/selection": { entity_ids: [fixtures.desk.id] },
+      "GET /api/monitored": { entities: [fixtures.missingDevice(fixtures.desk)] },
+    });
+
+    const monitored = within(byId("monitored"));
+    expect(await monitored.findByRole("heading", { name: "Desk lamp" })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(monitored.queryByText(/^(On|Off)/)).toBeNull();
+    expect(switchButtons()).toEqual([]);
+    // Home Assistant answers, so this is no outage.
+    expect(banner()).toBeNull();
   });
 });

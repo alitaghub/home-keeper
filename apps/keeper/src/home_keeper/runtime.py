@@ -7,6 +7,7 @@ import uvicorn
 
 from home_keeper.api import create_app
 from home_keeper.control import HttpController
+from home_keeper.reader import HttpReader
 from home_keeper.settings import ApiSettings
 from home_keeper.tokens import load_token
 from home_keeper_settings import SettingsError, load
@@ -44,6 +45,7 @@ def main() -> None:
     app = create_app(
         db_path=settings.db,
         service_token=token,
+        reader=HttpReader(settings.reader_url, token),
         source_id=settings.source_id,
         home_assistant_url=settings.ha_public_url,
         retention_days=settings.retention_days,

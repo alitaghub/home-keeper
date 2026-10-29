@@ -1,12 +1,12 @@
 """The device command routes: control heartbeat, how a refusal maps to HTTP, request
-validation, the history scope, and collector ingestion while commands wait.
+validation, the history scope, and dashboard reads while commands wait.
 
 The command rules themselves are proved through `Commands` in test_commands.py.
 """
 
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -17,13 +17,12 @@ import anyio
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from support.api import AUTH, CATALOG, NOW, TOKEN, Payload, event, observation, select
+from support.api import AUTH, BROWSER, NOW, TOKEN, Payload, catalog_reader
 from support.control import DASHBOARD, DESK, ON, FakeController, beat, command
+from support.reader import FakeReader
 
 from home_keeper.api import create_app
 from home_keeper.models import CommandRefused
-
-LIGHT_OFF: Payload = {"state": "off"}
 
 
 @dataclass
@@ -31,7 +30,7 @@ class House:
     client: TestClient
     clock: list[datetime]
     controller: FakeController
-    revision: int
+    reader: FakeReader
 
     def commands(self) -> list[dict[str, Any]]:
         response = self.client.get("/api/commands")
@@ -42,22 +41,30 @@ class House:
 
 @contextmanager
 def home(tmp_path: Path, *, heartbeat: bool = True, wait: float = 0.3) -> Generator[House]:
-    """bulb-a monitored and off; bulb-b discovered but not monitored."""
+    """bulb-a monitored and off in Home Assistant; bulb-b in the catalog but not monitored.
+
+    The API's clock runs with real time from NOW, so a command's wait for the device's new
+    state ends; sends move `clock` on, as the controller's own clock.
+    """
     clock = [NOW]
+    started = time.monotonic()
     controller = FakeController(clock)
+    reader = catalog_reader()
+    reader.set("bulb-a", DESK, {"state": "off"})
     app = create_app(
         tmp_path / "commands.sqlite",
         TOKEN,
-        now=lambda: clock[0],
+        now=lambda: clock[0] + timedelta(seconds=time.monotonic() - started),
+        reader=reader,
         controller=controller,
         command_wait_seconds=wait,
         control_stale_seconds=15,
     )
     with TestClient(app) as client:
-        client.post("/internal/catalog", json=CATALOG, headers=AUTH).raise_for_status()
-        house = House(client, clock, controller, select(client))
-        payload = observation(house.revision, source_entity_id=DESK, state="off")
-        client.post("/internal/baselines", json=payload, headers=AUTH).raise_for_status()
+        client.put(
+            "/api/selection/bulb-a", json={"selected": True}, headers=BROWSER
+        ).raise_for_status()
+        house = House(client, clock, controller, reader)
         if heartbeat:
             beat(client, NOW)
         yield house
@@ -177,106 +184,78 @@ def test_malformed_command_is_an_invalid_request_and_reaches_nothing(
         assert house.commands() == []
 
 
-def test_collector_ingestion_is_not_held_up_by_a_burst_of_command_waits(tmp_path: Path) -> None:
+def dashboard_read_latency(
+    house: House,
+    burst: int,
+    *,
+    until_sent: bool,
+    after_read: Callable[[], object] = lambda: None,
+) -> list[int]:
+    """Send `burst` commands at once, then time one /api/monitored read among them.
+
+    `after_read` runs once the read is answered. Returns the command statuses; fails when
+    the read waited behind the commands.
+    """
+    statuses: list[int] = []
+    latency: list[float] = []
+
+    async def main() -> None:
+        transport = httpx.ASGITransport(app=house.client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as api:
+
+            async def send_command() -> None:
+                response = await api.post(
+                    "/api/devices/bulb-a/command",
+                    json={"command": ON, "sender": DASHBOARD},
+                    headers={"X-Home-Keeper": "1"},
+                    timeout=30,
+                )
+                statuses.append(response.status_code)
+
+            async with anyio.create_task_group() as group:
+                for _ in range(burst):
+                    group.start_soon(send_command)
+                if until_sent:
+                    # Let every send start that the API admits; without a limit, all of them do.
+                    deadline = time.monotonic() + 5
+                    while len(house.controller.sent) < burst and time.monotonic() < deadline:  # noqa: ASYNC110 -- worker threads fill `sent`, so no event fires
+                        await anyio.sleep(0.05)
+                else:
+                    await anyio.sleep(0.5)
+                started = time.monotonic()
+                try:
+                    response = await api.get("/api/monitored", timeout=30)
+                finally:
+                    latency.append(time.monotonic() - started)
+                    after_read()
+                assert response.status_code == 200, response.text
+
+    anyio.run(main)
+    assert latency[0] < 1.0, f"the dashboard read waited {latency[0]:.2f}s behind commands"
+    return statuses
+
+
+def test_dashboard_reads_are_not_held_up_by_a_burst_of_command_waits(tmp_path: Path) -> None:
     burst = 40  # AnyIO's default worker-thread limit.
     with home(tmp_path, wait=3) as house:
         # Sends advance a private clock, so the heartbeat stays fresh for every command.
         house.controller.clock = [house.clock[0]]
-        payload = event(
-            house.revision,
-            "during-burst",
-            entity_id="bulb-a",
-            source_entity_id=DESK,
-            event_time=NOW.isoformat(),
-            received_at=NOW.isoformat(),
-            old=LIGHT_OFF,
-            new={"state": "on", "brightness": 100},
-        )
-        statuses: list[int] = []
-        latency: list[float] = []
-
-        async def main() -> None:
-            transport = httpx.ASGITransport(app=house.client.app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as api:
-
-                async def send_command() -> None:
-                    response = await api.post(
-                        "/api/devices/bulb-a/command",
-                        json={"command": ON, "sender": DASHBOARD},
-                        headers={"X-Home-Keeper": "1"},
-                        timeout=30,
-                    )
-                    statuses.append(response.status_code)
-
-                async with anyio.create_task_group() as group:
-                    for _ in range(burst):
-                        group.start_soon(send_command)
-                    await anyio.sleep(0.5)
-                    started = time.monotonic()
-                    response = await api.post(
-                        "/internal/events", json=payload, headers=AUTH, timeout=30
-                    )
-                    latency.append(time.monotonic() - started)
-                    assert response.json()["recorded"], response.text
-
-        anyio.run(main)
-    assert latency[0] < 1.0, f"event ingestion waited {latency[0]:.2f}s behind command waits"
+        statuses = dashboard_read_latency(house, burst, until_sent=False)
     assert len(statuses) == burst
     assert all(status < 500 for status in statuses), statuses
 
 
-def test_collector_ingestion_is_not_held_up_by_stalled_controller_sends(tmp_path: Path) -> None:
+def test_dashboard_reads_are_not_held_up_by_stalled_controller_sends(tmp_path: Path) -> None:
     burst = 40  # AnyIO's default worker-thread limit.
     with home(tmp_path, wait=0.1) as house:
         house.controller.clock = [house.clock[0]]
-        # A stalled controller: every send blocks until the collector's event is recorded.
+        # A stalled controller: every send blocks until the dashboard read is answered.
         release = threading.Event()
         house.controller.on_send = lambda: release.wait(10)
-        payload = event(
-            house.revision,
-            "during-stall",
-            entity_id="bulb-a",
-            source_entity_id=DESK,
-            event_time=NOW.isoformat(),
-            received_at=NOW.isoformat(),
-            old=LIGHT_OFF,
-            new={"state": "on", "brightness": 100},
-        )
-        statuses: list[int] = []
-        latency: list[float] = []
-
-        async def main() -> None:
-            transport = httpx.ASGITransport(app=house.client.app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as api:
-
-                async def send_command() -> None:
-                    response = await api.post(
-                        "/api/devices/bulb-a/command",
-                        json={"command": ON, "sender": DASHBOARD},
-                        headers={"X-Home-Keeper": "1"},
-                        timeout=30,
-                    )
-                    statuses.append(response.status_code)
-
-                async with anyio.create_task_group() as group:
-                    for _ in range(burst):
-                        group.start_soon(send_command)
-                    # Let every send start that the API admits; without a limit, all 40 do.
-                    deadline = time.monotonic() + 5
-                    while len(house.controller.sent) < burst and time.monotonic() < deadline:  # noqa: ASYNC110 -- worker threads fill `sent`, so no event fires
-                        await anyio.sleep(0.05)
-                    started = time.monotonic()
-                    try:
-                        response = await api.post(
-                            "/internal/events", json=payload, headers=AUTH, timeout=30
-                        )
-                    finally:
-                        latency.append(time.monotonic() - started)
-                        release.set()
-                    assert response.json()["recorded"], response.text
-
-        anyio.run(main)
-    assert latency[0] < 1.0, f"event ingestion waited {latency[0]:.2f}s behind controller sends"
+        try:
+            statuses = dashboard_read_latency(house, burst, until_sent=True, after_read=release.set)
+        finally:
+            release.set()
     assert len(statuses) == burst
     assert all(status < 500 for status in statuses), statuses
 

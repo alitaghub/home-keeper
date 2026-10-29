@@ -1,8 +1,6 @@
 {
   "status": 200,
   "body": {
-    "entity_ids": [],
-    "refresh_revision": 0,
-    "revision": 0
+    "entity_ids": []
   }
 }

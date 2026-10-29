@@ -248,15 +248,8 @@ export interface components {
         CatalogResponse: {
             /** Entities */
             entities: components["schemas"]["Entity"][];
-            /**
-             * Freshness
-             * @enum {string}
-             */
-            freshness: "pending" | "fresh" | "stale";
             /** Home Assistant Url */
             home_assistant_url: string | null;
-            /** Refreshed At */
-            refreshed_at: string | null;
             /**
              * Source Id
              * @enum {string}
@@ -465,43 +458,28 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** HealthPending */
-        HealthPending: {
+        /**
+         * HealthStatus
+         * @description Whether Home Assistant answers through the reader, checked at request time.
+         */
+        HealthStatus: {
             /**
-             * Source Id
-             * @enum {string}
+             * Checked At
+             * Format: date-time
              */
-            source_id: "demo" | "home_assistant";
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            status: "pending";
-        };
-        /** HealthReport */
-        HealthReport: {
+            checked_at: string;
             /** Error */
-            error: ("authentication" | "connection" | "tls" | "timeout" | "invalid_data" | "missing" | "discovery" | "configuration") | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
+            error: ("authentication" | "connection" | "tls" | "timeout" | "invalid_data" | "missing" | "discovery" | "configuration") | "reader_unreachable" | null;
             /**
              * Source Id
              * @enum {string}
              */
             source_id: "demo" | "home_assistant";
             /**
-             * @description discriminator enum property added by openapi-typescript
+             * Status
              * @enum {string}
              */
-            status: "failed" | "healthy" | "stale";
+            status: "healthy" | "unreachable";
         };
         /** LightBaseline */
         LightBaseline: {
@@ -607,8 +585,6 @@ export interface components {
             device_kind: "light";
             /** Entity Id */
             entity_id: string;
-            /** Event Id */
-            event_id: string | null;
             /** Id */
             id: string;
             /**
@@ -623,98 +599,6 @@ export interface components {
              * Format: date-time
              */
             sent_at: string;
-        };
-        /** LightEventReading */
-        LightEventReading: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Brightness */
-            brightness?: number | null;
-            /** Color Mode */
-            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
-            /** Color Temp Kelvin */
-            color_temp_kelvin?: number | null;
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "light";
-            /** Entity Id */
-            entity_id: string;
-            /**
-             * Event Time
-             * Format: date-time
-             */
-            event_time: string;
-            /** Hs Color */
-            hs_color?: [
-                number,
-                number
-            ] | null;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "event";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Rgb Color */
-            rgb_color?: [
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbw Color */
-            rgbw_color?: [
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbww Color */
-            rgbww_color?: [
-                number,
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Xy Color */
-            xy_color?: [
-                number,
-                number
-            ] | null;
         };
         /** LightOff */
         LightOff: {
@@ -852,46 +736,39 @@ export interface components {
         };
         /** MonitoredEntity */
         MonitoredEntity: {
-            /** Baseline */
-            baseline: ((components["schemas"]["LightBaseline"] | components["schemas"]["SwitchBaseline"]) | (components["schemas"]["LightEventReading"] | components["schemas"]["SwitchEventReading"])) | null;
-            /** Confirmed At */
-            confirmed_at: string | null;
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
             device_kind?: ("light" | "switch") | null;
             /** Device Name */
             device_name?: string | null;
-            /**
-             * Freshness
-             * @enum {string}
-             */
-            freshness: "pending" | "fresh" | "stale";
             /** Id */
             id: string;
+            /** Missing */
+            missing: boolean;
             /** Name */
             name: string;
             /** Reason */
             reason?: string | null;
+            /** Source Entity Id */
+            source_entity_id: string | null;
+            /** State */
+            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
             /** Supported */
             supported: boolean;
+        };
+        /**
+         * Selection
+         * @description The devices the user monitors.
+         */
+        Selection: {
+            /** Entity Ids */
+            entity_ids: string[];
         };
         /** SelectionChange */
         SelectionChange: {
             /** Selected */
             selected: boolean;
-        };
-        /** SelectionSnapshot */
-        SelectionSnapshot: {
-            /** Entity Ids */
-            entity_ids: string[];
-            /**
-             * Refresh Revision
-             * @default 0
-             */
-            refresh_revision: number;
-            /** Revision */
-            revision: number;
         };
         /** SwitchBaseline */
         SwitchBaseline: {
@@ -960,8 +837,6 @@ export interface components {
             device_kind: "switch";
             /** Entity Id */
             entity_id: string;
-            /** Event Id */
-            event_id: string | null;
             /** Id */
             id: string;
             /**
@@ -976,61 +851,6 @@ export interface components {
              * Format: date-time
              */
             sent_at: string;
-        };
-        /** SwitchEventReading */
-        SwitchEventReading: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "switch";
-            /** Entity Id */
-            entity_id: string;
-            /**
-             * Event Time
-             * Format: date-time
-             */
-            event_time: string;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "event";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
         };
         /** SwitchOff */
         SwitchOff: {
@@ -1156,6 +976,16 @@ export interface components {
              */
             start: string;
         };
+        /**
+         * Unreachable
+         * @description The 503 body of a route that needs Home Assistant while it cannot be read.
+         */
+        Unreachable: {
+            /** Error */
+            error: ("authentication" | "connection" | "tls" | "timeout" | "invalid_data" | "missing" | "discovery" | "configuration") | "reader_unreachable";
+            /** Message */
+            message: string;
+        };
         /** UsageReport */
         UsageReport: {
             /** Devices */
@@ -1249,6 +1079,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CatalogResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };
@@ -1453,7 +1292,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HealthPending"] | components["schemas"]["HealthReport"];
+                    "application/json": components["schemas"]["HealthStatus"];
                 };
             };
         };
@@ -1493,7 +1332,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SelectionSnapshot"];
+                    "application/json": components["schemas"]["Selection"];
                 };
             };
         };
@@ -1519,7 +1358,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SelectionSnapshot"];
+                    "application/json": components["schemas"]["Selection"];
                 };
             };
             /** @description Validation Error */
@@ -1529,6 +1368,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };

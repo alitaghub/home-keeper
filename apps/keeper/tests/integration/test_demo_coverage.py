@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from support.recorded_reader import RecordedReader
 
 from home_keeper.api import create_app
 from home_keeper.demo import CATALOG, DemoReplay, coverage, reconcile
@@ -14,13 +15,15 @@ def test_demo_gap_resumes_with_snapshot_without_inventing_missing_transition(
     replay = DemoReplay()
     entity = "light.hue_desk"
     headers = {"Authorization": "Bearer demo-proof-token"}
-    with TestClient(create_app(path, "demo-proof-token"), headers=headers) as client:
+    with TestClient(
+        create_app(path, "demo-proof-token", reader=RecordedReader(path)), headers=headers
+    ) as client:
         client.post("/internal/catalog", json=CATALOG).raise_for_status()
         client.put(
             f"/api/selection/{entity}", json={"selected": True}, headers={"X-Home-Keeper": "1"}
         ).raise_for_status()
         reconcile(client, replay)
-        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+        assert client.get("/api/monitored").json()["entities"][0]["state"]["state"] == "off"
         coverage(client, "interrupted")
         gap = client.get("/api/coverage").json()["gaps"][0]
         # The synthetic home changes while collection is paused; no event is forwarded.
@@ -37,7 +40,9 @@ def test_demo_gap_resumes_with_snapshot_without_inventing_missing_transition(
         result = client.get("/api/coverage").json()
         assert result["gaps"][0]["recovered_at"] is not None
         assert result["state"] == "collecting"
-    with TestClient(create_app(path, "demo-proof-token"), headers=headers) as client:
+    with TestClient(
+        create_app(path, "demo-proof-token", reader=RecordedReader(path)), headers=headers
+    ) as client:
         result = client.get("/api/coverage").json()
         assert result["state"] == "interrupted"
         assert result["gaps"][0]["reason"] == "restart"

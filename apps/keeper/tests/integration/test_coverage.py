@@ -6,7 +6,18 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from support.api import AUTH, CATALOG, NOW, TOKEN, Payload, event, observation, select
+from support.api import (
+    AUTH,
+    CATALOG,
+    NOW,
+    TOKEN,
+    Payload,
+    catalog_reader,
+    event,
+    observation,
+    recorded_current,
+    select,
+)
 
 from home_keeper.api import create_app
 
@@ -40,7 +51,9 @@ def post(client: TestClient, path: str, value: Payload) -> Any:
 
 def test_failure_recovery_is_explicit_and_never_invents_bulb_events(tmp_path: Path) -> None:
     clock = [NOW]
-    with TestClient(create_app(tmp_path / "db", TOKEN, now=lambda: clock[0])) as client:
+    with TestClient(
+        create_app(tmp_path / "db", TOKEN, now=lambda: clock[0], reader=catalog_reader())
+    ) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         revision = select(client)
         client.post("/internal/baselines", json=observation(revision), headers=AUTH)
@@ -53,7 +66,6 @@ def test_failure_recovery_is_explicit_and_never_invents_bulb_events(tmp_path: Pa
         assert len(result["gaps"]) == 1
         assert result["gaps"][0]["last_confirmed_at"] == NOW.isoformat()
         assert result["gaps"][0]["uncertain_start"] is True
-        assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "stale"
         client.post(
             "/internal/health",
             json={"source_id": "demo", "status": "healthy", "received_at": clock[0].isoformat()},
@@ -81,7 +93,12 @@ def test_restart_heartbeat_retention_and_scoped_access(tmp_path: Path) -> None:
 
     def app() -> FastAPI:
         return create_app(
-            path, TOKEN, now=lambda: clock[0], reconciliation_seconds=10, retention_days=1
+            path,
+            TOKEN,
+            now=lambda: clock[0],
+            reconciliation_seconds=10,
+            retention_days=1,
+            reader=catalog_reader(),
         )
 
     with TestClient(app()) as client:
@@ -94,7 +111,6 @@ def test_restart_heartbeat_retention_and_scoped_access(tmp_path: Path) -> None:
             headers=AUTH,
         )
         clock[0] += timedelta(seconds=21)
-        assert client.get("/api/health").json()["status"] == "stale"
         assert client.get("/api/coverage").json()["gaps"][0]["reason"] == "heartbeat"
         assert (
             client.post(
@@ -130,7 +146,9 @@ def test_restart_heartbeat_retention_and_scoped_access(tmp_path: Path) -> None:
 
 def test_reconciliation_mismatch_is_a_gap_and_snapshot_not_fabricated_event(tmp_path: Path) -> None:
     clock = [NOW]
-    with TestClient(create_app(tmp_path / "db", TOKEN, now=lambda: clock[0])) as client:
+    with TestClient(
+        create_app(tmp_path / "db", TOKEN, now=lambda: clock[0], reader=catalog_reader())
+    ) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         revision = select(client)
         client.post("/internal/baselines", json=observation(revision), headers=AUTH)
@@ -148,14 +166,16 @@ def test_reconciliation_mismatch_is_a_gap_and_snapshot_not_fabricated_event(tmp_
         assert gap["entity_ids"] == ["bulb-a"]
         assert response.json()["baseline"]["kind"] == "recovery"
         assert client.get("/api/events").json()["events"] == []
-        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+        assert recorded_current(tmp_path / "db")["state"] == "off"
 
 
 def test_failure_keeps_last_healthy_point_and_delayed_recovery_cannot_erase_new_gap(
     tmp_path: Path,
 ) -> None:
     clock = [NOW]
-    with TestClient(create_app(tmp_path / "db", TOKEN, now=lambda: clock[0])) as client:
+    with TestClient(
+        create_app(tmp_path / "db", TOKEN, now=lambda: clock[0], reader=catalog_reader())
+    ) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         select(client)
         client.post(
@@ -200,7 +220,9 @@ def test_failure_keeps_last_healthy_point_and_delayed_recovery_cannot_erase_new_
 
 def test_recovery_revision_guard_and_snapshot_event_race(tmp_path: Path) -> None:
     clock = [NOW]
-    with TestClient(create_app(tmp_path / "db", TOKEN, now=lambda: clock[0])) as client:
+    with TestClient(
+        create_app(tmp_path / "db", TOKEN, now=lambda: clock[0], reader=catalog_reader())
+    ) as client:
         client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         revision = select(client)
         client.post("/internal/baselines", json=observation(revision), headers=AUTH)
@@ -211,7 +233,7 @@ def test_recovery_revision_guard_and_snapshot_event_race(tmp_path: Path) -> None
         # Source time moved backwards, but the recovered snapshot supersedes pre-gap cache.
         snapshot = observation(revision, received_at=clock[0].isoformat(), state="off")
         assert client.post("/internal/baselines", json=snapshot, headers=AUTH).is_success
-        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+        assert recorded_current(tmp_path / "db")["state"] == "off"
         # An event arriving during reconciliation cannot be rolled backwards by a snapshot.
         payload = event(
             revision,
@@ -221,7 +243,7 @@ def test_recovery_revision_guard_and_snapshot_event_race(tmp_path: Path) -> None
         )
         client.post("/internal/events", json=payload, headers=AUTH)
         assert client.post("/internal/baselines", json=snapshot, headers=AUTH).is_success
-        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "on"
+        assert recorded_current(tmp_path / "db")["state"] == "on"
         new_revision = select(client, "bulb-b")
         assert (
             client.post(
@@ -248,7 +270,9 @@ def test_recovery_revision_guard_and_snapshot_event_race(tmp_path: Path) -> None
 
 def test_scoped_gap_does_not_borrow_another_lights_confirmation(tmp_path: Path) -> None:
     clock = [NOW]
-    with TestClient(create_app(tmp_path / "scope.sqlite", TOKEN, now=lambda: clock[0])) as client:
+    with TestClient(
+        create_app(tmp_path / "scope.sqlite", TOKEN, now=lambda: clock[0], reader=catalog_reader())
+    ) as client:
         post(client, "/internal/catalog", CATALOG)
         select(client)
         revision = select(client, "bulb-b")
@@ -271,7 +295,9 @@ def test_restart_gap_survives_retention_and_recovery_cannot_invent_outage(tmp_pa
     path = tmp_path / "restart.sqlite"
 
     def app() -> FastAPI:
-        return create_app(path, TOKEN, now=lambda: clock[0], retention_days=1)
+        return create_app(
+            path, TOKEN, now=lambda: clock[0], retention_days=1, reader=catalog_reader()
+        )
 
     with TestClient(app()) as client:
         post(client, "/internal/catalog", CATALOG)
@@ -284,7 +310,7 @@ def test_restart_gap_survives_retention_and_recovery_cannot_invent_outage(tmp_pa
         assert evidence["reason"] == "restart"
         assert evidence["uncertain_start"]
         assert client.get("/api/baselines?entity_id=bulb-a").json()["baselines"] == []
-        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "on"
+        assert recorded_current(tmp_path / "restart.sqlite")["state"] == "on"
         recovered = post(
             client,
             "/internal/baselines",
@@ -295,12 +321,14 @@ def test_restart_gap_survives_retention_and_recovery_cannot_invent_outage(tmp_pa
         assert recovered["transition_time"] == "unknown"
         post(client, "/internal/coverage", gap(clock[0], revision, status="recovered"))
         assert client.get("/api/events").json()["events"] == []
-        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+        assert recorded_current(tmp_path / "restart.sqlite")["state"] == "off"
 
 
 def test_delayed_pre_gap_event_does_not_overwrite_recovery_snapshot(tmp_path: Path) -> None:
     clock = [NOW]
-    with TestClient(create_app(tmp_path / "order.sqlite", TOKEN, now=lambda: clock[0])) as client:
+    with TestClient(
+        create_app(tmp_path / "order.sqlite", TOKEN, now=lambda: clock[0], reader=catalog_reader())
+    ) as client:
         post(client, "/internal/catalog", CATALOG)
         revision = select(client)
         post(client, "/internal/baselines", observation(revision, last_updated=NOW.isoformat()))
@@ -319,6 +347,6 @@ def test_delayed_pre_gap_event_does_not_overwrite_recovery_snapshot(tmp_path: Pa
             "/internal/events",
             event(revision, "delayed", received_at=clock[0].isoformat()),
         )
-        assert client.get("/api/monitored").json()["entities"][0]["baseline"]["state"] == "off"
+        assert recorded_current(tmp_path / "order.sqlite")["state"] == "off"
         assert client.get("/api/events").json()["events"][0]["id"] == "delayed"
         assert client.get("/api/coverage").json()["state"] == "interrupted"

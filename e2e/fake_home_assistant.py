@@ -14,6 +14,12 @@ light = {"brightness": 120}
 
 
 def http_response(_connection: ServerConnection, request: Request) -> Response | None:
+    if request.path == "/api/":
+        # Home Assistant's reachability check, which the reader's health route uses.
+        if request.headers.get("Authorization") != f"Bearer {TOKEN}":
+            return Response(401, "Unauthorized", Headers(), b"")
+        body = json.dumps({"message": "API running."}).encode()
+        return Response(200, "OK", Headers({"Content-Type": "application/json"}), body)
     if request.path.startswith("/api/states/"):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return Response(401, "Unauthorized", Headers(), b"")

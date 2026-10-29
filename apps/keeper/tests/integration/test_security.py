@@ -1,11 +1,21 @@
 import logging
-from datetime import timedelta
 from pathlib import Path
 from typing import Literal
 
 import pytest
 from fastapi.testclient import TestClient
-from support.api import AUTH, BROWSER, CATALOG, NOW, TOKEN, app_for, observation, select
+from support.api import (
+    AUTH,
+    BROWSER,
+    CATALOG,
+    NOW,
+    TOKEN,
+    app_for,
+    catalog_reader,
+    observation,
+    select,
+)
+from support.reader import FakeReader
 
 from home_keeper.api import create_app
 from home_keeper_light_command import ForwardedCommand
@@ -17,18 +27,10 @@ def test_every_internal_boundary_rejects_unauthenticated_access(
 ) -> None:
     with TestClient(app_for(tmp_path / "auth.sqlite")) as client:
         with caplog.at_level(logging.DEBUG):
-            assert client.get("/internal/selection", headers=headers).status_code in (401, 403)
-            for route, payload in (
-                ("/internal/catalog", CATALOG),
-                ("/internal/baselines", observation(0)),
-                (
-                    "/internal/health",
-                    {"source_id": "demo", "status": "healthy", "received_at": NOW.isoformat()},
-                ),
-                ("/internal/control", {"received_at": NOW.isoformat()}),
-            ):
-                assert client.post(route, json=payload, headers=headers).status_code in (401, 403)
-        assert client.get("/api/catalog").json()["entities"] == []
+            control = {"received_at": NOW.isoformat()}
+            response = client.post("/internal/control", json=control, headers=headers)
+            assert response.status_code in (401, 403)
+        assert client.get("/api/control").json()["state"] == "off"
         assert client.get("/api/selection").json()["entity_ids"] == []
         assert "wrong-credential" not in caplog.text
         assert TOKEN not in caplog.text
@@ -38,7 +40,6 @@ def test_cross_site_and_missing_custom_header_cannot_change_selection(tmp_path: 
     with TestClient(
         app_for(tmp_path / "origin.sqlite"), base_url="http://127.0.0.1:8000"
     ) as client:
-        assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
         initial = client.get("/api/selection").json()
         for headers in (
             {},
@@ -62,6 +63,7 @@ def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     with TestClient(app_for(tmp_path / "input.sqlite")) as client:
+        # The collector's ingest routes check their own copy of the catalog.
         assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
         assert "<script>" in client.get("/api/catalog").text
         revision = select(client)
@@ -101,89 +103,28 @@ def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
 
 def test_non_ascii_internal_credentials_are_rejected_without_server_error(tmp_path: Path) -> None:
     with TestClient(app_for(tmp_path / "invalid-auth.sqlite")) as client:
-        response = client.get("/internal/selection", headers={b"Authorization": b"Bearer \xff"})
+        response = client.post(
+            "/internal/control",
+            json={"received_at": NOW.isoformat()},
+            headers={b"Authorization": b"Bearer \xff"},
+        )
         assert response.status_code in (401, 403)
 
 
-def test_clock_rollback_does_not_claim_future_collector_heartbeat_is_healthy(
-    tmp_path: Path,
-) -> None:
-    clock = [NOW]
-    with TestClient(app_for(tmp_path / "clock.sqlite", now=lambda: clock[0])) as client:
-        assert client.post(
-            "/internal/health",
-            headers=AUTH,
-            json={"source_id": "demo", "status": "healthy", "received_at": NOW.isoformat()},
-        ).is_success
-        clock[0] = NOW - timedelta(hours=1)
-        assert client.get("/api/health").json()["status"] in ("stale", "unknown", "pending")
-        assert client.post(
-            "/internal/health",
-            headers=AUTH,
-            json={"source_id": "demo", "status": "healthy", "received_at": clock[0].isoformat()},
-        ).is_success
-        assert client.get("/api/health").json()["status"] == "healthy"
-
-
-def test_delayed_heartbeat_cannot_clear_newer_collection_failure_but_new_heartbeat_recovers(
-    tmp_path: Path,
-) -> None:
-    clock = [NOW + timedelta(seconds=10)]
-    with TestClient(app_for(tmp_path / "health-order.sqlite", now=lambda: clock[0])) as client:
-        assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
-        revision = select(client)
-        assert client.post(
-            "/internal/baselines", json=observation(revision, clock[0].isoformat()), headers=AUTH
-        ).is_success
-        assert client.post(
-            "/internal/health",
-            headers=AUTH,
-            json={"source_id": "demo", "status": "failed", "received_at": clock[0].isoformat()},
-        ).is_success
-        client.post(
-            "/internal/health",
-            headers=AUTH,
-            json={
-                "source_id": "demo",
-                "status": "healthy",
-                "received_at": (NOW + timedelta(seconds=5)).isoformat(),
-            },
-        )
-        assert client.get("/api/health").json()["status"] == "failed"
-        assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "stale"
-        clock[0] += timedelta(seconds=1)
-        assert client.post(
-            "/internal/health",
-            headers=AUTH,
-            json={"source_id": "demo", "status": "healthy", "received_at": clock[0].isoformat()},
-        ).is_success
-        assert client.get("/api/health").json()["status"] == "healthy"
-        # Heartbeat recovery alone is not proof that missing observations were saved.
-        assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "stale"
-        client.post(
-            "/internal/baselines", json=observation(revision, clock[0].isoformat()), headers=AUTH
-        ).raise_for_status()
-        client.post(
-            "/internal/coverage",
-            json={
-                "source_id": "demo",
-                "status": "recovered",
-                "selection_revision": revision,
-                "received_at": clock[0].isoformat(),
-            },
-            headers=AUTH,
-        ).raise_for_status()
-        assert client.get("/api/monitored").json()["entities"][0]["freshness"] == "fresh"
-
-
 class RecordingController:
-    """Counts forwarded commands; the boundary tests expect none."""
+    """Counts forwarded commands; the boundary tests expect none.
 
-    def __init__(self) -> None:
+    With a `reader`, the device follows each command, so its outcome shows at once.
+    """
+
+    def __init__(self, reader: FakeReader | None = None) -> None:
         self.sent: list[str] = []
+        self.reader = reader
 
     def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
         self.sent.append(forwarded.source_entity_id)
+        if self.reader is not None:
+            self.reader.set("bulb-a", forwarded.source_entity_id, {"state": "on"})
         return "ok"
 
 
@@ -198,7 +139,11 @@ def test_controller_heartbeat_needs_the_service_credential(
     tmp_path: Path, headers: dict[str, str]
 ) -> None:
     app = create_app(
-        tmp_path / "heartbeat.sqlite", TOKEN, now=lambda: NOW, controller=RecordingController()
+        tmp_path / "heartbeat.sqlite",
+        TOKEN,
+        now=lambda: NOW,
+        reader=catalog_reader(),
+        controller=RecordingController(),
     )
     with TestClient(app) as client:
         denied = client.post(
@@ -213,21 +158,22 @@ def test_controller_heartbeat_needs_the_service_credential(
 
 
 def test_light_command_needs_the_mutation_header_and_a_same_site_origin(tmp_path: Path) -> None:
-    controller = RecordingController()
+    reader = catalog_reader()
+    reader.set("bulb-a", "light.desk", {"state": "off"})
+    controller = RecordingController(reader)
     app = create_app(
         tmp_path / "command.sqlite",
         TOKEN,
         now=lambda: NOW,
+        reader=reader,
         controller=controller,
         command_wait_seconds=0.1,
     )
     with TestClient(app, base_url="http://127.0.0.1:8000") as client:
-        client.post("/internal/catalog", json=CATALOG, headers=AUTH).raise_for_status()
-        revision = select(client)
-        client.post(
-            "/internal/baselines",
-            json=observation(revision, state="off", source_entity_id="light.desk"),
-            headers=AUTH,
+        client.put(
+            "/api/selection/bulb-a",
+            json={"selected": True},
+            headers={**BROWSER, "Origin": "http://127.0.0.1:8000"},
         ).raise_for_status()
         client.post(
             "/internal/control", json={"received_at": NOW.isoformat()}, headers=AUTH

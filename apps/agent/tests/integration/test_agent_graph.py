@@ -268,7 +268,7 @@ BRIGHTNESS_RANGE = "Not sent: brightness must be 1 to 100 percent."
             "on",
             {},
             "Not sent: bulb-a has no known on/off state.",
-            id="no-baseline",
+            id="no-state",
         ),
         pytest.param(
             off_call(),

@@ -101,7 +101,9 @@ def test_list_monitored_reads_the_lights_and_the_control_state() -> None:
 def test_device_list_shows_each_entity_device_kind() -> None:
     status, recorded = snapshot("catalog")
     body: dict[str, Any] = json.loads(json.dumps(recorded))
-    light, plug, room = body["entities"]
+    light, plug, room = (
+        next(e for e in body["entities"] if e["id"] == id) for id in ("bulb-a", "plug", "room")
+    )
     light |= {"device_kind": "light"}
     plug |= {"supported": True, "reason": None, "device_kind": "switch"}
     room |= {"device_kind": "light"}
@@ -125,16 +127,17 @@ def test_monitored_list_shows_each_entity_device_kind() -> None:
     body: dict[str, Any] = json.loads(json.dumps(recorded))
     light, plug = body["entities"]
     light |= {"device_kind": "light"}
-    light["baseline"] |= {"device_kind": "light"}
+    light["state"] |= {"device_kind": "light"}
     plug |= {
         "device_kind": "switch",
-        "baseline": {
+        "source_entity_id": "switch.plug",
+        "missing": False,
+        "state": {
             key: value
-            for key, value in light["baseline"].items()
-            if key not in {"brightness", "color_mode", "id", "entity_id"}
+            for key, value in light["state"].items()
+            if key not in {"brightness", "color_mode"}
         }
-        | {"id": "plug-baseline", "entity_id": "plug", "device_kind": "switch", "state": "off"},
-        "freshness": "fresh",
+        | {"device_kind": "switch", "state": "off"},
     }
     keeper = FakeKeeper({"/api/monitored": (status, body), "/api/control": control_response("on")})
 
@@ -239,8 +242,11 @@ def test_usage_average_brightness_is_a_rounded_percent(average: float, percent: 
 @pytest.mark.parametrize(
     ("name", "fixture", "expected"),
     [
-        ("list_monitored", "monitored", ["bulb-a", "off", "stale", "bulb-b", "pending"]),
+        # bulb-b is still monitored but gone from Home Assistant.
+        ("list_monitored", "monitored", ["bulb-a", "off", "bulb-b", "missing"]),
+        ("list_monitored", "monitored_unreachable", ["bulb-a", "bulb-b", "unknown"]),
         ("get_health", "health", ["healthy"]),
+        ("get_health", "health_unreachable", ["unreachable", "connection"]),
         ("get_coverage", "coverage", ["interrupted", "reconciliation"]),
         (
             "list_devices",
@@ -317,6 +323,26 @@ def test_rejected_usage_range_relays_the_keeper_reason() -> None:
 
     assert result.startswith("Keeper error:")
     assert "Invalid usage range" in result
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "path", "fixture"),
+    [
+        ("list_devices", {}, "/api/catalog", "catalog_unreachable"),
+        ("monitor", {"entity_id": "bulb-a"}, "/api/selection/bulb-a", "error_select_unreachable"),
+    ],
+)
+def test_unreachable_home_assistant_is_an_error_result_with_the_keepers_safe_message(
+    name: str, args: Mapping[str, object], path: str, fixture: str
+) -> None:
+    status, body = snapshot(fixture)
+    assert isinstance(body, dict)
+    keeper = FakeKeeper({path: (status, body)})
+
+    result = call(keeper.tools(), name, args)
+
+    assert result.startswith("Keeper error:"), result
+    assert body["message"] in result
 
 
 def number(value: int, text: str) -> bool:

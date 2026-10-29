@@ -13,7 +13,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from support.api import recorded_current
 from support.home_assistant import Frame, hue_room, registry_entry, state_changed
+from support.recorded_reader import RecordedReader
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
@@ -197,7 +199,10 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
 
     db = tmp_path / "live.sqlite"
     app = create_app(
-        db_path=db, service_token="internal-token-sentinel", source_id="home_assistant"
+        db_path=db,
+        service_token="internal-token-sentinel",
+        source_id="home_assistant",
+        reader=RecordedReader(db),
     )
     with serve(handler, "127.0.0.1", 0, process_request=process_request) as server:
         thread = Thread(target=server.serve_forever)
@@ -231,8 +236,7 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                     headers={"X-Home-Keeper": "1"},
                 ).is_success
                 session.reconcile()
-                baseline = api.get("/api/monitored").json()["entities"][0]["baseline"]
-                assert baseline["state"] == "on"
+                assert recorded_current(db, "ha:registry1")["state"] == "on"
                 assert state_reads[3:] == ["/api/states/light.bulb"]
                 entities.append(registry_entry("new", "light.new"))
                 session.reconcile()
@@ -242,7 +246,6 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                 assert "ha:new" not in api.get("/api/selection").json()["entity_ids"]
                 fail[0] = True
                 session.reconcile()
-                assert api.get("/api/catalog").json()["freshness"] == "stale"
                 assert api.put(
                     "/api/selection/ha:new",
                     json={"selected": True},
@@ -262,9 +265,8 @@ def test_live_cycle_api_discovery_selection_failure_recovery(tmp_path: Path) -> 
                 fail[0] = False
                 session.reconcile()
                 assert set(state_reads) == {*discovered, "/api/states/light.new"}
-                assert all(
-                    entity["baseline"] for entity in api.get("/api/monitored").json()["entities"]
-                )
+                for entity_id in api.get("/api/selection").json()["entity_ids"]:
+                    assert recorded_current(db, entity_id)["state"]
                 wire = api.get("/api/catalog").text + api.get("/api/monitored").text
                 for sentinel in (
                     "ha-token-sentinel",
@@ -416,6 +418,7 @@ def test_selected_switch_records_a_baseline_and_a_change_without_light_attribute
         db_path=tmp_path / "live.sqlite",
         service_token="internal-token-sentinel",
         source_id="home_assistant",
+        reader=RecordedReader(tmp_path / "live.sqlite"),
     )
     with serve(handler, "127.0.0.1", 0, process_request=process_request) as server:
         thread = Thread(target=server.serve_forever)
@@ -451,10 +454,10 @@ def test_selected_switch_records_a_baseline_and_a_change_without_light_attribute
                 assert (event["old"]["state"], event["new"]["state"]) == ("on", "off")
                 [monitored] = api.get("/api/monitored").json()["entities"]
                 assert monitored["device_kind"] == "switch"
-                assert monitored["baseline"]["device_kind"] == "switch"
-                assert monitored["baseline"]["state"] == "off"
+                assert monitored["state"]["device_kind"] == "switch"
+                assert monitored["state"]["state"] == "off"
                 light_fields = {"brightness", "color_mode"}
-                for reading in (baseline, event["old"], event["new"], monitored["baseline"]):
+                for reading in (baseline, event["old"], event["new"], monitored["state"]):
                     assert not light_fields & reading.keys(), reading
         finally:
             if session is not None:

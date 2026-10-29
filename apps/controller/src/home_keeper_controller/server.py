@@ -27,8 +27,8 @@ from home_keeper_settings import load
 
 HEARTBEAT_SECONDS = 5
 MAX_BODY_BYTES = 64 * 1024
-# The demo collector's command endpoint on the internal control network.
-DEMO_COLLECTOR_URL = "http://collector:8080"
+# The demo reader's command endpoint on the internal control network.
+DEMO_READER_URL = "http://reader:8080"
 
 
 def create_app(service_token: str, devices: Devices) -> FastAPI:
@@ -109,7 +109,7 @@ def read_secret(path: Path, description: str) -> str:
 
 def backend(settings: ControllerSettings, service_token: str) -> Devices:
     if settings.control_backend == "demo":
-        return CommandClient(DEMO_COLLECTOR_URL, service_token, COMMAND_DEADLINE_SECONDS)
+        return CommandClient(DEMO_READER_URL, service_token, COMMAND_DEADLINE_SECONDS)
     token_file = settings.ha_control_token_file
     return HomeAssistantLights(
         settings.ha_url, lambda: read_secret(token_file, "Home Assistant control token")

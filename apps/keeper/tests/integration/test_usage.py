@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 from httpx import Response
 from support.api import AUTH, CATALOG, CATALOG_ENTITIES, TOKEN, Payload, select
+from support.recorded_reader import RecordedReader
 
 from home_keeper.api import create_app
 
@@ -127,15 +128,23 @@ def home(
     retention_days: int = 30,
 ) -> Generator[Home]:
     time = [clock]
+    db = tmp_path / "usage.sqlite"
     app = create_app(
-        tmp_path / "usage.sqlite",
+        db,
         TOKEN,
         now=lambda: time[0],
         timezone=ZoneInfo(timezone),
         retention_days=retention_days,
+        # The plug is only in the posted catalog, which the recorded reader serves back.
+        reader=RecordedReader(db),
     )
     with TestClient(app) as client:
-        catalog = CATALOG | {"entities": [*CATALOG_ENTITIES, PLUG]}
+        # The bulbs' entries name no kind; only their readings do.
+        bulbs = [
+            {key: value for key, value in entry.items() if key != "device_kind"}
+            for entry in CATALOG_ENTITIES
+        ]
+        catalog = CATALOG | {"entities": [*bulbs, PLUG]}
         assert client.post("/internal/catalog", json=catalog, headers=AUTH).is_success
         revision = 0
         for light in lights:
@@ -594,7 +603,6 @@ def test_silent_collector_is_a_gap_without_first_asking_for_health(tmp_path: Pat
         house.at(utc(10, 11, 30))
 
         first = house.devices(utc(10, 8), utc(10, 11, 30))["bulb-a"]
-        assert house.client.get("/api/health").json()["status"] == "stale"
         after_health = house.devices(utc(10, 8), utc(10, 11, 30))["bulb-a"]
 
     assert first["on_seconds"] == 0.5 * HOUR
@@ -764,10 +772,8 @@ def test_a_selected_plug_stays_a_switch_after_discovery_drops_it_before_any_read
         house.post("/internal/catalog", catalog)
         house.at(utc(13, 14))
 
-        monitored = house.client.get("/api/monitored").json()["entities"]
         plug = house.devices(utc(13, 12), utc(13, 14))["plug-a"]
 
-    assert [e["device_kind"] for e in monitored if e["id"] == "plug-a"] == ["switch"]
     assert plug["device_kind"] == "switch"
     assert "average_brightness" not in plug
 

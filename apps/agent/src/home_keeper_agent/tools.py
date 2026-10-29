@@ -77,7 +77,7 @@ def percent(brightness: float) -> int:
 
 def _reading(reading: Reading | None) -> str:
     if reading is None:
-        return "no state"
+        return "state unknown"
     if reading.brightness is None:
         return reading.state
     return f"{reading.state} (brightness {percent(reading.brightness)}%)"
@@ -110,9 +110,10 @@ def format_monitored(monitored: Monitored) -> str:
         line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
         if device.device_name:
             line += f" device={_name(device.device_name)}"
-        line += f": {_reading(device.baseline)}"
-        line += f", data {device.freshness}, last confirmed {device.confirmed_at or 'never'}"
-        if not device.supported and device.reason:
+        line += f": {_reading(device.state)}"
+        if device.missing:
+            line += ", missing from Home Assistant"
+        elif not device.supported and device.reason:
             line += f", unsupported: {_name(device.reason)}"
         lines.append(line)
     return "\n".join(lines)
@@ -186,17 +187,13 @@ def format_coverage(report: CoverageReport) -> str:
 
 
 def format_health(health: Health) -> str:
-    if health.status == "pending":
-        return "The collector has not reported yet."
-    line = f"The collector is {health.status}, last report {health.received_at}"
+    # `healthy` or `unreachable`, as the keeper reports it.
+    line = f"Home Assistant is {health.status}, checked {health.checked_at}"
     return f"{line}, error: {health.error}." if health.error else f"{line}."
 
 
 def format_devices(catalog: Catalog) -> str:
-    lines = [
-        f"{len(catalog.entities)} discovered device(s), discovery {catalog.freshness}, "
-        f"refreshed {catalog.refreshed_at or 'never'}:"
-    ]
+    lines = [f"{len(catalog.entities)} device(s) in Home Assistant:"]
     for device in catalog.entities:
         line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
         if device.device_name:
@@ -291,7 +288,7 @@ def _command_refusal(
         # The keeper refuses this too, but only after the user approved it.
         if brightness is not None and device.device_kind == "switch":
             return f"Not sent: {entity_id} is a plug or switch and has no brightness."
-        return _state_refusal(entity_id, device.baseline, action, brightness)
+        return _state_refusal(entity_id, device.state, action, brightness)
 
     return _guard(check)
 
@@ -326,8 +323,8 @@ def format_outcome(entity_id: str, command: LightOn | LightOff, record: CommandR
 def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_monitored() -> str:
-        """List the lights, plugs and switches the keeper records, with each one's kind, latest
-        state and freshness. The first line says whether control is on."""
+        """List the lights, plugs and switches the keeper monitors, with each one's kind and
+        the state Home Assistant reports now. The first line says whether control is on."""
 
         def render() -> str:
             monitored = client.request("GET", "/api/monitored", Monitored)
@@ -385,13 +382,13 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def get_health() -> str:
-        """Report whether the collector is healthy and when Home Assistant last answered."""
+        """Report whether Home Assistant can be reached right now, and why not."""
         return _guard(lambda: format_health(client.request("GET", "/api/health", Health)))
 
     @tool
     def list_devices() -> str:
-        """List the devices the keeper discovered in Home Assistant, with each one's kind (light
-        or switch, which covers plugs) and whether it can be monitored."""
+        """List the devices in Home Assistant, with each one's kind (light or switch, which
+        covers plugs) and whether it can be monitored."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:

@@ -92,7 +92,7 @@ times out. Check it with `docker compose logs ha-setup`.
 3. Go to **Settings → Devices & services → Add integration** and add your
    devices. For Philips Hue, use the [Hue integration](https://www.home-assistant.io/integrations/hue/)
    and enter the bridge IP address from the Hue app.
-4. Open <http://127.0.0.1:8000> and click **Refresh discovery**.
+4. Open <http://127.0.0.1:8000>. The **Setup** tab lists the devices Home Assistant has now.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
 supports. Home Keeper records any single light, smart plug or switch from any
@@ -247,8 +247,8 @@ A candidate with no state yet is not a group. If a candidate's state read fails
 or returns malformed data, discovery fails rather than guessing, and the next
 pass reads it again.
 
-Select a light, plug or switch to record its first state. Add more devices to Home Assistant and
-click **Refresh discovery** to find them without changing configuration or
+Select a light, plug or switch to record its first state. Devices you add to Home Assistant
+appear on the **Setup** tab within seconds, without changing configuration or
 restarting. Stable entity registry identity keeps selection and history across
 an entity name change. A new registry entry reusing an old entity ID does not
 inherit approval.

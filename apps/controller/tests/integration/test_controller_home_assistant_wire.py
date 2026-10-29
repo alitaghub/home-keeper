@@ -18,6 +18,7 @@ from websockets.sync.server import ServerConnection, serve
 
 from home_keeper.api import create_app as create_api
 from home_keeper.control import ControllerUnreachable, HttpController
+from home_keeper.reader import HttpReader
 from home_keeper_controller import home_assistant, server
 from home_keeper_controller.home_assistant import AUTH_CHECK_SECONDS, HomeAssistantLights
 from home_keeper_controller.server import backend, create_app
@@ -411,6 +412,8 @@ def test_controller_reports_control_only_while_home_assistant_accepts_its_token(
         tmp_path / "api.sqlite",
         SERVICE_TOKEN,
         controller=HttpController("http://controller:8080", SERVICE_TOKEN),
+        # Never read: this test checks the heartbeat, not device state.
+        reader=HttpReader("http://reader.invalid", SERVICE_TOKEN),
     )
     with running(home) as origin, TestClient(api_app) as api:
         monkeypatch.setenv("HOME_KEEPER_TOKEN_FILE", str(tmp_path / "service-token"))

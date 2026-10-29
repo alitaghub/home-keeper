@@ -14,6 +14,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from support.home_assistant import FakeSocket, Frame, install_socket, registry_entry, use_transport
+from support.recorded_reader import RecordedReader
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
 from websockets.sync.server import ServerConnection, serve
@@ -354,7 +355,12 @@ def test_api_detected_gap_closes_after_next_full_pass_without_fabricated_events(
     with (
         home(tmp_path, race_count=0) as (connector, _, _),
         TestClient(
-            create_app(tmp_path / "recorded.sqlite", "internal-secret", source_id="home_assistant"),
+            create_app(
+                tmp_path / "recorded.sqlite",
+                "internal-secret",
+                source_id="home_assistant",
+                reader=RecordedReader(tmp_path / "recorded.sqlite"),
+            ),
             headers={"Authorization": "Bearer internal-secret"},
         ) as api,
     ):
@@ -399,7 +405,12 @@ def test_switch_gap_closes_with_a_recovery_snapshot_of_the_switch(tmp_path: Path
             devices=[{"id": "device1", "name": "Smart plug"}],
         ) as (connector, _, _),
         TestClient(
-            create_app(tmp_path / "recorded.sqlite", "internal-secret", source_id="home_assistant"),
+            create_app(
+                tmp_path / "recorded.sqlite",
+                "internal-secret",
+                source_id="home_assistant",
+                reader=RecordedReader(tmp_path / "recorded.sqlite"),
+            ),
             headers={"Authorization": "Bearer internal-secret"},
         ) as api,
     ):
@@ -592,7 +603,12 @@ def test_initial_missing_baseline_stays_selected_then_recovers(
     session: CollectionSession | None = None
     try:
         with TestClient(
-            create_app(tmp_path / "live.sqlite", "review-internal", source_id="home_assistant"),
+            create_app(
+                tmp_path / "live.sqlite",
+                "review-internal",
+                source_id="home_assistant",
+                reader=RecordedReader(tmp_path / "live.sqlite"),
+            ),
             headers={"Authorization": "Bearer review-internal"},
         ) as api:
             session = CollectionSession(api, adapter)
@@ -604,18 +620,12 @@ def test_initial_missing_baseline_stays_selected_then_recovers(
             ).raise_for_status()
             session.reconcile()
             assert api.get("/api/selection").json()["entity_ids"] == ["ha:registry1"]
-            assert api.get("/api/health").json()["status"] == "healthy"
             gaps = api.get("/api/coverage").json()
             assert gaps["state"] == "interrupted"
             assert gaps["gaps"][0]["entity_ids"] == ["ha:registry1"]
-            monitored = api.get("/api/monitored").json()["entities"][0]
-            assert monitored["baseline"] is None
-            assert monitored["freshness"] == "pending"
             assert api.get("/api/baselines?entity_id=ha:registry1").json()["baselines"] == []
             status[0] = 200
             session.reconcile()
-            assert api.get("/api/health").json()["status"] == "healthy"
-            assert api.get("/api/monitored").json()["entities"][0]["freshness"] == "fresh"
             assert len(api.get("/api/baselines?entity_id=ha:registry1").json()["baselines"]) == 1
     finally:
         if session is not None:

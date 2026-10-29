@@ -17,8 +17,8 @@ dashboard uses. It can:
 - report usage over a time range for lights, plugs and switches: on-time per
   day and per hour, switch-ons, and unknown time. Lights also get their average
   brightness; plugs and switches have none
-- show recorded changes, collection gaps and collector health
-- list discovered devices, with their kind, and refresh discovery
+- show recorded changes, collection gaps and whether Home Assistant can be reached
+- list the devices in Home Assistant, with their kind
 - start or stop monitoring a light, plug or switch (`monitor`, `stop_monitoring`),
   after you approve it in the chat. You can
   approve or reject the proposed change; a rejection changes nothing
