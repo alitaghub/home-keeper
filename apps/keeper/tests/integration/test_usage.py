@@ -874,3 +874,23 @@ def test_equal_states_on_both_sides_of_a_gap_stay_two_periods(tmp_path: Path) ->
         {"start": utc(10, 12), "end": utc(10, 14), "state": "on", "brightness": 200},
     ]
     assert unknown(light) == [interval(utc(10, 11), utc(10, 12), "gap")]
+
+
+def test_time_before_a_devices_first_record_is_no_evidence_even_after_a_gap(
+    tmp_path: Path,
+) -> None:
+    with home(tmp_path, clock=utc(10, 8)) as house:
+        # Collection stops before bulb-a has any record, then recovers.
+        house.interrupt()
+        house.at(utc(10, 9))
+        house.recover()
+        house.at(utc(10, 10))
+        house.snapshot("bulb-a", "off")
+        house.at(utc(10, 12))
+
+        [light] = house.usage(utc(10, 8), utc(10, 12))["devices"]
+
+    assert unknown(light) == [
+        interval(utc(10, 8), utc(10, 9), "gap"),
+        interval(utc(10, 9), utc(10, 10), "no_evidence"),
+    ]

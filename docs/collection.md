@@ -137,7 +137,8 @@ The numbers only count what the evidence shows:
 - Time when Home Assistant reports a light as `unavailable` or `unknown` is
   unknown too, never on or off.
 - Time before a light's first evidence, or before the retention cutoff, is
-  unknown.
+  unknown. Outside a gap its reason is `no_evidence`, even after an earlier gap
+  has recovered: a device with no record yet had no state for the gap to hide.
 - Each light lists its `unknown_intervals`, with reason `gap`, `unavailable` or
   `no_evidence`.
 - Each device also lists its `periods`: the stretches the evidence shows it on

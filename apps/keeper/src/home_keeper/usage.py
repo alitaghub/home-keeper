@@ -202,9 +202,12 @@ def device_usage(
         ended = bisect_right(gap_ends, moment) - 1
         resumed = latest_starts[ended] if ended >= 0 else None
         index = bisect_right(keys, (moment, 1)) - 1
+        # Before a device's first record, no gap hid a state it had.
+        if index < 0:
+            return "no_evidence"
         # After a gap, only evidence placed after it began says what the device did.
-        if index < 0 or (resumed is not None and evidence[index].at <= resumed):
-            return "no_evidence" if resumed is None else "gap"
+        if resumed is not None and evidence[index].at <= resumed:
+            return "gap"
         item = evidence[index]
         if item.state not in ("on", "off"):
             return "unavailable"
