@@ -68,7 +68,7 @@ def at(seconds: float) -> float:
 # Home Assistant's recorder rows, as `history/history_during_period` returns them.
 HISTORY: dict[str, list[Frame]] = {
     "light.bulb": [
-        # The state at START: `lu` is left out because it equals `lc`.
+        # The state at START: `lc` is left out because it equals `lu`.
         history_row(
             "on",
             at(0.25),
@@ -78,7 +78,7 @@ HISTORY: dict[str, list[Frame]] = {
             effect="colorloop",
             untrusted="PRIVATE_SENTINEL",
         ),
-        # Only attributes changed, so `lc` stays and `lu` moves.
+        # Only attributes changed, so `lu` moves and `lc` is sent.
         history_row(
             "on",
             at(0.25),
@@ -89,7 +89,7 @@ HISTORY: dict[str, list[Frame]] = {
             supported_color_modes=["xy"],
         ),
         # No attributes at all.
-        {"s": "unavailable", "lc": at(120)},
+        {"s": "unavailable", "lu": at(120)},
     ],
     "switch.plug": [
         history_row("off", at(0), friendly_name="Plug", current_power_w=5.0),

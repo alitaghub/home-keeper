@@ -40,7 +40,8 @@ REGISTRY: dict[str, list[dict[str, object]]] = {
 # light.fixture as `GET /api/states/light.fixture` reports it now.
 light: dict[str, Any] = {"entity_id": "light.fixture"}
 # light.fixture's recorder rows, oldest first, in the compressed form of
-# `history/history_during_period`: Unix-second times, `lu` left out when it equals `lc`.
+# `history/history_during_period`: Unix-second times, `lu` always, `lc` left out when it
+# equals `lu`, as Home Assistant 2026.10 sends it.
 history: list[dict[str, Any]] = []
 
 
@@ -51,18 +52,20 @@ def iso(timestamp: float) -> str:
 def change(at: float, state: str, **attributes: object) -> None:
     """light.fixture changes at `at`: its state now, and one more recorder row."""
     previous = history[-1] if history else None
-    changed = at if previous is None or previous["s"] != state else previous["lc"]
+    changed = (
+        at if previous is None or previous["s"] != state else previous.get("lc", previous["lu"])
+    )
     # The reader must drop attributes Home Keeper does not keep.
     reported = {"friendly_name": "Synthetic live bulb", "untrusted": "ADMIN_SENTINEL", **attributes}
-    row: dict[str, Any] = {"s": state, "a": reported, "lc": changed}
+    row: dict[str, Any] = {"s": state, "a": reported, "lu": at}
     if changed != at:
-        row["lu"] = at
+        row["lc"] = changed
     history.append(row)
     light.update(state=state, attributes=reported, last_changed=iso(changed), last_updated=iso(at))
 
 
 def updated(row: dict[str, Any]) -> float:
-    return row.get("lu", row["lc"])
+    return row["lu"]
 
 
 def history_during_period(command: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

@@ -187,9 +187,9 @@ def state_changed(entity: str = "light.bulb", **changes: Any) -> Frame:
 def history_row(
     state: str, changed: float, updated: float | None = None, **attributes: Any
 ) -> Frame:
-    """One compressed row of `history/history_during_period`: Unix-second times, and `lu`
-    left out when it equals `lc`, as Home Assistant sends it."""
-    row: Frame = {"s": state, "a": attributes, "lc": changed}
+    """One compressed row of `history/history_during_period` as Home Assistant 2026.10 sends
+    it: Unix-second times, `lu` always, and `lc` left out when it equals `lu`."""
+    row: Frame = {"s": state, "a": attributes, "lu": changed if updated is None else updated}
     if updated is not None and updated != changed:
-        row["lu"] = updated
+        row["lc"] = changed
     return row

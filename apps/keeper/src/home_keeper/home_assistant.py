@@ -445,18 +445,18 @@ def _timestamp(value: object) -> datetime:
 
 def history_state(row: object, source_entity_id: str) -> LightState | SwitchState:
     """One compressed history row, `{s, a, lc, lu}`, as a light's or switch's state. Times are
-    Unix seconds; Home Assistant leaves out `lu` when it equals `lc`. Only the approved light
-    attributes are kept; a switch keeps its state only."""
+    Unix seconds; Home Assistant always sends `lu` and leaves out `lc` when it equals `lu`.
+    Only the approved light attributes are kept; a switch keeps its state only."""
     if not is_json_object(row):
         raise ValueError("Invalid history row")
-    changed = _timestamp(row.get("lc"))
+    updated = _timestamp(row.get("lu"))
     state = device_state(
         {
             "entity_id": source_entity_id,
             "state": row.get("s"),
             "attributes": row.get("a", {}),
-            "last_changed": changed,
-            "last_updated": _timestamp(row["lu"]) if "lu" in row else changed,
+            "last_changed": _timestamp(row["lc"]) if "lc" in row else updated,
+            "last_updated": updated,
         },
         source_entity_id,
     )
