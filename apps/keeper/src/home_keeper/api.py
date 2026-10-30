@@ -1,3 +1,4 @@
+import logging
 import secrets
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -7,6 +8,8 @@ from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
+import anyio.to_thread
+import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -40,6 +43,8 @@ from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
 from home_keeper.reader import Reader, ReaderUnavailable
 from home_keeper.store import Store
 from home_keeper.usage import device_usage
+
+logger = logging.getLogger(__name__)
 
 UTC_ZONE = ZoneInfo("UTC")
 # History's window when a request names no start.
@@ -125,6 +130,10 @@ def create_app(
     def retention_cutoff() -> str:
         return (now().astimezone(UTC) - timedelta(days=retention_days)).isoformat()
 
+    def cleanup() -> None:
+        with store.transaction() as db:
+            store.cleanup(db, retention_cutoff())
+
     def conflict(code: str, message: str) -> HTTPException:
         return HTTPException(409, {"code": code, "message": message})
 
@@ -155,9 +164,12 @@ def create_app(
             request._body = bytes(body)  # pyright: ignore[reportPrivateUsage] -- no public setter
         nonlocal next_cleanup
         if time.monotonic() >= next_cleanup:
-            with store.transaction() as db:
-                store.cleanup(db, retention_cutoff())
             next_cleanup = time.monotonic() + 60
+            # In a worker thread: a cleanup waiting on a lock must not stop every request.
+            try:
+                await anyio.to_thread.run_sync(cleanup)
+            except psycopg.Error:
+                logger.warning("Command log cleanup failed; it runs again in a minute")
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "

@@ -25,7 +25,7 @@ def test_new_recovers_from_invalid_saved_conversation(
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
-    # Seed a corrupted external state file; assertions exercise the bot's public update boundary.
+    # Seed a corrupted saved conversation row; assertions exercise the bot's public update boundary.
     invalid = '{"thread_id":"private-old-thread","status":"pending"}'
     try:
         bot.db.execute("INSERT INTO conversations VALUES (%s, %s)", (11, invalid))

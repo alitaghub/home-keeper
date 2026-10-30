@@ -20,6 +20,8 @@ Identity = Annotated[
     str, StringConstraints(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.:-]+$")
 ]
 Name = Annotated[str, StringConstraints(min_length=1, max_length=256)]
+# A name the command log stores. Postgres JSONB cannot hold a NUL character.
+StoredName = Annotated[str, StringConstraints(min_length=1, max_length=256, pattern=r"^[^\x00]*$")]
 SourceId = Literal["demo", "home_assistant"]
 # What a device is, from its Home Assistant domain. Separate from a record's `kind`.
 DeviceKind = Literal["light", "switch"]
@@ -364,7 +366,7 @@ class TelegramSender(WireModel):
     kind: Literal["telegram"]
     id: int = Field(strict=True, gt=0)
     # The display name at send time. Untrusted text, like device names.
-    name: Name
+    name: StoredName
 
 
 # Who asked for a command. A label the caller reports for the audit, not authentication.

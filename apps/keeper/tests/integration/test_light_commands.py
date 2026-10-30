@@ -1,9 +1,11 @@
 """The device command routes: control heartbeat, how a refusal maps to HTTP, request
-validation, the history scope, and dashboard reads while commands wait.
+validation, the history scope, dashboard reads while commands wait, and what the API does
+to the command log at startup and on requests.
 
 The command rules themselves are proved through `Commands` in test_commands.py.
 """
 
+import json
 import threading
 import time
 from collections.abc import Callable, Generator
@@ -14,6 +16,7 @@ from typing import Any
 
 import anyio
 import httpx
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from support.api import AUTH, BROWSER, NOW, TOKEN, Payload, catalog_reader
@@ -22,6 +25,7 @@ from support.reader import FakeReader
 
 from home_keeper.api import create_app
 from home_keeper.models import CommandRefused
+from home_keeper.store import Store
 
 
 @dataclass
@@ -168,6 +172,8 @@ def test_retired_light_command_route_is_not_found_and_reaches_nothing(database: 
         {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1.5, "name": "A"}},
         {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1, "name": ""}},
         {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1, "name": "x" * 257}},
+        # Postgres JSONB cannot hold a NUL character, so it never reaches the command log.
+        {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1, "name": "A\u0000B"}},
     ],
 )
 def test_malformed_command_is_an_invalid_request_and_reaches_nothing(
@@ -275,3 +281,52 @@ def test_invalid_command_scope_is_rejected(database: str, params: dict[str, str 
     with home(database) as house:
         response = house.client.get("/api/commands", params=params)
         assert response.status_code == 422, response.text
+
+
+def seed_commands(database: str, *records: Payload) -> None:
+    """Store command records before the API starts, as an earlier run left them."""
+    store = Store(database)
+    store.open()
+    try:
+        with store.transaction() as db:
+            for record in records:
+                db.execute(
+                    "INSERT INTO commands VALUES(%s, %s, %s, %s)",
+                    (record["id"], record["entity_id"], record["sent_at"], json.dumps(record)),
+                )
+    finally:
+        store.close()
+
+
+def stored_record(identity: str, sent_at: datetime, outcome: str) -> Payload:
+    return {
+        "id": identity,
+        "entity_id": "bulb-a",
+        "device_kind": "light",
+        "command": ON,
+        "sender": DASHBOARD,
+        "sent_at": sent_at.isoformat(),
+        "outcome": outcome,
+    }
+
+
+def test_a_command_left_pending_by_a_crash_shows_as_interrupted_after_start(
+    database: str,
+) -> None:
+    seed_commands(database, stored_record("left", NOW - timedelta(minutes=1), "pending"))
+    with home(database) as house:
+        [left] = house.commands()
+        assert (left["id"], left["outcome"]) == ("left", "interrupted")
+
+
+def test_the_api_deletes_commands_older_than_retention(database: str) -> None:
+    seed_commands(
+        database,
+        stored_record("expired", NOW - timedelta(days=31), "observed"),
+        stored_record("recent", NOW - timedelta(days=1), "observed"),
+    )
+    with home(database):
+        pass
+    with psycopg.connect(database) as db:
+        rows = db.execute("SELECT id FROM commands ORDER BY id").fetchall()
+    assert rows == [("recent",)]

@@ -369,7 +369,7 @@ def main() -> None:
                 compose("restart", "telegram")
                 post_text(client, 11, "after restart")
                 wait_text(client, "Reply 2: after restart")
-                # Redelivery cannot start another run after the bot reopens its state file.
+                # Redelivery cannot start another run after the bot reconnects to its database.
                 post_text(client, 11, "after restart", replay=True)
                 wait_until(
                     "stale update delivered despite the polling offset",

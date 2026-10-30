@@ -7,6 +7,9 @@ from pydantic import TypeAdapter
 
 from home_keeper.models import CommandRecord, DeviceKind
 
+# The longest a statement, or its wait for a lock, may take before Postgres cancels it.
+STATEMENT_TIMEOUT = "10s"
+
 stored_kind: TypeAdapter[DeviceKind | None] = TypeAdapter(DeviceKind | None)
 
 # Keys use the "C" collation, so ID order and the command cursor do not depend on the
@@ -41,7 +44,11 @@ class Store:
             max_size=8,
             open=False,
             check=ConnectionPool.check_connection,
-            kwargs={} if password is None else {"password": password},
+            kwargs={
+                "options": f"-c statement_timeout={STATEMENT_TIMEOUT} "
+                f"-c lock_timeout={STATEMENT_TIMEOUT}",
+            }
+            | ({} if password is None else {"password": password}),
         )
 
     def open(self, timeout: float = 30.0) -> None:
