@@ -210,7 +210,8 @@ describe("dashboard behavior", () => {
     expect(select?.body).toEqual({ selected: true });
     expect(
       within(byId("catalog")).getByRole("button", { name: "Stop monitoring Desk lamp" }),
-    ).toHaveClass("secondary");
+    ).toBeVisible();
+    expect(within(byId("catalog")).queryByRole("button", { name: "Monitor Desk lamp" })).toBeNull();
 
     openTab("Home");
     const monitored = within(byId("monitored"));
@@ -1680,7 +1681,11 @@ describe("device history", () => {
     });
 
     const strip = await screen.findByRole("img", { name: "Last 24 hours: on 1h 0m, unknown 30m" });
-    expect(strip.querySelectorAll('rect[fill^="url("]')).toHaveLength(2);
+    const hatched = [...strip.querySelectorAll('[data-segment="unavailable"]')];
+    expect(hatched).toHaveLength(2);
+    const pattern = strip.querySelector("pattern")?.id;
+    expect(pattern).toBeTruthy();
+    for (const rect of hatched) expect(rect).toHaveAttribute("fill", `url(#${pattern})`);
   });
 
   it("reloads the strips a minute later and soon after a card changes, not on every poll", async () => {

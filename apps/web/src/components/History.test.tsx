@@ -46,13 +46,20 @@ describe("usage strip", () => {
     );
     const { container } = render(<UsageStrip range={range} device={device} caption="Day" />);
 
-    expect(geometry(container, ".strip-on")).toEqual([
+    expect(geometry(container, '[data-segment="on"]')).toEqual([
       [0, 100, 0, 24],
       // 102 / 255 is 40% of the height.
       [300, 100, 14.4, 9.6],
     ]);
-    expect(geometry(container, ".strip-off")).toEqual([[100, 100, 22, 2]]);
-    expect(geometry(container, 'rect[fill^="url("]')).toEqual([[200, 100, 0, 24]]);
+    expect(geometry(container, '[data-segment="off"]')).toEqual([[100, 100, 22, 2]]);
+    expect(geometry(container, '[data-segment="unavailable"]')).toEqual([[200, 100, 0, 24]]);
+    // A hatch, not a solid or empty fill.
+    const pattern = container.querySelector("svg pattern")?.id;
+    expect(pattern).toBeTruthy();
+    expect(container.querySelector('[data-segment="unavailable"]')).toHaveAttribute(
+      "fill",
+      `url(#${pattern})`,
+    );
   });
 
   it("joins changes narrower than one unit, so a busy month draws about one bar per unit", () => {
@@ -68,9 +75,10 @@ describe("usage strip", () => {
       <UsageStrip range={range} device={light(periods)} caption="Busy" />,
     );
 
-    const bars = geometry(container, ".strip-on, .strip-off");
+    const bars = geometry(container, '[data-segment="on"], [data-segment="off"]');
+    expect(bars.length).toBeGreaterThan(0);
     expect(bars.length).toBeLessThanOrEqual(1001);
     // Any on time within a joined bar shows it as on.
-    expect(container.querySelectorAll(".strip-off")).toHaveLength(0);
+    expect(container.querySelectorAll('[data-segment="off"]')).toHaveLength(0);
   });
 });

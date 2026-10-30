@@ -1,6 +1,9 @@
+import { X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { brightnessPercent, duration, time } from "../format";
+import { cn } from "../lib/utils";
 import { type DeviceUsage, fetchUsage, type Usage } from "../useUsage";
+import { Button } from "./ui/button";
 
 const WIDTH = 1000;
 const HEIGHT = 24;
@@ -67,7 +70,7 @@ export function UsageStrip({
   const x = (moment: string) => ((Date.parse(moment) - from) / span) * WIDTH;
   return (
     <svg
-      className="strip"
+      className="block h-6 w-full overflow-hidden rounded-sm"
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       preserveAspectRatio="none"
       role="img"
@@ -81,10 +84,10 @@ export function UsageStrip({
           patternUnits="userSpaceOnUse"
           patternTransform="rotate(45)"
         >
-          <rect className="strip-hatch" width="2" height="6" />
+          <rect className="fill-status-unknown" width="2" height="6" />
         </pattern>
       </defs>
-      <rect className="strip-track" width={WIDTH} height={HEIGHT} />
+      <rect className="fill-muted" width={WIDTH} height={HEIGHT} />
       {thinned(
         levels(device).map(
           ({ start, end, state, level }): Bar => ({
@@ -106,7 +109,8 @@ export function UsageStrip({
         return (
           <rect
             key={bar.x0}
-            className={`strip-${bar.state}`}
+            data-segment={bar.state}
+            className={bar.state === "on" ? "fill-status-on" : "fill-muted-foreground"}
             x={bar.x0}
             width={bar.x1 - bar.x0}
             y={HEIGHT - height}
@@ -125,6 +129,7 @@ export function UsageStrip({
           x={span.x0}
           width={span.x1 - span.x0}
           height={HEIGHT}
+          data-segment="unavailable"
           fill={`url(#${hatch})`}
         />
       ))}
@@ -132,30 +137,37 @@ export function UsageStrip({
   );
 }
 
+const total = "rounded-md border px-3 py-2";
+const totalLabel = "text-xs text-muted-foreground";
+const totalValue = "text-lg font-semibold tabular-nums";
+const subheading = "mb-2 text-sm font-semibold";
+
 function Totals({ device }: { device: DeviceUsage }) {
   return (
-    <dl className="totals">
-      <div>
-        <dt>On</dt>
-        <dd>{duration(device.on_seconds)}</dd>
+    <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className={total}>
+        <dt className={totalLabel}>On</dt>
+        <dd className={totalValue}>{duration(device.on_seconds)}</dd>
       </div>
-      <div>
-        <dt>Switched on</dt>
-        <dd>{device.switch_ons === 1 ? "1 time" : `${device.switch_ons} times`}</dd>
+      <div className={total}>
+        <dt className={totalLabel}>Switched on</dt>
+        <dd className={totalValue}>
+          {device.switch_ons === 1 ? "1 time" : `${device.switch_ons} times`}
+        </dd>
       </div>
       {device.device_kind === "light" && (
-        <div>
-          <dt>Average brightness</dt>
-          <dd>
+        <div className={total}>
+          <dt className={totalLabel}>Average brightness</dt>
+          <dd className={totalValue}>
             {device.average_brightness == null
               ? "—"
               : `${brightnessPercent(device.average_brightness)}%`}
           </dd>
         </div>
       )}
-      <div>
-        <dt>Unknown</dt>
-        <dd>{duration(device.unknown_seconds)}</dd>
+      <div className={total}>
+        <dt className={totalLabel}>Unknown</dt>
+        <dd className={totalValue}>{duration(device.unknown_seconds)}</dd>
       </div>
     </dl>
   );
@@ -164,16 +176,21 @@ function Totals({ device }: { device: DeviceUsage }) {
 function Days({ device }: { device: DeviceUsage }) {
   return (
     <section aria-labelledby="usage-days-heading">
-      <h3 id="usage-days-heading">On per day</h3>
-      <ol className="day-bars">
+      <h3 id="usage-days-heading" className={subheading}>
+        On per day
+      </h3>
+      <ol className="grid gap-1 text-xs">
         {device.days.map((day) => (
-          <li key={day.date}>
-            <span>{day.date}</span>
-            <span className="bar">
+          <li key={day.date} className="grid grid-cols-[5.5rem_1fr_4rem] items-center gap-2">
+            <span className="text-muted-foreground tabular-nums">{day.date}</span>
+            <span className="h-2 overflow-hidden rounded-full bg-muted">
               {/* A day with a daylight-saving change can have 25 hours. */}
-              <span style={{ width: `${Math.min(100, (day.on_seconds / 86400) * 100)}%` }} />
+              <span
+                className="block h-full rounded-full bg-status-on"
+                style={{ width: `${Math.min(100, (day.on_seconds / 86400) * 100)}%` }}
+              />
             </span>
-            <span>{duration(day.on_seconds)}</span>
+            <span className="text-right tabular-nums">{duration(day.on_seconds)}</span>
           </li>
         ))}
       </ol>
@@ -185,8 +202,10 @@ function Hours({ device }: { device: DeviceUsage }) {
   const most = Math.max(...device.hours);
   return (
     <section aria-labelledby="usage-hours-heading">
-      <h3 id="usage-hours-heading">On by hour of day</h3>
-      <ol className="hour-bars">
+      <h3 id="usage-hours-heading" className={subheading}>
+        On by hour of day
+      </h3>
+      <ol className="flex h-20 items-end gap-px rounded-md bg-muted/50 p-1">
         {device.hours
           .map((seconds, hour) => ({ seconds, hour }))
           .map(({ seconds, hour }) => (
@@ -194,12 +213,19 @@ function Hours({ device }: { device: DeviceUsage }) {
               key={hour}
               title={`${String(hour).padStart(2, "0")}:00 · ${duration(seconds)}`}
               aria-label={`${String(hour).padStart(2, "0")}:00, on ${duration(seconds)}`}
+              className="flex h-full flex-1 items-end"
             >
-              <span style={{ height: `${most ? (seconds / most) * 100 : 0}%` }} />
+              <span
+                className="block w-full rounded-t-sm bg-status-on"
+                style={{ height: `${most ? (seconds / most) * 100 : 0}%` }}
+              />
             </li>
           ))}
       </ol>
-      <p className="hour-axis" aria-hidden="true">
+      <p
+        className="mt-1 flex justify-between text-xs text-muted-foreground tabular-nums"
+        aria-hidden="true"
+      >
         <span>00</span>
         <span>06</span>
         <span>12</span>
@@ -209,6 +235,9 @@ function Hours({ device }: { device: DeviceUsage }) {
     </section>
   );
 }
+
+const legend = "inline-flex items-center gap-1.5";
+const swatch = "inline-block h-2.5 w-4 rounded-sm";
 
 /** One device's usage over a chosen range, in a modal dialog. */
 export function HistoryDialog({
@@ -252,71 +281,100 @@ export function HistoryDialog({
   return (
     <dialog
       ref={dialog}
-      className="history-dialog"
+      className="m-auto w-[calc(100%-2rem)] max-w-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-lg border bg-background p-6 text-foreground shadow-lg backdrop:bg-black/50"
       aria-labelledby="history-dialog-heading"
       onClose={onClose}
     >
-      <div className="section-heading">
-        <h2 id="history-dialog-heading">{name}</h2>
-        <button type="button" className="quiet" onClick={() => dialog.current?.close()}>
-          Close
-        </button>
+      <div className="grid gap-5">
+        <div className="flex items-start justify-between gap-3">
+          <h2
+            id="history-dialog-heading"
+            className="min-w-0 text-lg font-semibold leading-snug break-words"
+          >
+            {name}
+          </h2>
+          <Button type="button" variant="ghost" size="sm" onClick={() => dialog.current?.close()}>
+            <X aria-hidden="true" />
+            Close
+          </Button>
+        </div>
+        <fieldset className="flex flex-wrap items-center gap-2">
+          <legend className="sr-only">Range</legend>
+          {RANGES.map((range) => (
+            <Button
+              key={range.days}
+              type="button"
+              size="sm"
+              variant={range.days === days ? "default" : "outline"}
+              aria-pressed={range.days === days}
+              onClick={() => setRequest({ days: range.days, attempt: 0 })}
+            >
+              {range.label}
+            </Button>
+          ))}
+        </fieldset>
+        {shown && "failed" in shown ? (
+          <p className="text-sm text-danger" role="status">
+            Cannot load usage.{" "}
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto p-0"
+              onClick={() => setRequest({ days, attempt: request.attempt + 1 })}
+            >
+              Retry
+            </Button>
+          </p>
+        ) : !report ? (
+          <p className="text-sm text-muted-foreground" role="status">
+            Loading…
+          </p>
+        ) : !device ? (
+          <p className="text-sm text-muted-foreground" role="status">
+            Home Assistant has no usage for this device.
+          </p>
+        ) : (
+          <>
+            <div className="grid gap-1">
+              <UsageStrip range={report} device={device} caption={`Last ${label}`} />
+              <p className="flex justify-between text-xs text-muted-foreground">
+                <span>{time(report.start)}</span>
+                <span>{time(report.end)}</span>
+              </p>
+            </div>
+            <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <li className={legend}>
+                <span className={cn(swatch, "bg-status-on")} aria-hidden="true" />
+                {device.device_kind === "light" ? "On, by brightness" : "On"}
+              </li>
+              <li className={legend}>
+                <span className={cn(swatch, "h-0.5 bg-muted-foreground")} aria-hidden="true" />
+                Off
+              </li>
+              <li className={legend}>
+                <span
+                  className={cn(
+                    swatch,
+                    "bg-[repeating-linear-gradient(45deg,var(--status-unknown)_0_2px,transparent_2px_5px)]",
+                  )}
+                  aria-hidden="true"
+                />
+                Unavailable
+              </li>
+              <li className={legend}>
+                <span className={cn(swatch, "border bg-muted")} aria-hidden="true" />
+                No history
+              </li>
+            </ul>
+            <Totals device={device} />
+            {days > 1 && <Days device={device} />}
+            <Hours device={device} />
+            <p className="text-xs text-muted-foreground">
+              {`Days and hours use the ${report.timezone} time zone. Unknown time counts as neither on nor off.`}
+            </p>
+          </>
+        )}
       </div>
-      <fieldset className="ranges">
-        <legend>Range</legend>
-        {RANGES.map((range) => (
-          <button
-            key={range.days}
-            type="button"
-            aria-pressed={range.days === days}
-            onClick={() => setRequest({ days: range.days, attempt: 0 })}
-          >
-            {range.label}
-          </button>
-        ))}
-      </fieldset>
-      {shown && "failed" in shown ? (
-        <p className="history-status" role="status">
-          Cannot load usage.{" "}
-          <button
-            type="button"
-            className="quiet"
-            onClick={() => setRequest({ days, attempt: request.attempt + 1 })}
-          >
-            Retry
-          </button>
-        </p>
-      ) : !report ? (
-        <p className="history-status" role="status">
-          Loading…
-        </p>
-      ) : !device ? (
-        <p className="history-status" role="status">
-          Home Assistant has no usage for this device.
-        </p>
-      ) : (
-        <>
-          <UsageStrip range={report} device={device} caption={`Last ${label}`} />
-          <p className="strip-axis">
-            <span>{time(report.start)}</span>
-            <span>{time(report.end)}</span>
-          </p>
-          <ul className="legend">
-            <li className="legend-on">
-              {device.device_kind === "light" ? "On, by brightness" : "On"}
-            </li>
-            <li className="legend-off">Off</li>
-            <li className="legend-unknown">Unavailable</li>
-            <li className="legend-none">No history</li>
-          </ul>
-          <Totals device={device} />
-          {days > 1 && <Days device={device} />}
-          <Hours device={device} />
-          <p className="history-status">
-            {`Days and hours use the ${report.timezone} time zone. Unknown time counts as neither on nor off.`}
-          </p>
-        </>
-      )}
     </dialog>
   );
 }

@@ -1,9 +1,13 @@
+import { ChevronDown, History, Power } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Schemas } from "../api/client";
 import { brightnessPercent, date } from "../format";
+import { cn } from "../lib/utils";
 import type { DeviceUsage, Usage } from "../useUsage";
 import { lightName } from "./Catalog";
 import { UsageStrip } from "./History";
+import { Button } from "./ui/button";
+import { Card } from "./ui/card";
 
 type State = NonNullable<Schemas["MonitoredEntity"]["state"]>;
 export type DeviceCommand = Schemas["CommandRequest"]["command"];
@@ -28,14 +32,51 @@ function stateText(state: State | null) {
   return state.state === "off" ? "Off" : "Unknown";
 }
 
+type Status = "on" | "off" | "unknown";
+
+/** Only an available device's recorded on or off counts; anything else is unknown. */
+function statusOf(state: State | null): Status {
+  if (state?.availability !== "available") return "unknown";
+  return state.state === "on" || state.state === "off" ? state.state : "unknown";
+}
+
+// Three looks that differ in fill, border and text, so off never reads as unknown.
+const statusStyles: Record<Status, { pill: string; dot: string }> = {
+  on: {
+    pill: "border-status-on bg-status-on-muted text-status-on-foreground",
+    dot: "bg-status-on",
+  },
+  off: { pill: "border-border bg-muted text-foreground", dot: "bg-muted-foreground" },
+  unknown: {
+    pill: "border-dashed border-status-unknown bg-transparent text-muted-foreground",
+    dot: "border border-status-unknown bg-transparent",
+  },
+};
+
+function StatusPill({ state }: { state: State | null }) {
+  const status = statusOf(state);
+  return (
+    <p
+      data-status={status}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-sm font-medium whitespace-nowrap",
+        statusStyles[status].pill,
+      )}
+    >
+      <span className={cn("size-2 rounded-full", statusStyles[status].dot)} aria-hidden="true" />
+      {stateText(state)}
+    </p>
+  );
+}
+
 function StateDetails({ entity, state }: { entity: Schemas["MonitoredEntity"]; state: State }) {
   const brightness = brightnessOf(state);
   return (
     <>
-      {brightness != null && <small>{`Brightness ${brightness} / 255`}</small>}
-      <small>{`Home Assistant entity: ${entity.source_entity_id ?? entity.id}`}</small>
-      <small>{`Last changed: ${date(state.last_changed)}`}</small>
-      <small>{`Last updated: ${date(state.last_updated)}`}</small>
+      {brightness != null && <small className="block">{`Brightness ${brightness} / 255`}</small>}
+      <small className="block break-all">{`Home Assistant entity: ${entity.source_entity_id ?? entity.id}`}</small>
+      <small className="block">{`Last changed: ${date(state.last_changed)}`}</small>
+      <small className="block">{`Last updated: ${date(state.last_updated)}`}</small>
     </>
   );
 }
@@ -55,15 +96,17 @@ function SwitchButton({
 }) {
   const label = `Turn ${action}`;
   return (
-    <button
+    <Button
       type="button"
-      className={action === "off" ? "switch on" : "switch"}
+      variant={action === "off" ? "default" : "outline"}
+      className="w-full"
       aria-label={`${label} ${name}`}
       disabled={sending}
       onClick={() => onClick(action)}
     >
+      <Power aria-hidden="true" />
       {sending ? "Sending…" : label}
-    </button>
+    </Button>
   );
 }
 
@@ -79,9 +122,10 @@ function Dimmer({
   onChange: (percent: number) => void;
 }) {
   return (
-    <label className="dimmer">
+    <label className="flex items-center gap-3">
       <input
         type="range"
+        className="h-1.5 w-full min-w-0 cursor-pointer appearance-none rounded-full bg-muted outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border [&::-moz-range-thumb]:border-primary [&::-moz-range-thumb]:bg-background [&::-moz-range-thumb]:shadow-sm [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-primary [&::-webkit-slider-thumb]:bg-background [&::-webkit-slider-thumb]:shadow-sm"
         min={1}
         max={100}
         value={value}
@@ -89,7 +133,7 @@ function Dimmer({
         aria-label={`Brightness of ${name}`}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-      <output>{`${value}%`}</output>
+      <output className="w-10 shrink-0 text-right text-sm text-muted-foreground tabular-nums">{`${value}%`}</output>
     </label>
   );
 }
@@ -136,72 +180,101 @@ function Tile({
   }, [switchable]);
 
   return (
-    <article className={recorded === "on" ? "tile lit" : "tile"}>
-      <div className="tile-head">
-        <h3>{name}</h3>
-      </div>
-      <p className="tile-state">{stateText(state)}</p>
-      {!entity.supported && entity.reason && <p className="tile-note">{entity.reason}</p>}
-      {switchable && (
-        <div className="tile-controls">
-          <SwitchButton
-            name={name}
-            action={recorded === "on" ? "off" : "on"}
-            sending={busy}
-            onClick={(action) => {
-              // The click wins over a slider move that has not settled yet.
-              cancelDraft();
-              onSwitch(entity, { action });
-            }}
-          />
-          {dimmable && (
-            <Dimmer
+    <article className="min-w-0">
+      <Card
+        className={cn(
+          "h-full gap-4 px-5 py-5",
+          recorded === "on" && "border-status-on/70 bg-status-on-muted/40",
+        )}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="min-w-0 font-semibold leading-snug break-words">{name}</h3>
+          <StatusPill state={state} />
+        </div>
+        {!entity.supported && entity.reason && (
+          <p className="text-xs text-warning-foreground">{entity.reason}</p>
+        )}
+        {switchable && (
+          <div className="grid gap-3">
+            <SwitchButton
               name={name}
-              value={draft ?? percent}
-              disabled={busy}
-              onChange={(brightness_pct) => {
-                setDraft(brightness_pct);
-                clearTimeout(settle.current);
-                settle.current = setTimeout(() => {
-                  setDraft(null);
-                  onSwitch(entity, { action: "on", brightness_pct });
-                }, DIMMER_SETTLE_MS);
+              action={recorded === "on" ? "off" : "on"}
+              sending={busy}
+              onClick={(action) => {
+                // The click wins over a slider move that has not settled yet.
+                cancelDraft();
+                onSwitch(entity, { action });
               }}
             />
-          )}
-        </div>
-      )}
-      {recent?.device && (
-        <UsageStrip range={recent.range} device={recent.device} caption="Last 24 hours" />
-      )}
-      <button
-        type="button"
-        className="quiet history-link"
-        aria-label={`Usage history of ${name}`}
-        onClick={() => onHistory(entity)}
-      >
-        Usage history
-      </button>
-      <details className="details">
-        <summary>Details</summary>
-        {state ? (
-          <StateDetails entity={entity} state={state} />
-        ) : (
-          <small>
-            {entity.missing
-              ? "Home Assistant no longer has this device."
-              : "Home Assistant cannot be read right now."}
-          </small>
+            {dimmable && (
+              <Dimmer
+                name={name}
+                value={draft ?? percent}
+                disabled={busy}
+                onChange={(brightness_pct) => {
+                  setDraft(brightness_pct);
+                  clearTimeout(settle.current);
+                  settle.current = setTimeout(() => {
+                    setDraft(null);
+                    onSwitch(entity, { action: "on", brightness_pct });
+                  }, DIMMER_SETTLE_MS);
+                }}
+              />
+            )}
+          </div>
         )}
-        <button
-          type="button"
-          className="quiet"
-          aria-label={`Stop monitoring ${name}`}
-          onClick={() => onStop(entity.id)}
-        >
-          Stop monitoring
-        </button>
-      </details>
+        {recent?.device && (
+          <div className="grid gap-1">
+            <span className="text-xs text-muted-foreground" aria-hidden="true">
+              Last 24 hours
+            </span>
+            <UsageStrip range={recent.range} device={recent.device} caption="Last 24 hours" />
+          </div>
+        )}
+        <div className="mt-auto grid gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="justify-self-start px-2"
+            aria-label={`Usage history of ${name}`}
+            onClick={() => onHistory(entity)}
+          >
+            <History aria-hidden="true" />
+            Usage history
+          </Button>
+          <details className="group rounded-md border px-3 py-2 text-muted-foreground">
+            <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-medium text-foreground [&::-webkit-details-marker]:hidden">
+              Details
+              <ChevronDown
+                className="size-4 transition-transform group-open:rotate-180"
+                aria-hidden="true"
+              />
+            </summary>
+            <div className="mt-2 grid gap-1 text-xs">
+              {state ? (
+                <StateDetails entity={entity} state={state} />
+              ) : (
+                <small className="block">
+                  {entity.missing
+                    ? "Home Assistant no longer has this device."
+                    : "Home Assistant cannot be read right now."}
+                </small>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2 justify-self-start"
+                aria-label={`Stop monitoring ${name}`}
+                onClick={() => onStop(entity.id)}
+              >
+                Stop monitoring
+              </Button>
+            </div>
+          </details>
+        </div>
+      </Card>
     </article>
   );
 }
@@ -232,13 +305,13 @@ export function Monitored({
   const recent = (id: string): Recent | null => usage && { range: usage, device: devices.get(id) };
   return (
     <>
-      <div id="monitored" className="tiles">
+      <div id="monitored" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {entities && !entities.length && (
-          <div className="empty">
+          <div className="col-span-full grid justify-items-start gap-3 rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
             <p>No lights monitored yet. Choose the lights Home Keeper should look after.</p>
-            <button type="button" className="primary" onClick={onChooseLights}>
+            <Button type="button" onClick={onChooseLights}>
               Choose lights
-            </button>
+            </Button>
           </div>
         )}
         {lights.map((entity) => (
@@ -254,9 +327,11 @@ export function Monitored({
         ))}
       </div>
       {switches.length > 0 && (
-        <section className="switches" aria-labelledby="switches-heading">
-          <h2 id="switches-heading">Plugs and switches</h2>
-          <div id="monitored-switches" className="tiles">
+        <section className="grid gap-4" aria-labelledby="switches-heading">
+          <h2 id="switches-heading" className="text-lg font-semibold tracking-tight">
+            Plugs and switches
+          </h2>
+          <div id="monitored-switches" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {switches.map((entity) => (
               <Tile
                 key={entity.id}

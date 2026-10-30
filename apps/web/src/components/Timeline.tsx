@@ -1,3 +1,4 @@
+import { ChevronRight } from "lucide-react";
 import type { Schemas } from "../api/client";
 import { brightnessPercent, date, time } from "../format";
 
@@ -78,9 +79,9 @@ export function Timeline({
   names: ReadonlyMap<string, string>;
 }) {
   return (
-    <div id="timeline" className="rows">
+    <div id="timeline" className="grid">
       {events && !events.length && (
-        <p className="empty">
+        <p className="text-sm text-muted-foreground">
           Home Assistant has no changes of monitored devices in the last 30 days. Select a light and
           wait for a change.
         </p>
@@ -88,16 +89,27 @@ export function Timeline({
       {events?.map((event) => {
         const fields = changedFields(event);
         return (
-          <article key={event.id} className="row recorded-event">
-            <details>
-              <summary>
-                <span className="row-main">
-                  <strong>{names.get(event.entity_id) ?? event.source_entity_id}</strong>{" "}
+          <article key={event.id} className="border-b last-of-type:border-0">
+            <details className="group py-2.5 text-sm">
+              <summary className="flex cursor-pointer list-none items-baseline gap-2 [&::-webkit-details-marker]:hidden">
+                <ChevronRight
+                  className="size-4 shrink-0 self-center text-muted-foreground transition-transform group-open:rotate-90"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 flex-1 break-words">
+                  <strong className="font-medium">
+                    {names.get(event.entity_id) ?? event.source_entity_id}
+                  </strong>{" "}
                   {summary(event, fields)}
                 </span>
-                <time dateTime={event.time}>{time(event.time)}</time>
+                <time
+                  dateTime={event.time}
+                  className="shrink-0 text-xs text-muted-foreground tabular-nums"
+                >
+                  {time(event.time)}
+                </time>
               </summary>
-              <ul className="change-values">
+              <ul className="mt-2 ml-6 list-disc pl-4 text-xs leading-relaxed break-words">
                 {fields.length ? (
                   fields.map((field) => (
                     <li key={field}>
@@ -108,8 +120,8 @@ export function Timeline({
                   <li>No changed field captured.</li>
                 )}
               </ul>
-              <small>{`Entity: ${event.source_entity_id} · Identity: ${event.entity_id}`}</small>
-              <small>{`Home Assistant time: ${date(event.time)}`}</small>
+              <small className="mt-1 ml-6 block text-xs text-muted-foreground break-all">{`Entity: ${event.source_entity_id} · Identity: ${event.entity_id}`}</small>
+              <small className="ml-6 block text-xs text-muted-foreground">{`Home Assistant time: ${date(event.time)}`}</small>
             </details>
           </article>
         );
