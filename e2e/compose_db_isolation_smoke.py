@@ -14,14 +14,17 @@ PROJECT = "hk-db-isolation-proof"
 
 
 def compose(*args: str) -> str:
-    return subprocess.run(
+    result = subprocess.run(
         ["docker", "compose", "-p", PROJECT, "-f", FILE, *args],
         cwd=REPO,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=180,
-    ).stdout
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"docker compose {' '.join(args)} failed:\n{result.stdout}{result.stderr}")
+    return result.stdout
 
 
 def password(name: str) -> str:
@@ -77,8 +80,8 @@ def connects(user: str, pw: str, db: str) -> bool:
 
 def main() -> None:
     try:
-        # --wait fails when the one-shot db-setup exits with an error.
-        compose("up", "--wait", "db-setup")
+        # Starts Postgres, waits until it is healthy, and fails with db-setup's exit code.
+        compose("run", "--rm", "db-setup")
         failures: list[str] = []
         names = ["keeper", "agent", "telegram"]
         passwords = {name: password(name) for name in names}
