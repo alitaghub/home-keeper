@@ -14,6 +14,7 @@ dev = [
     # scripts/check_env.py reads the Compose files.
     "pyyaml>=6,<7",
     "ruff>=0.11,<1",
+    "testcontainers[postgres]>=4,<5",
     "types-pyyaml>=6,<7",
 ]
 

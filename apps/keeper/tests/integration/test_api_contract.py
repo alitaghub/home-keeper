@@ -6,6 +6,7 @@ Snapshots in snapshots/api/ hold the parsed JSON each public route returns for a
 import json
 import os
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -66,8 +67,8 @@ def usage_range(start: datetime, end: datetime) -> dict[str, str]:
     return {"start": start.isoformat(), "end": end.isoformat()}
 
 
-def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
-    app = create_app(tmp_path / "empty.sqlite", TOKEN, now=lambda: NOW, reader=FakeReader())
+def empty_responses(database: str) -> dict[str, Recorded]:
+    app = create_app(database, TOKEN, now=lambda: NOW, reader=FakeReader())
     with TestClient(app) as client:
         return {
             "empty_catalog": record(client.get("/api/catalog")),
@@ -81,11 +82,11 @@ def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
         }
 
 
-def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
+def seeded_responses(database: str) -> dict[str, Recorded]:
     clock = [NOW]
     result: dict[str, Recorded] = {}
     reader = catalog_reader()
-    app = create_app(tmp_path / "seeded.sqlite", TOKEN, now=lambda: clock[0], reader=reader)
+    app = create_app(database, TOKEN, now=lambda: clock[0], reader=reader)
     with TestClient(app) as client:
         result["put_selection"] = record(
             client.put("/api/selection/bulb-a", json={"selected": True}, headers=BROWSER)
@@ -142,10 +143,10 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
     return result
 
 
-def unreachable_responses(tmp_path: Path) -> dict[str, Recorded]:
+def unreachable_responses(database: str) -> dict[str, Recorded]:
     """What the dashboard and the agent get while Home Assistant cannot be reached."""
     reader = catalog_reader()
-    app = create_app(tmp_path / "unreachable.sqlite", TOKEN, now=lambda: NOW, reader=reader)
+    app = create_app(database, TOKEN, now=lambda: NOW, reader=reader)
     with TestClient(app) as client:
         for entity in ("bulb-a", "bulb-b"):
             selected = client.put(
@@ -170,13 +171,13 @@ def unreachable_responses(tmp_path: Path) -> dict[str, Recorded]:
         }
 
 
-def control_responses(tmp_path: Path) -> dict[str, Recorded]:
+def control_responses(database: str) -> dict[str, Recorded]:
     """Control status, each command outcome, the command audit and the refusals."""
     clock = [NOW]
     controller = FakeController(clock)
     reader = catalog_reader()
     app = create_app(
-        tmp_path / "control.sqlite",
+        database,
         TOKEN,
         now=lambda: clock[0],
         reader=reader,
@@ -247,13 +248,12 @@ SNAPSHOT_NAMES = sorted(path.stem for path in SNAPSHOTS.glob("*.json"))
 
 
 @pytest.fixture(scope="module")
-def responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Recorded]:
-    path = tmp_path_factory.mktemp("contract")
+def responses(make_database: Callable[[], str]) -> dict[str, Recorded]:
     return (
-        empty_responses(path)
-        | seeded_responses(path)
-        | unreachable_responses(path)
-        | control_responses(path)
+        empty_responses(make_database())
+        | seeded_responses(make_database())
+        | unreachable_responses(make_database())
+        | control_responses(make_database())
     )
 
 
@@ -275,12 +275,12 @@ def test_public_response_matches_snapshot(responses: dict[str, Recorded], name: 
     assert responses[name] == json.loads((SNAPSHOTS / f"{name}.json").read_text())
 
 
-def schema_app(tmp_path: Path) -> FastAPI:
-    return create_app(tmp_path / "schema.sqlite", TOKEN, now=lambda: NOW, reader=FakeReader())
+def schema_app(database: str) -> FastAPI:
+    return create_app(database, TOKEN, now=lambda: NOW, reader=FakeReader())
 
 
-def test_every_public_route_publishes_a_response_schema(tmp_path: Path) -> None:
-    app = schema_app(tmp_path)
+def test_every_public_route_publishes_a_response_schema(database: str) -> None:
+    app = schema_app(database)
     paths = app.openapi()["paths"]
     public = [
         (route.path, method.lower())
@@ -304,13 +304,13 @@ def test_every_public_route_publishes_a_response_schema(tmp_path: Path) -> None:
     assert untyped == [], f"public routes without a response schema: {untyped}"
 
 
-def test_internal_routes_are_not_published(tmp_path: Path) -> None:
-    paths = schema_app(tmp_path).openapi()["paths"]
+def test_internal_routes_are_not_published(database: str) -> None:
+    paths = schema_app(database).openapi()["paths"]
     internal = [path for path in paths if path.startswith("/internal")]
     assert internal == [], f"internal routes in OpenAPI: {internal}"
 
 
-def test_command_route_declares_its_refusal_body(tmp_path: Path) -> None:
-    operation = schema_app(tmp_path).openapi()["paths"]["/api/devices/{entity_id}/command"]["post"]
+def test_command_route_declares_its_refusal_body(database: str) -> None:
+    operation = schema_app(database).openapi()["paths"]["/api/devices/{entity_id}/command"]["post"]
     schema = operation["responses"]["409"]["content"]["application/json"]["schema"]
     assert schema == {"$ref": "#/components/schemas/CommandRefused"}

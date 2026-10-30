@@ -9,7 +9,6 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -108,12 +107,12 @@ class House:
 
 
 @contextmanager
-def house(tmp_path: Path) -> Generator[House]:
+def house(database: str) -> Generator[House]:
     """Home Assistant has the desk lamp, the floor lamp and the kettle; nothing is monitored
     and the recorder holds nothing yet."""
     clock = [NOW]
     reader = FakeReader([DESK, LAMP, KETTLE])
-    app = create_app(tmp_path / "history.sqlite", TOKEN, now=lambda: clock[0], reader=reader)
+    app = create_app(database, TOKEN, now=lambda: clock[0], reader=reader)
     with TestClient(app) as client:
         yield House(client, reader, clock)
 
@@ -169,13 +168,13 @@ def read_span(home: House) -> tuple[datetime, datetime]:
     ],
 )
 def test_each_kind_of_change_is_one_event_with_its_old_and_new_reading(
-    tmp_path: Path,
+    database: str,
     before: Payload,
     after: Payload,
     old: dict[str, object],
     new: dict[str, object],
 ) -> None:
-    with house(tmp_path) as home:
+    with house(database) as home:
         home.select(DESK.id)
         home.record(DESK.id, (minute(0), before), (minute(1), after))
 
@@ -192,8 +191,8 @@ def test_each_kind_of_change_is_one_event_with_its_old_and_new_reading(
         assert {field: change["new"].get(field) for field in new} == new
 
 
-def test_a_row_that_repeats_the_one_before_is_no_change(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_a_row_that_repeats_the_one_before_is_no_change(database: str) -> None:
+    with house(database) as home:
         home.select(DESK.id)
         bright = {"state": "on", "brightness": 100}
         home.record(
@@ -213,8 +212,8 @@ def test_a_row_that_repeats_the_one_before_is_no_change(tmp_path: Path) -> None:
         assert changes[0]["new"]["state"] == "off"
 
 
-def test_the_state_at_the_window_start_is_never_a_change_by_itself(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_the_state_at_the_window_start_is_never_a_change_by_itself(database: str) -> None:
+    with house(database) as home:
         home.select(DESK.id)
         home.record(DESK.id, (minute(0), OFF), (minute(60), {"state": "on"}))
 
@@ -230,10 +229,10 @@ def test_the_state_at_the_window_start_is_never_a_change_by_itself(tmp_path: Pat
 
 
 def test_a_change_at_exactly_start_is_in_that_window_once_with_its_old_reading(
-    tmp_path: Path,
+    database: str,
 ) -> None:
     a, b, c = minute(60), minute(120), minute(180)
-    with house(tmp_path) as home:
+    with house(database) as home:
         home.select(DESK.id)
         home.record(
             DESK.id,
@@ -257,9 +256,9 @@ def test_a_change_at_exactly_start_is_in_that_window_once_with_its_old_reading(
 
 
 def test_120_changes_page_as_50_50_20_newest_first_without_repeats_or_gaps(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with house(tmp_path) as home:
+    with house(database) as home:
         home.select(DESK.id)
         home.select(LAMP.id)
         # Both lights change at the same 60 instants: 120 changes, in pairs that share a time.
@@ -284,8 +283,8 @@ def test_120_changes_page_as_50_50_20_newest_first_without_repeats_or_gaps(
         assert len(set(ids)) == 120
 
 
-def test_a_page_reads_history_newest_first_and_never_past_its_cursor(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_a_page_reads_history_newest_first_and_never_past_its_cursor(database: str) -> None:
+    with house(database) as home:
         home.select(DESK.id)
         recent = [NOW - timedelta(minutes=n) for n in range(10, 0, -1)]
         home.record(
@@ -317,9 +316,9 @@ def test_a_page_reads_history_newest_first_and_never_past_its_cursor(tmp_path: P
 
 
 def test_paging_keeps_its_window_while_time_moves_and_new_changes_arrive(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with house(tmp_path) as home:
+    with house(database) as home:
         home.select(DESK.id)
         oldest = NOW - timedelta(days=30) + timedelta(minutes=30)
         recent = [NOW - timedelta(minutes=n) for n in range(60, 0, -1)]
@@ -359,8 +358,8 @@ def test_paging_keeps_its_window_while_time_moves_and_new_changes_arrive(
         ]
 
 
-def test_without_start_the_window_is_the_30_days_before_end(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_without_start_the_window_is_the_30_days_before_end(database: str) -> None:
+    with house(database) as home:
         home.select(DESK.id)
         home.record(
             DESK.id,
@@ -383,8 +382,8 @@ def test_without_start_the_window_is_the_30_days_before_end(tmp_path: Path) -> N
         ]
 
 
-def test_start_end_and_entity_filters_narrow_the_changes(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_start_end_and_entity_filters_narrow_the_changes(database: str) -> None:
+    with house(database) as home:
         home.select(DESK.id)
         home.select(LAMP.id)
         for entity_id in (DESK.id, LAMP.id):
@@ -407,8 +406,8 @@ def test_start_end_and_entity_filters_narrow_the_changes(tmp_path: Path) -> None
         assert {change["entity_id"] for change in home.changes(entity_id=LAMP.id)} == {LAMP.id}
 
 
-def test_a_switch_change_has_no_light_fields(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_a_switch_change_has_no_light_fields(database: str) -> None:
+    with house(database) as home:
         home.select(KETTLE.id)
         home.record(KETTLE.id, (minute(0), OFF), (minute(1), {"state": "on"}))
 
@@ -421,8 +420,8 @@ def test_a_switch_change_has_no_light_fields(tmp_path: Path) -> None:
             assert "brightness" not in reading
 
 
-def test_history_of_a_device_that_is_not_monitored_never_shows(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_history_of_a_device_that_is_not_monitored_never_shows(database: str) -> None:
+    with house(database) as home:
         home.select(DESK.id)
         for entity_id in (DESK.id, LAMP.id):
             home.record(entity_id, (minute(0), OFF), (minute(1), {"state": "on"}))
@@ -455,8 +454,8 @@ def test_history_of_a_device_that_is_not_monitored_never_shows(tmp_path: Path) -
         ),
     ],
 )
-def test_an_invalid_history_request_is_422(tmp_path: Path, params: dict[str, str | int]) -> None:
-    with house(tmp_path) as home:
+def test_an_invalid_history_request_is_422(database: str, params: dict[str, str | int]) -> None:
+    with house(database) as home:
         home.select(DESK.id)
         home.record(DESK.id, (minute(0), OFF), (minute(1), {"state": "on"}))
 
@@ -467,9 +466,9 @@ def test_an_invalid_history_request_is_422(tmp_path: Path, params: dict[str, str
 
 @pytest.mark.parametrize("error", UNREACHABLE)
 def test_history_is_a_503_with_a_safe_error_while_home_assistant_cannot_be_read(
-    tmp_path: Path, error: ReaderError
+    database: str, error: ReaderError
 ) -> None:
-    with house(tmp_path) as home:
+    with house(database) as home:
         home.select(DESK.id)
         home.reader.error = error
 

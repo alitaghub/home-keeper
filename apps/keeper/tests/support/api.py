@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -60,6 +59,6 @@ def catalog_reader() -> FakeReader:
 
 
 def app_for(
-    path: Path, now: Callable[[], datetime] = lambda: NOW, reader: FakeReader | None = None
+    database: str, now: Callable[[], datetime] = lambda: NOW, reader: FakeReader | None = None
 ) -> FastAPI:
-    return create_app(db_path=path, service_token=TOKEN, now=now, reader=reader or catalog_reader())
+    return create_app(database, service_token=TOKEN, now=now, reader=reader or catalog_reader())

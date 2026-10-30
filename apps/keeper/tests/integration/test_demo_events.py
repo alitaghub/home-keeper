@@ -7,7 +7,6 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -59,7 +58,7 @@ class Demo:
 
 
 @contextmanager
-def demo(tmp_path: Path) -> Generator[Demo]:
+def demo(database: str) -> Generator[Demo]:
     """The API reads a fresh demo reader over its internal HTTP; every demo device is
     monitored."""
     backend = DemoBackend()
@@ -70,7 +69,7 @@ def demo(tmp_path: Path) -> Generator[Demo]:
     ) as reader_client:
         reader = HttpReader("http://reader:8080", SERVICE)
         reader._http = reader_client  # pyright: ignore[reportPrivateUsage] -- serve the reader app in-process
-        with TestClient(create_app(tmp_path / "demo.sqlite", SERVICE, reader=reader)) as api:
+        with TestClient(create_app(database, SERVICE, reader=reader)) as api:
             for entity_id in DEVICES:
                 api.put(
                     f"/api/selection/{entity_id}",
@@ -95,8 +94,8 @@ def kinds(change: dict[str, Any]) -> set[str]:
     return found
 
 
-def test_demo_history_shows_a_day_of_changes_from_the_first_minute(tmp_path: Path) -> None:
-    with demo(tmp_path) as home:
+def test_demo_history_shows_a_day_of_changes_from_the_first_minute(database: str) -> None:
+    with demo(database) as home:
         now = datetime.now(UTC)
 
         changes = home.changes(start=(now - timedelta(hours=24)).isoformat())
@@ -114,8 +113,8 @@ def test_demo_history_shows_a_day_of_changes_from_the_first_minute(tmp_path: Pat
             assert "brightness" not in change["new"]
 
 
-def test_each_replay_step_adds_to_the_demo_history(tmp_path: Path) -> None:
-    with demo(tmp_path) as home:
+def test_each_replay_step_adds_to_the_demo_history(database: str) -> None:
+    with demo(database) as home:
         before = home.changes()
         stepped = datetime.now(UTC)
 
@@ -127,8 +126,8 @@ def test_each_replay_step_adds_to_the_demo_history(tmp_path: Path) -> None:
         assert after[len(new) :] == before
 
 
-def test_a_demo_command_appears_in_the_history(tmp_path: Path) -> None:
-    with demo(tmp_path) as home:
+def test_a_demo_command_appears_in_the_history(database: str) -> None:
+    with demo(database) as home:
         plug = "switch.smart_plug"
         # The plug may be unavailable in its replay; the next step brings it back.
         for _ in range(7):

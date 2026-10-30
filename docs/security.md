@@ -7,7 +7,7 @@
   privileged mode, host networking, USB or Bluetooth access.
 - Only the reader reads the Home Assistant token at run time, from a
   read-only mount. The API,
-  SQLite and browser never receive it. With the `control` profile, the
+  database and browser never receive it. With the `control` profile, the
   controller reads a second token, for the non-admin "Home Keeper control"
   user, from the `ha-control-token` volume, read-only. Only `ha-setup`, which
   writes it with mode `600`, and the controller mount that volume. Revoke
@@ -32,7 +32,7 @@
   their history, and `GET /api/` to check that Home Assistant answers. Discovery reads a candidate's state only to detect a group
   and keeps only that answer. The reader keeps the projected catalog in memory
   for up to 10 seconds and never keeps a state or history. It makes no service call, no
-  event subscription and no device write, and it has no `/data` mount. The keeper
+  event subscription and no device write, and it has no database access. The keeper
   image contains no controller code.
 - The controller makes exactly four Home Assistant service calls:
   `light.turn_on`, with an optional `brightness_pct` from 1 to 100, and
@@ -63,10 +63,11 @@
   reader and the controller hold. The controller sends its heartbeat to the
   API with the same credential.
 - The optional agent (`--profile agent`) is a separate container. It joins the
-  dashboard network to reach the API, an internal network to reach its own
-  Postgres, and the default network for egress to the model provider. It never
-  joins the `home-assistant` network and mounts no Home Keeper volume, so it cannot
-  reach Home Assistant, the token, the database or the service credential. It
+  dashboard network to reach the API, the internal `database` network to reach
+  its own database in the shared Postgres, and the default network for egress to
+  the model provider. It never joins the `home-assistant` network and mounts only
+  its own database password, so it cannot reach Home Assistant, the token, the
+  keeper's database or the service credential. It
   calls only the public `/api/*` routes, through the `api` host name, and sends
   the same mutation header as the dashboard. Its only writes are discovery
   refresh, selection changes and light commands. A selection change or a light
@@ -82,7 +83,13 @@
   propose and approve their own light commands, because the approval prompt
   is answered on the same unauthenticated port. CORS does not stop simple cross-site
   requests from a page you visit, and Aegra has no `Host` check, so DNS
-  rebinding is not mitigated. Its Postgres publishes no port.
+  rebinding is not mitigated.
+- One Postgres serves the API, the agent and the Telegram worker. It publishes no
+  port, and only those three join its internal `database` network. `db-setup`
+  gives each a login role, a random password in a volume only it and that
+  service mount, and a database that only that role may connect to. The
+  superuser has no password, so it cannot log in over the network; `db-setup`
+  reaches it through the Unix socket.
 
 Do not expose the dashboard or the agent publicly. Neither has user
 authentication. With the `control` profile, anyone who can reach the API can
@@ -92,7 +99,7 @@ you configure in `AGENT_MODEL`. Tool results contain light names, states,
 timestamps, usage numbers, the light control state and light command outcomes
 from the public API. The Home Assistant token, the
 database and the service credential never leave. Chat threads stay in the local
-Postgres volume, and the provider also receives each thread's earlier messages
+Postgres, and the provider also receives each thread's earlier messages
 as context. See [agent.md](agent.md).
 
 See [architecture.md](architecture.md) for how these parts connect, and

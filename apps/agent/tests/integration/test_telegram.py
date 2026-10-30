@@ -1,7 +1,6 @@
 import json
 from collections.abc import Iterator
 from contextlib import ExitStack, suppress
-from pathlib import Path
 from typing import Literal, Protocol
 
 import httpx
@@ -51,7 +50,7 @@ class BotFactory(Protocol):
 
 
 def family_settings(
-    tmp_path: Path,
+    database: str,
     *,
     allowed_user_ids: frozenset[int] = frozenset({11}),
     control_user_ids: frozenset[int] = frozenset(),
@@ -61,7 +60,8 @@ def family_settings(
         bot_token=bot_token or SecretStr("123:secret"),
         allowed_user_ids=allowed_user_ids,
         control_user_ids=control_user_ids,
-        state_path=str(tmp_path / "bot.sqlite3"),
+        database_url=database,
+        database_password_file=None,
     )
 
 
@@ -83,7 +83,7 @@ def make_bot() -> Iterator[BotFactory]:
 
 
 def test_only_allowed_private_messages_can_reach_the_agent(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     agent_requests: list[httpx.Request] = []
     telegram_requests: list[TelegramBody] = []
@@ -97,7 +97,7 @@ def test_only_allowed_private_messages_can_reach_the_agent(
         raise AssertionError("Unauthorized messages must not reach Aegra")
 
     bot = make_bot(
-        family_settings(tmp_path, allowed_user_ids=frozenset({11, 22})),
+        family_settings(database, allowed_user_ids=frozenset({11, 22})),
         telegram_client=httpx.Client(transport=httpx.MockTransport(telegram)),
         agent_client=httpx.Client(transport=httpx.MockTransport(agent)),
     )
@@ -114,7 +114,7 @@ def test_only_allowed_private_messages_can_reach_the_agent(
 
 def test_family_members_keep_separate_saved_threads_and_new_preserves_old_history(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
 ) -> None:
 
     telegram = FakeTelegram()
@@ -127,7 +127,7 @@ def test_family_members_keep_separate_saved_threads_and_new_preserves_old_histor
         ],
         FakeKeeper(),
     )
-    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
+    settings = family_settings(database, allowed_user_ids=frozenset({11, 22}))
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "First question"))
     bot.handle_update(incoming(2, 22, "Family question"))
@@ -167,7 +167,7 @@ def test_family_members_keep_separate_saved_threads_and_new_preserves_old_histor
 )
 def test_telegram_buttons_resume_real_monitoring_action_after_restart(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
     decision: str,
     *,
     name: Literal["monitor", "stop_monitoring"],
@@ -184,7 +184,7 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
         ],
         keeper,
     )
-    settings = family_settings(tmp_path)
+    settings = family_settings(database)
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Watch this light"))
     assert keeper.requests == []
@@ -218,7 +218,7 @@ def test_telegram_buttons_resume_real_monitoring_action_after_restart(
 
 def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_resume(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
 ) -> None:
 
     telegram = FakeTelegram()
@@ -237,7 +237,7 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
         keeper,
     )
     bot = make_bot(
-        family_settings(tmp_path, allowed_user_ids=frozenset({11, 22})),
+        family_settings(database, allowed_user_ids=frozenset({11, 22})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -266,7 +266,7 @@ def test_each_action_needs_its_own_decision_and_foreign_or_wrong_prompt_cannot_r
 
 def test_plain_text_reply_contains_only_current_final_answer_and_splits_without_loss(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
 ) -> None:
 
     telegram = FakeTelegram()
@@ -284,7 +284,7 @@ def test_plain_text_reply_contains_only_current_final_answer_and_splits_without_
         FakeKeeper(),
     )
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -298,7 +298,7 @@ def test_plain_text_reply_contains_only_current_final_answer_and_splits_without_
 
 
 def test_uncertain_submitted_approval_is_not_replayed_after_restart(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
@@ -309,7 +309,7 @@ def test_uncertain_submitted_approval_is_not_replayed_after_restart(
         ],
         keeper,
     )
-    settings = family_settings(tmp_path)
+    settings = family_settings(database)
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Monitor"))
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
@@ -327,7 +327,7 @@ def test_uncertain_submitted_approval_is_not_replayed_after_restart(
 
 
 def test_new_and_removed_access_make_old_pending_buttons_unusable(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper()
@@ -335,7 +335,7 @@ def test_new_and_removed_access_make_old_pending_buttons_unusable(
         [monitoring_request()],
         keeper,
     )
-    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
+    settings = family_settings(database, allowed_user_ids=frozenset({11, 22}))
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Monitor"))
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
@@ -356,12 +356,12 @@ def test_new_and_removed_access_make_old_pending_buttons_unusable(
     "answer", [AIMessage(""), AIMessage(content=[{"type": "reasoning", "reasoning": "internal"}])]
 )
 def test_empty_or_internal_only_agent_answer_gets_a_fixed_failure(
-    make_bot: BotFactory, tmp_path: Path, answer: AIMessage
+    make_bot: BotFactory, database: str, answer: AIMessage
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Old answer"), answer], FakeKeeper())
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -376,11 +376,11 @@ def test_empty_or_internal_only_agent_answer_gets_a_fixed_failure(
 
 def test_lost_submission_is_not_replayed_but_later_batch_updates_are_not_skipped(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Family answer")], FakeKeeper())
-    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
+    settings = family_settings(database, allowed_user_ids=frozenset({11, 22}))
     updates = [incoming(1, 11, "First"), incoming(2, 22, "Family")]
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -409,7 +409,7 @@ def test_lost_submission_is_not_replayed_but_later_batch_updates_are_not_skipped
 
 def test_process_exit_during_first_submission_keeps_second_fetched_update_available(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
 ) -> None:
     class ProcessExit(BaseException):
         pass
@@ -417,7 +417,7 @@ def test_process_exit_during_first_submission_keeps_second_fetched_update_availa
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Family answer")], FakeKeeper())
     updates = [incoming(1, 11, "First"), incoming(2, 22, "Family")]
-    settings = family_settings(tmp_path, allowed_user_ids=frozenset({11, 22}))
+    settings = family_settings(database, allowed_user_ids=frozenset({11, 22}))
 
     def telegram_transport(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/getUpdates"):
@@ -449,7 +449,7 @@ def test_process_exit_during_first_submission_keeps_second_fetched_update_availa
 
 
 def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper()
@@ -477,7 +477,7 @@ def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(
         return response
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -492,7 +492,7 @@ def test_unknown_interrupt_fails_closed_without_buttons_or_selection_write(
 
 @pytest.mark.parametrize("mismatch", ["chat", "interrupt", "action"])
 def test_callback_must_match_the_actual_chat_interrupt_and_action(
-    make_bot: BotFactory, tmp_path: Path, mismatch: str
+    make_bot: BotFactory, database: str, mismatch: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper()
@@ -518,7 +518,7 @@ def test_callback_must_match_the_actual_chat_interrupt_and_action(
         return response
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -542,7 +542,7 @@ def test_callback_must_match_the_actual_chat_interrupt_and_action(
 
 
 def test_known_rate_limit_waits_before_retry_without_submitting_an_agent_run(
-    make_bot: BotFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_bot: BotFactory, database: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     delays: list[float] = []
     monkeypatch.setattr("time.sleep", delays.append)
@@ -558,7 +558,7 @@ def test_known_rate_limit_waits_before_retry_without_submitting_an_agent_run(
 
     agent = GraphAegra([AIMessage("Unused")], FakeKeeper())
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -571,7 +571,7 @@ def test_known_rate_limit_waits_before_retry_without_submitting_an_agent_run(
 
 @pytest.mark.parametrize("error_code", [401, 404, 409])
 def test_invalid_token_or_polling_conflict_has_fixed_secret_free_error(
-    make_bot: BotFactory, tmp_path: Path, error_code: int
+    make_bot: BotFactory, database: str, error_code: int
 ) -> None:
     def transport(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -580,7 +580,7 @@ def test_invalid_token_or_polling_conflict_has_fixed_secret_free_error(
         )
 
     bot = make_bot(
-        family_settings(tmp_path, bot_token=SecretStr("123:private-secret")),
+        family_settings(database, bot_token=SecretStr("123:private-secret")),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(FatalTelegramError) as caught:
@@ -590,7 +590,7 @@ def test_invalid_token_or_polling_conflict_has_fixed_secret_free_error(
 
 
 def test_preexisting_webhook_is_reported_without_deleting_it(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     requests: list[httpx.Request] = []
 
@@ -601,7 +601,7 @@ def test_preexisting_webhook_is_reported_without_deleting_it(
         )
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(TransportError, match="webhook is configured"):
@@ -612,12 +612,12 @@ def test_preexisting_webhook_is_reported_without_deleting_it(
 
 
 def test_help_attachments_and_edited_messages_do_not_call_the_agent(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Unused")], FakeKeeper())
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -655,7 +655,7 @@ def test_help_attachments_and_edited_messages_do_not_call_the_agent(
 
 
 def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper()
@@ -663,7 +663,7 @@ def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(
         [monitoring_request()],
         keeper,
     )
-    settings = family_settings(tmp_path)
+    settings = family_settings(database)
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.handle_update(incoming(1, 11, "Monitor"))
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
@@ -680,7 +680,7 @@ def test_lost_unsubmitted_approval_does_not_become_a_retry_after_restart(
 
 
 def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
@@ -701,7 +701,7 @@ def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -726,7 +726,7 @@ def test_expired_callback_acknowledgement_does_not_discard_a_valid_approval(
 
 def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_button(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
@@ -738,7 +738,7 @@ def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_butt
         keeper,
     )
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -757,12 +757,12 @@ def test_malformed_unicode_action_index_does_not_crash_or_consume_the_valid_butt
 
 @pytest.mark.parametrize("status", ["pending", "running"])
 def test_uncertain_active_run_blocks_same_user_until_finished(
-    make_bot: BotFactory, tmp_path: Path, status: str
+    make_bot: BotFactory, database: str, status: str
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Finished answer"), AIMessage("Follow-up answer")], FakeKeeper())
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -780,11 +780,11 @@ def test_uncertain_active_run_blocks_same_user_until_finished(
 
 
 def test_token_rotation_keeps_same_bot_state_but_other_bot_cannot_own_it(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("First answer"), AIMessage("Follow-up answer")], FakeKeeper())
-    settings = family_settings(tmp_path, bot_token=SecretStr("123:old-secret"))
+    settings = family_settings(database, bot_token=SecretStr("123:old-secret"))
     bot = make_bot(settings, telegram_client=telegram.client(), agent_client=agent.client())
     bot.validate_startup()
     bot.handle_update(incoming(1, 11, "First"))
@@ -812,14 +812,14 @@ def test_token_rotation_keeps_same_bot_state_but_other_bot_cannot_own_it(
 @pytest.mark.parametrize("method", ["sendMessage", "answerCallbackQuery"])
 @pytest.mark.parametrize("code", [401, 404, 409])
 def test_fatal_telegram_errors_escape_update_handling(
-    make_bot: BotFactory, tmp_path: Path, method: str, code: int
+    make_bot: BotFactory, database: str, method: str, code: int
 ) -> None:
     def transport(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/" + method)
         return httpx.Response(code, json={"ok": False, "error_code": code})
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     update = incoming(1, 11, "/help") if method == "sendMessage" else clicked(1, 11, "stale", 101)
@@ -833,7 +833,7 @@ def test_fatal_telegram_errors_escape_update_handling(
 @pytest.mark.parametrize("retry_after", ["missing", None, -1, 0, "soon", 47])
 def test_consecutive_rate_limits_retry_once_with_fallback_then_return_to_poller(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
     monkeypatch: pytest.MonkeyPatch,
     retry_after: object,
     caplog: pytest.LogCaptureFixture,
@@ -854,7 +854,7 @@ def test_consecutive_rate_limits_retry_once_with_fallback_then_return_to_poller(
         )
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     try:
@@ -872,7 +872,7 @@ def test_consecutive_rate_limits_retry_once_with_fallback_then_return_to_poller(
     "shape", ["count", "name", "missing_reject", "entity", "multiple_interrupts"]
 )
 def test_malformed_initial_approval_has_no_buttons_or_selection_write(
-    make_bot: BotFactory, tmp_path: Path, shape: str
+    make_bot: BotFactory, database: str, shape: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper()
@@ -901,7 +901,7 @@ def test_malformed_initial_approval_has_no_buttons_or_selection_write(
         return response
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -916,7 +916,7 @@ def test_malformed_initial_approval_has_no_buttons_or_selection_write(
 
 def test_split_approval_puts_buttons_on_final_chunk_and_removes_them_after_decision(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra(
@@ -939,7 +939,7 @@ def test_split_approval_puts_buttons_on_final_chunk_and_removes_them_after_decis
         return response
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
@@ -963,7 +963,7 @@ def test_split_approval_puts_buttons_on_final_chunk_and_removes_them_after_decis
 
 @pytest.mark.parametrize("failure", ["network", "malformed_json", "server_error", "non_ok"])
 def test_transient_telegram_boundary_errors_are_nonfatal_and_secret_free(
-    make_bot: BotFactory, tmp_path: Path, failure: str
+    make_bot: BotFactory, database: str, failure: str
 ) -> None:
     def transport(request: httpx.Request) -> httpx.Response:
         if failure == "network":
@@ -977,7 +977,7 @@ def test_transient_telegram_boundary_errors_are_nonfatal_and_secret_free(
         return httpx.Response(200, json={"ok": False, "description": "123:secret"})
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     with pytest.raises(PollError) as caught:
@@ -987,7 +987,7 @@ def test_transient_telegram_boundary_errors_are_nonfatal_and_secret_free(
 
 
 def test_polling_advances_outgoing_offset_after_handled_update(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     requests: list[TelegramBody] = []
     telegram = FakeTelegram()
@@ -1005,7 +1005,7 @@ def test_polling_advances_outgoing_offset_after_handled_update(
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
     )
     bot.poll_once()
@@ -1014,7 +1014,7 @@ def test_polling_advances_outgoing_offset_after_handled_update(
 
 
 def test_failed_final_delivery_allows_new_question_without_replaying_previous_run(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("First answer"), AIMessage("Second answer")], FakeKeeper())
@@ -1029,7 +1029,7 @@ def test_failed_final_delivery_allows_new_question_without_replaying_previous_ru
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -1042,7 +1042,7 @@ def test_failed_final_delivery_allows_new_question_without_replaying_previous_ru
 
 @pytest.mark.parametrize("operation", ["fallback", "keyboard_edit"])
 def test_fatal_telegram_delivery_during_recovery_or_cleanup_stops_worker(
-    make_bot: BotFactory, tmp_path: Path, operation: str
+    make_bot: BotFactory, database: str, operation: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper()
@@ -1058,7 +1058,7 @@ def test_fatal_telegram_delivery_during_recovery_or_cleanup_stops_worker(
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -1075,7 +1075,7 @@ def test_fatal_telegram_delivery_during_recovery_or_cleanup_stops_worker(
 
 
 def test_boolean_sent_message_id_is_not_a_valid_approval_reference(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra(
@@ -1093,14 +1093,14 @@ def test_boolean_sent_message_id_is_not_a_valid_approval_reference(
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
     bot.handle_update(incoming(1, 11, "Monitor"))
-    saved = json.loads(
-        bot.db.execute("SELECT state FROM conversations WHERE user_id=11").fetchone()[0]
-    )
+    row = bot.db.execute("SELECT state FROM conversations WHERE user_id=11").fetchone()
+    assert row is not None
+    saved = json.loads(str(row[0]))
     assert saved["pending"]["message_ids"] == []
     assert sent[1]["text"] == UNCERTAIN
     data = sent[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
@@ -1109,7 +1109,7 @@ def test_boolean_sent_message_id_is_not_a_valid_approval_reference(
 
 
 def test_failure_to_remove_resolved_keyboard_still_resumes_approved_graph(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
@@ -1121,7 +1121,7 @@ def test_failure_to_remove_resolved_keyboard_still_resumes_approved_graph(
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -1167,7 +1167,7 @@ NOT_ALLOWED = "You are not allowed to control lights. Nothing was changed."
 )
 def test_light_command_cards_say_what_will_happen(
     make_bot: BotFactory,
-    tmp_path: Path,
+    database: str,
     *,
     name: str,
     args: dict[str, object],
@@ -1178,7 +1178,7 @@ def test_light_command_cards_say_what_will_happen(
     keeper = light_keeper(state)
     agent = GraphAegra([light_call(name, args), AIMessage("Done.")], keeper)
     bot = make_bot(
-        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        family_settings(database, control_user_ids=frozenset({11})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1192,7 +1192,7 @@ def test_light_command_cards_say_what_will_happen(
 
 
 def test_every_run_and_resume_carries_the_sender_and_whether_they_may_control(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = light_keeper()
@@ -1201,7 +1201,7 @@ def test_every_run_and_resume_carries_the_sender_and_whether_they_may_control(
     )
     bot = make_bot(
         family_settings(
-            tmp_path, allowed_user_ids=frozenset({11, 22}), control_user_ids=frozenset({11})
+            database, allowed_user_ids=frozenset({11, 22}), control_user_ids=frozenset({11})
         ),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
@@ -1224,7 +1224,7 @@ def test_every_run_and_resume_carries_the_sender_and_whether_they_may_control(
 
 
 def test_control_user_approval_sends_one_command_attributed_to_them(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = light_keeper()
@@ -1233,7 +1233,7 @@ def test_control_user_approval_sends_one_command_attributed_to_them(
         keeper,
     )
     bot = make_bot(
-        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        family_settings(database, control_user_ids=frozenset({11})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1252,7 +1252,7 @@ def test_control_user_approval_sends_one_command_attributed_to_them(
 
 
 def test_allowed_user_without_control_gets_no_card_and_no_command(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = light_keeper()
@@ -1260,7 +1260,7 @@ def test_allowed_user_without_control_gets_no_card_and_no_command(
         [light_call("turn_off", {"entity_id": "bulb-a"}), AIMessage("Not allowed.")], keeper
     )
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1282,7 +1282,7 @@ def test_allowed_user_without_control_gets_no_card_and_no_command(
     ],
 )
 def test_approve_by_a_user_who_lost_control_is_rejected_and_the_chat_continues(
-    make_bot: BotFactory, tmp_path: Path, name: str, args: dict[str, object], state: str
+    make_bot: BotFactory, database: str, name: str, args: dict[str, object], state: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = light_keeper(state)
@@ -1295,7 +1295,7 @@ def test_approve_by_a_user_who_lost_control_is_rejected_and_the_chat_continues(
         keeper,
     )
     bot = make_bot(
-        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        family_settings(database, control_user_ids=frozenset({11})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1304,7 +1304,7 @@ def test_approve_by_a_user_who_lost_control_is_rejected_and_the_chat_continues(
     bot.close()
     # The operator removes the user from the control list while the card is open.
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1327,7 +1327,7 @@ def test_approve_by_a_user_who_lost_control_is_rejected_and_the_chat_continues(
 
 
 def test_failed_refusal_notice_still_resumes_the_rejected_approval(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = light_keeper()
@@ -1350,7 +1350,7 @@ def test_failed_refusal_notice_still_resumes_the_rejected_approval(
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        family_settings(database, control_user_ids=frozenset({11})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1358,7 +1358,7 @@ def test_failed_refusal_notice_still_resumes_the_rejected_approval(
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     bot.close()
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -1373,7 +1373,7 @@ def test_failed_refusal_notice_still_resumes_the_rejected_approval(
 
 @pytest.mark.parametrize("error_code", [401, 404])
 def test_fatal_error_on_the_refusal_notice_still_resumes_the_rejected_approval(
-    make_bot: BotFactory, tmp_path: Path, error_code: int
+    make_bot: BotFactory, database: str, error_code: int
 ) -> None:
     telegram = FakeTelegram()
     keeper = light_keeper()
@@ -1395,7 +1395,7 @@ def test_fatal_error_on_the_refusal_notice_still_resumes_the_rejected_approval(
         return telegram.handle(request)
 
     bot = make_bot(
-        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        family_settings(database, control_user_ids=frozenset({11})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1403,7 +1403,7 @@ def test_fatal_error_on_the_refusal_notice_still_resumes_the_rejected_approval(
     data = telegram.bodies()[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
     bot.close()
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=httpx.Client(transport=httpx.MockTransport(transport)),
         agent_client=agent.client(),
     )
@@ -1415,7 +1415,7 @@ def test_fatal_error_on_the_refusal_notice_still_resumes_the_rejected_approval(
     assert len(agent.submissions()) == 2, "rejected approval was never resumed"
 
     bot = make_bot(
-        family_settings(tmp_path),
+        family_settings(database),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1444,7 +1444,7 @@ def tool_results(agent: GraphAegra) -> list[str]:
 
 
 def test_control_user_approves_a_plug_command_and_it_is_attributed_to_them(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = plug_keeper("off")
@@ -1452,7 +1452,7 @@ def test_control_user_approves_a_plug_command_and_it_is_attributed_to_them(
         [light_call("turn_on", {"entity_id": "plug-a"}), AIMessage("The kettle is on.")], keeper
     )
     bot = make_bot(
-        family_settings(tmp_path, control_user_ids=frozenset({11})),
+        family_settings(database, control_user_ids=frozenset({11})),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
     )
@@ -1477,7 +1477,7 @@ def test_control_user_approves_a_plug_command_and_it_is_attributed_to_them(
 
 
 def test_user_not_on_the_control_list_is_refused_a_plug_command_without_buttons(
-    make_bot: BotFactory, tmp_path: Path
+    make_bot: BotFactory, database: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = plug_keeper("off")
@@ -1486,7 +1486,7 @@ def test_user_not_on_the_control_list_is_refused_a_plug_command_without_buttons(
     )
     bot = make_bot(
         family_settings(
-            tmp_path, allowed_user_ids=frozenset({11, 22}), control_user_ids=frozenset({11})
+            database, allowed_user_ids=frozenset({11, 22}), control_user_ids=frozenset({11})
         ),
         telegram_client=telegram.client(),
         agent_client=agent.client(),

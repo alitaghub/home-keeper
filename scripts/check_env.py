@@ -27,8 +27,8 @@ ROOT = Path(__file__).resolve().parent.parent
 INTERPOLATION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
 EXAMPLE_LINE = re.compile(r"^#?\s*([A-Z][A-Z0-9_]*)=", re.MULTILINE)
 
-# The settings class each of our services reads. Home Assistant, Postgres and the chat UI
-# are third-party images.
+# The settings class each of our services reads. Home Assistant, Postgres, db-setup and the
+# chat UI are third-party images.
 SERVICE_SETTINGS: Mapping[str, type[BaseSettings]] = {
     "api": ApiSettings,
     "reader": ReaderSettings,
@@ -40,7 +40,16 @@ SERVICE_SETTINGS: Mapping[str, type[BaseSettings]] = {
 # Variables a service passes to a library rather than to its settings class.
 LIBRARY_VARIABLES: Mapping[str, frozenset[str]] = {
     # Aegra's own settings, and the key langchain reads for openai: models.
-    "agent": frozenset({"DATABASE_URL", "REDIS_BROKER_ENABLED", "AUTH_TYPE", "OPENAI_API_KEY"}),
+    "agent": frozenset(
+        {
+            "POSTGRES_HOST",
+            "POSTGRES_USER",
+            "POSTGRES_DB",
+            "REDIS_BROKER_ENABLED",
+            "AUTH_TYPE",
+            "OPENAI_API_KEY",
+        }
+    ),
 }
 
 

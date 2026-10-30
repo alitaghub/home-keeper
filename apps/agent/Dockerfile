@@ -18,8 +18,7 @@ COPY packages/settings/src ./packages/settings/src
 COPY apps/agent/src ./apps/agent/src
 RUN uv sync --locked --no-dev --no-editable --package home-keeper-agent --extra serve
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1
-RUN groupadd --gid 10001 agent && useradd --uid 10001 --gid 10001 agent \
-    && mkdir /state && chown agent:agent /state
+RUN groupadd --gid 10001 agent && useradd --uid 10001 --gid 10001 agent
 USER 10001:10001
 # Writes Aegra's config for CHAT_ORIGIN to /tmp, then runs `aegra serve` on all interfaces;
 # Compose publishes the port on 127.0.0.1 only.

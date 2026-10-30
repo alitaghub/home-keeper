@@ -3,6 +3,7 @@ name: home-keeper-demo
 # Add `--profile agent` to also start the chat agent (compose.agent.yaml), and
 # `--profile control` to switch the synthetic lights.
 include:
+  - compose.postgres.yaml
   - compose.agent.yaml
 services:
   api:
@@ -16,10 +17,12 @@ services:
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
       HOME_KEEPER_CONTROLLER_URL: http://controller:8080
       HOME_KEEPER_READER_URL: http://reader:8080
+      HOME_KEEPER_DATABASE_URL: postgresql://keeper@postgres:5432/keeper
+      HOME_KEEPER_DATABASE_PASSWORD_FILE: /db-password/password
     volumes:
-      - data:/data
       - service-secret:/secrets
-    networks: [dashboard, collection, control]
+      - keeper-db-password:/db-password:ro
+    networks: [dashboard, collection, control, database]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -29,6 +32,9 @@ services:
       interval: 5s
       timeout: 4s
       retries: 10
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
   # Serves the synthetic home to the API, like the reader of compose.yaml serves Home Assistant.
   reader:
     build: .
@@ -85,5 +91,4 @@ networks:
   control:
     internal: true
 volumes:
-  data:
   service-secret:

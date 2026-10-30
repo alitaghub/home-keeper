@@ -2,16 +2,17 @@
 the device's state from Home Assistant after the send."""
 
 import math
-import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import LiteralString
 from uuid import uuid4
 
 import anyio
 import anyio.to_thread
 from anyio import CapacityLimiter
+from psycopg import Connection
 from pydantic import TypeAdapter, ValidationError
 
 from home_keeper.control import Controller, ControllerUnreachable
@@ -141,21 +142,22 @@ class Commands:
             return False
         with self.store.transaction() as db:
             db.execute(
-                "INSERT OR REPLACE INTO metadata VALUES('control_heartbeat_at', ?)",
+                "INSERT INTO metadata VALUES('control_heartbeat_at', %s) "
+                "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
                 (received_at.isoformat(),),
             )
         return True
 
     def status(self) -> ControlStatus:
-        with self.store.transaction("DEFERRED") as db:
+        with self.store.transaction() as db:
             return self._status(db)
 
     def interrupt_pending(self) -> None:
         """A command still pending was cut off by a restart; its outcome is unknown."""
         with self.store.transaction() as db:
             db.execute(
-                "UPDATE commands SET data=json_set(data, '$.outcome', 'interrupted') "
-                "WHERE json_extract(data, '$.outcome')='pending'"
+                "UPDATE commands SET data=jsonb_set(data, '{outcome}', '\"interrupted\"') "
+                "WHERE data->>'outcome'='pending'"
             )
 
     async def switch(self, entity_id: str, request: CommandRequest) -> CommandRecord | Declined:
@@ -243,23 +245,29 @@ class Commands:
         # OverflowError: a timestamp near year 1 or 9999 can fall outside UTC.
         except (ValueError, TypeError, OverflowError):
             return None
-        clauses, parameters = ["sent_at>=?"], [self._retention_cutoff()]
-        for operator, value in ((">=", start), ("<=", end)):
+        # Literal strings only, so the query psycopg receives holds no value.
+        clauses: list[LiteralString] = ["sent_at >= %s"]
+        parameters = [self._retention_cutoff()]
+        bounds: tuple[tuple[LiteralString, datetime | None], ...] = (
+            ("sent_at >= %s", start),
+            ("sent_at <= %s", end),
+        )
+        for clause, value in bounds:
             if value is not None:
-                clauses.append(f"sent_at {operator} ?")
+                clauses.append(clause)
                 parameters.append(value.isoformat())
         if position:
-            clauses.append("(sent_at < ? OR (sent_at=? AND id < ?))")
+            clauses.append("(sent_at < %s OR (sent_at = %s AND id < %s))")
             parameters.extend((position[0], position[0], position[1]))
-        with self.store.transaction("DEFERRED") as db:
+        with self.store.transaction() as db:
             rows = db.execute(
                 # Only fixed SQL fragments are concatenated; values are bound parameters.
                 "SELECT data FROM commands WHERE "  # noqa: S608
                 + " AND ".join(clauses)
-                + " ORDER BY sent_at DESC, id DESC LIMIT ?",
+                + " ORDER BY sent_at DESC, id DESC LIMIT %s",
                 (*parameters, limit + 1),
             ).fetchall()
-        values = [command_record.validate_json(row[0]) for row in rows[:limit]]
+        values = [command_record.validate_python(row[0]) for row in rows[:limit]]
         return CommandsPage(
             commands=values,
             next_cursor=f"{values[-1].sent_at}|{values[-1].id}" if len(rows) > limit else None,
@@ -269,7 +277,7 @@ class Commands:
     def _retention_cutoff(self) -> str:
         return (self.now().astimezone(UTC) - timedelta(days=self.retention_days)).isoformat()
 
-    def _status(self, db: sqlite3.Connection) -> ControlStatus:
+    def _status(self, db: Connection) -> ControlStatus:
         row = db.execute("SELECT value FROM metadata WHERE key='control_heartbeat_at'").fetchone()
         heartbeat_at: str | None = row[0] if row else None
         fresh = heartbeat_at is not None and (
@@ -302,9 +310,9 @@ class Commands:
                 live = None
         # Read after Home Assistant answers, so a Stop monitoring or control turning off
         # during those reads still refuses the command.
-        with self.store.transaction("DEFERRED") as db:
+        with self.store.transaction() as db:
             selected = db.execute(
-                "SELECT device_kind FROM selection WHERE id=?", (entity_id,)
+                "SELECT device_kind FROM selection WHERE id=%s", (entity_id,)
             ).fetchone()
             control_on = self._status(db).state == "on"
         kind = stored_kind.validate_python(selected[0]) if selected else None
@@ -341,7 +349,8 @@ class Commands:
     def _save(self, record: CommandRecord) -> None:
         with self.store.transaction() as db:
             db.execute(
-                "INSERT OR REPLACE INTO commands VALUES(?, ?, ?, ?)",
+                "INSERT INTO commands VALUES(%s, %s, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data",
                 (record.id, record.entity_id, record.sent_at, stored_json(record)),
             )
 

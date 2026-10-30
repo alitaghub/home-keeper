@@ -41,14 +41,14 @@ def test_empty_or_whitespace_token_is_rejected(monkeypatch: pytest.MonkeyPatch, 
         Settings.from_env()
 
 
-def test_default_addresses_and_state_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_addresses_and_database(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:private-secret")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "11")
-    for name in ("TELEGRAM_AGENT_URL", "TELEGRAM_STATE_PATH", "TELEGRAM_API_URL"):
+    for name in ("TELEGRAM_AGENT_URL", "TELEGRAM_DATABASE_URL", "TELEGRAM_API_URL"):
         monkeypatch.delenv(name, raising=False)
     settings = Settings.from_env()
     assert settings.agent_url == "http://agent:2026"
-    assert settings.state_path == "/state/telegram.sqlite3"
+    assert settings.database_url == "postgresql://telegram@postgres:5432/telegram"
     assert settings.api_url == "https://api.telegram.org"
 
 
@@ -59,16 +59,16 @@ def test_missing_allowlist_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         Settings.from_env()
 
 
-def test_operator_can_override_addresses_and_state_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_operator_can_override_addresses_and_database(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:secret")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "11")
     monkeypatch.setenv("TELEGRAM_AGENT_URL", "http://alternate-agent:2026")
     monkeypatch.setenv("TELEGRAM_API_URL", "http://telegram.test:8000")
-    monkeypatch.setenv("TELEGRAM_STATE_PATH", "/custom/bot.sqlite3")
+    monkeypatch.setenv("TELEGRAM_DATABASE_URL", "postgresql://bot@db.test/custom")
     settings = Settings.from_env()
     assert settings.agent_url == "http://alternate-agent:2026"
     assert settings.api_url == "http://telegram.test:8000"
-    assert settings.state_path == "/custom/bot.sqlite3"
+    assert settings.database_url == "postgresql://bot@db.test/custom"
 
 
 def control_settings(

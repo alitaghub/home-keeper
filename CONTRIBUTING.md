@@ -11,8 +11,9 @@ mise run check      # should pass on a clean checkout
 ```
 
 The pre-commit hook formats and lints staged files only (Ruff for Python, Biome
-for the web app). Types and tests run in `mise run check` and CI. You need Docker
-with Compose for `mise run dev` and `mise run e2e`.
+for the web app). Types and tests run in `mise run check` and CI. You need Docker:
+the Python tests start a throwaway Postgres with testcontainers, and
+`mise run dev` and `mise run e2e` need Compose too.
 
 ### VS Code
 

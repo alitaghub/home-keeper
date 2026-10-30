@@ -10,7 +10,7 @@ from home_keeper_agent.telegram import UNCERTAIN, Settings, TelegramBot
 
 @pytest.mark.parametrize("failure", ["http_503", "invalid_state"])
 def test_update_failure_leaves_an_operator_diagnostic(
-    failure: str, caplog: pytest.LogCaptureFixture
+    failure: str, database: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     telegram = FakeTelegram()
     agent_paths: list[str] = []
@@ -38,7 +38,8 @@ def test_update_failure_leaves_an_operator_diagnostic(
         Settings(
             bot_token=SecretStr("123:private-token"),
             allowed_user_ids=frozenset({11}),
-            state_path=":memory:",
+            database_url=database,
+            database_password_file=None,
         ),
         telegram_client=httpx.Client(transport=httpx.MockTransport(telegram_transport)),
         agent_client=httpx.Client(transport=httpx.MockTransport(agent_transport)),

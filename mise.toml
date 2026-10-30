@@ -109,5 +109,6 @@ uv run python e2e/compose_agent_smoke.py
 # Release the completed demo before the isolated control and Telegram proofs start their stacks.
 docker compose -f compose.demo.yaml --profile agent --profile control down
 uv run python e2e/compose_control_smoke.py
+uv run python e2e/compose_db_isolation_smoke.py
 uv run python e2e/compose_telegram_smoke.py
 """

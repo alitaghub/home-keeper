@@ -10,7 +10,6 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -111,7 +110,7 @@ class Home:
 
 @contextmanager
 def home(
-    tmp_path: Path,
+    database: str,
     devices: tuple[str, ...] = ("bulb-a",),
     *,
     clock: datetime,
@@ -122,7 +121,7 @@ def home(
     time = [clock]
     reader = FakeReader([BULB_A, BULB_B, PLUG])
     app = create_app(
-        tmp_path / "usage.sqlite",
+        database,
         TOKEN,
         now=lambda: time[0],
         timezone=ZoneInfo(timezone),
@@ -172,9 +171,9 @@ def periods(device: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def test_light_on_before_start_counts_from_start_and_only_off_to_on_is_a_switch_on(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, clock=utc(10, 15)) as house:
+    with home(database, clock=utc(10, 15)) as house:
         house.record(
             "bulb-a",
             (utc(10, 8), on(brightness=200)),
@@ -201,9 +200,9 @@ def test_light_on_before_start_counts_from_start_and_only_off_to_on_is_a_switch_
 
 
 def test_usage_reads_home_assistant_history_from_1_ms_before_start_until_now(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, ("bulb-b", "bulb-a"), clock=utc(10, 12)) as house:
+    with home(database, ("bulb-b", "bulb-a"), clock=utc(10, 12)) as house:
         house.usage(utc(10, 10), utc(10, 11))
         assert house.asked() == (["bulb-a", "bulb-b"], utc(10, 10) - MS, utc(10, 11))
 
@@ -213,9 +212,9 @@ def test_usage_reads_home_assistant_history_from_1_ms_before_start_until_now(
 
 
 def test_unavailable_and_unknown_states_are_unknown_time_and_never_a_switch_on(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, clock=utc(10, 15)) as house:
+    with home(database, clock=utc(10, 15)) as house:
         house.record(
             "bulb-a",
             (utc(10, 8), OFF),
@@ -243,9 +242,9 @@ def test_unavailable_and_unknown_states_are_unknown_time_and_never_a_switch_on(
 
 
 def test_time_before_the_first_row_is_no_history_and_the_first_row_is_no_switch_on(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, ("bulb-a", "bulb-b"), clock=utc(12, 12)) as house:
+    with home(database, ("bulb-a", "bulb-b"), clock=utc(12, 12)) as house:
         # Home Assistant's history of bulb-a starts inside the window.
         house.record("bulb-a", (utc(11, 12), on()))
         house.record("bulb-b", (utc(12, 8), on()))
@@ -272,9 +271,9 @@ def test_time_before_the_first_row_is_no_history_and_the_first_row_is_no_switch_
 
 
 def test_a_device_without_history_stays_in_the_report_with_the_whole_window_no_history(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, ("bulb-a", "bulb-b"), clock=utc(10, 15)) as house:
+    with home(database, ("bulb-a", "bulb-b"), clock=utc(10, 15)) as house:
         house.record("bulb-a", (utc(10, 8), on()))
 
         lights = house.devices(utc(10, 10), utc(10, 14))
@@ -291,8 +290,8 @@ def test_a_device_without_history_stays_in_the_report_with_the_whole_window_no_h
     assert unknown(b) == [interval(utc(10, 10), utc(10, 14), "no_history")]
 
 
-def test_a_light_on_since_long_before_start_is_on_the_whole_window(tmp_path: Path) -> None:
-    with home(tmp_path, clock=utc(12, 8)) as house:
+def test_a_light_on_since_long_before_start_is_on_the_whole_window(database: str) -> None:
+    with home(database, clock=utc(12, 8)) as house:
         # Home Assistant's state at the window start is a row from days earlier.
         house.record("bulb-a", (utc(1, 8), on()))
 
@@ -303,9 +302,9 @@ def test_a_light_on_since_long_before_start_is_on_the_whole_window(tmp_path: Pat
     assert light["switch_ons"] == 0
 
 
-def test_on_time_crossing_local_midnight_splits_by_local_day_and_hour(tmp_path: Path) -> None:
+def test_on_time_crossing_local_midnight_splits_by_local_day_and_hour(database: str) -> None:
     # Copenhagen is UTC+2 in mid-October: on from 22:30 to 01:15 local time.
-    with home(tmp_path, clock=utc(14, 2), timezone="Europe/Copenhagen") as house:
+    with home(database, clock=utc(14, 2), timezone="Europe/Copenhagen") as house:
         house.record("bulb-a", (utc(13, 17), OFF), (utc(13, 20, 30), on()), (utc(13, 23, 15), OFF))
 
         report = house.usage(utc(13, 18), utc(14, 1))
@@ -323,12 +322,12 @@ def test_on_time_crossing_local_midnight_splits_by_local_day_and_hour(tmp_path: 
 
 
 def test_switch_usage_splits_local_days_and_hours_keeps_unavailable_time_unknown_and_has_no_brightness(  # noqa: E501 -- the name states the behavior
-    tmp_path: Path,
+    database: str,
 ) -> None:
     # Copenhagen is UTC+2 in mid-October. Local times: on 23:30, unavailable 00:15-01:00,
     # off 01:45.
     with home(
-        tmp_path, ("bulb-a", "plug-a"), clock=utc(14, 1), timezone="Europe/Copenhagen"
+        database, ("bulb-a", "plug-a"), clock=utc(14, 1), timezone="Europe/Copenhagen"
     ) as house:
         house.record("bulb-a", (utc(13, 17), on(brightness=100)))
         house.record(
@@ -366,13 +365,13 @@ def test_switch_usage_splits_local_days_and_hours_keeps_unavailable_time_unknown
 
 
 def test_local_day_with_daylight_saving_end_has_25_hours_and_a_doubled_hour(
-    tmp_path: Path,
+    database: str,
 ) -> None:
     # On 2026-10-25 Copenhagen falls back from 03:00 CEST to 02:00 CET: 02:00-03:00 runs twice.
     zone = ZoneInfo("Europe/Copenhagen")
     day_start = datetime(2026, 10, 25, tzinfo=zone)
     day_end = datetime(2026, 10, 26, tzinfo=zone)
-    with home(tmp_path, clock=utc(26, 0), timezone="Europe/Copenhagen") as house:
+    with home(database, clock=utc(26, 0), timezone="Europe/Copenhagen") as house:
         house.record("bulb-a", (utc(24, 21), on()))
 
         [light] = house.usage(day_start, day_end)["devices"]
@@ -383,10 +382,10 @@ def test_local_day_with_daylight_saving_end_has_25_hours_and_a_doubled_hour(
 
 
 def test_quarter_hour_offset_zone_splits_hours_and_days_at_local_boundaries(
-    tmp_path: Path,
+    database: str,
 ) -> None:
     # Kathmandu is UTC+05:45: 18:00-18:30 UTC is 23:45-00:15 local time.
-    with home(tmp_path, clock=utc(13, 20), timezone="Asia/Kathmandu") as house:
+    with home(database, clock=utc(13, 20), timezone="Asia/Kathmandu") as house:
         house.record("bulb-a", (utc(13, 17), OFF), (utc(13, 18), on()), (utc(13, 18, 30), OFF))
 
         light = house.devices(utc(13, 17), utc(13, 19))["bulb-a"]
@@ -401,9 +400,9 @@ def test_quarter_hour_offset_zone_splits_hours_and_days_at_local_boundaries(
 
 
 def test_average_brightness_is_weighted_by_on_time_and_null_when_never_known(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, ("bulb-a", "bulb-b"), clock=utc(10, 15)) as house:
+    with home(database, ("bulb-a", "bulb-b"), clock=utc(10, 15)) as house:
         house.record(
             "bulb-a",
             (utc(10, 8), on(brightness=200)),
@@ -422,9 +421,9 @@ def test_average_brightness_is_weighted_by_on_time_and_null_when_never_known(
 
 
 def test_devices_are_filtered_to_selected_ids_in_order_and_reversed_range_is_rejected(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, ("bulb-b", "bulb-a"), clock=utc(10, 12)) as house:
+    with home(database, ("bulb-b", "bulb-a"), clock=utc(10, 12)) as house:
         start, end = utc(10, 9), utc(10, 11)
 
         def ids(**params: Query) -> list[str]:
@@ -442,16 +441,16 @@ def test_devices_are_filtered_to_selected_ids_in_order_and_reversed_range_is_rej
         assert house.client.get("/api/usage", params={"end": end.isoformat()}).status_code == 422
 
 
-def test_range_longer_than_366_days_is_rejected(tmp_path: Path) -> None:
-    with home(tmp_path, clock=utc(10, 8)) as house:
+def test_range_longer_than_366_days_is_rejected(database: str) -> None:
+    with home(database, clock=utc(10, 8)) as house:
         end = utc(10, 8)
         assert house.usage_response(end - timedelta(days=366), end).status_code == 200
         too_long = house.usage_response(end - timedelta(days=366, seconds=1), end)
         assert too_long.status_code == 422
 
 
-def test_time_after_now_is_never_on_or_off(tmp_path: Path) -> None:
-    with home(tmp_path, clock=utc(10, 12)) as house:
+def test_time_after_now_is_never_on_or_off(database: str) -> None:
+    with home(database, clock=utc(10, 12)) as house:
         house.record("bulb-a", (utc(10, 9), on()))
 
         light = house.devices(utc(10, 10), utc(10, 14))["bulb-a"]
@@ -463,9 +462,9 @@ def test_time_after_now_is_never_on_or_off(tmp_path: Path) -> None:
 
 
 def test_switch_on_at_a_range_edge_belongs_to_the_range_that_starts_there(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, clock=utc(10, 12)) as house:
+    with home(database, clock=utc(10, 12)) as house:
         house.record("bulb-a", (utc(10, 8), OFF), (utc(10, 10), on()))
 
         before = house.devices(utc(10, 9), utc(10, 10))["bulb-a"]
@@ -480,8 +479,8 @@ def test_switch_on_at_a_range_edge_belongs_to_the_range_that_starts_there(
     assert after["unknown_seconds"] == 0
 
 
-def test_range_at_the_edge_of_representable_time_is_rejected(tmp_path: Path) -> None:
-    with home(tmp_path, clock=utc(10, 8)) as house:
+def test_range_at_the_edge_of_representable_time_is_rejected(database: str) -> None:
+    with home(database, clock=utc(10, 8)) as house:
         # Normalizing +01:00 to UTC moves this start before year 1.
         response = house.client.get(
             "/api/usage",
@@ -496,8 +495,8 @@ def test_range_at_the_edge_of_representable_time_is_rejected(tmp_path: Path) -> 
         assert response.status_code == 422
 
 
-def test_a_selected_plug_stays_a_switch_after_home_assistant_drops_it(tmp_path: Path) -> None:
-    with home(tmp_path, ("plug-a",), clock=utc(13, 14)) as house:
+def test_a_selected_plug_stays_a_switch_after_home_assistant_drops_it(database: str) -> None:
+    with home(database, ("plug-a",), clock=utc(13, 14)) as house:
         house.reader.drop("plug-a")
 
         plug = house.devices(utc(13, 12), utc(13, 14))["plug-a"]
@@ -509,9 +508,9 @@ def test_a_selected_plug_stays_a_switch_after_home_assistant_drops_it(tmp_path: 
 
 @pytest.mark.parametrize("error", UNREACHABLE)
 def test_usage_is_a_503_with_a_safe_error_while_home_assistant_cannot_be_read(
-    tmp_path: Path, error: ReaderError
+    database: str, error: ReaderError
 ) -> None:
-    with home(tmp_path, clock=utc(10, 12)) as house:
+    with home(database, clock=utc(10, 12)) as house:
         house.reader.error = error
 
         response = house.usage_response(utc(10, 10), utc(10, 11))
@@ -526,9 +525,9 @@ def test_usage_is_a_503_with_a_safe_error_while_home_assistant_cannot_be_read(
 
 
 def test_periods_and_unknown_intervals_tile_the_range_and_equal_stretches_merge(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, clock=utc(10, 15)) as house:
+    with home(database, clock=utc(10, 15)) as house:
         house.record(
             "bulb-a",
             (utc(10, 8), on(brightness=200)),
@@ -560,9 +559,9 @@ def test_periods_and_unknown_intervals_tile_the_range_and_equal_stretches_merge(
 
 
 def test_switch_periods_carry_no_brightness_and_leave_unknown_time_to_unknown_intervals(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with home(tmp_path, ("plug-a",), clock=utc(10, 15)) as house:
+    with home(database, ("plug-a",), clock=utc(10, 15)) as house:
         house.record(
             "plug-a",
             (utc(10, 8), on()),
@@ -579,8 +578,8 @@ def test_switch_periods_carry_no_brightness_and_leave_unknown_time_to_unknown_in
     assert unknown(plug) == [interval(utc(10, 11), utc(10, 12), "unavailable")]
 
 
-def test_equal_states_on_both_sides_of_unavailable_time_stay_two_periods(tmp_path: Path) -> None:
-    with home(tmp_path, clock=utc(10, 15)) as house:
+def test_equal_states_on_both_sides_of_unavailable_time_stay_two_periods(database: str) -> None:
+    with home(database, clock=utc(10, 15)) as house:
         house.record(
             "bulb-a",
             (utc(10, 8), on(brightness=200)),
@@ -597,8 +596,8 @@ def test_equal_states_on_both_sides_of_unavailable_time_stay_two_periods(tmp_pat
     assert unknown(light) == [interval(utc(10, 11), utc(10, 12), "unavailable")]
 
 
-def test_time_without_history_is_in_no_period(tmp_path: Path) -> None:
-    with home(tmp_path, clock=utc(10, 12)) as house:
+def test_time_without_history_is_in_no_period(database: str) -> None:
+    with home(database, clock=utc(10, 12)) as house:
         house.record("bulb-a", (utc(10, 10), OFF))
 
         [light] = house.usage(utc(10, 8), utc(10, 14))["devices"]
