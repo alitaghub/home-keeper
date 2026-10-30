@@ -79,9 +79,10 @@ Python code lives in `apps/keeper/src/home_keeper`.
 
 ## Rules the layout enforces
 
-- **The API is the only writer.** Only the API mounts the database. The reader
-  and the controller answer internal requests that need a service credential the
-  API creates at startup.
+- **The API is the only writer.** Only the API holds the keeper database's
+  password, so only it can open that database. The reader and the controller
+  answer internal requests that need a service credential the API creates at
+  startup.
 - **Home Keeper stores only what is its own.** The database holds the selection,
   the command log and a few metadata values. Device state and history are read
   from Home Assistant on each request, so the dashboard never shows a stale copy.
@@ -138,6 +139,39 @@ sequenceDiagram
 
 The dashboard polls every 3 seconds, and each poll reaches Home Assistant through
 the reader.
+
+## Storage
+
+One Postgres holds everything Home Keeper keeps. It has one database per
+service, and each service can open only its own.
+
+```mermaid
+flowchart TB
+    api["API"] --> keeperdb
+    agent["Agent (Aegra)"] --> agentdb
+    bot["Telegram worker"] --> telegramdb
+
+    subgraph pg["One Postgres"]
+        direction LR
+        keeperdb[("keeper")]
+        agentdb[("agent")]
+        telegramdb[("telegram")]
+    end
+```
+
+`db-setup` gives each service a login role, a random password and a database
+(`compose.postgres.yaml`). It writes each password into a volume that only it and
+that service mount. It revokes everyone else's access to each database, and it
+removes the superuser's password, so the superuser cannot log in over the
+network.
+
+| Database   | Written by      | Tables                                                                  |
+| ---------- | --------------- | ----------------------------------------------------------------------- |
+| `keeper`   | API (`store.py`) | `selection`: the monitored devices and their kind. `metadata`: the source and the controller's last heartbeat. `commands`: the command log, one JSONB record per command, sorted by `sent_at` and `id`. |
+| `agent`    | Aegra           | Chat threads, runs and LangGraph checkpoints, in Aegra's own schema.    |
+| `telegram` | Telegram worker | `progress`: the next Telegram update to read. `bot_owner`: the bot this state belongs to. `conversations`: each user's saved conversation. |
+
+Device history is not stored here. Home Assistant's recorder keeps it.
 
 ## Words used in the code
 
