@@ -22,7 +22,7 @@ they approve each command; see
 
    Use numeric Telegram user IDs, separated by commas. Names and usernames do
    not grant access. Every allowed family member can use the same agent tools
-   and change which devices the shared home records.
+   and change which devices the shared home monitors.
 
    If you do not know the IDs yet, temporarily use
    `TELEGRAM_ALLOWED_USER_IDS=9223372036854775807`. Start the bot, then have each
@@ -119,7 +119,7 @@ Compose waits for the agent to become healthy, then starts the bot process.
 The bot has no Compose healthcheck, so `up --wait` does not prove that Telegram
 polling works. Send `/help` privately to verify it after setup.
 
-Stopping only `telegram` leaves browser chat and collection running. Normal
+Stopping only `telegram` leaves browser chat and the dashboard running. Normal
 `down` keeps the bot's small SQLite state volume and Aegra's conversation
 volume. `down --volumes` deletes them along with the stack's other saved data.
 

@@ -48,8 +48,8 @@ function thinned<T extends Span>(spans: T[], join: (first: T, next: T) => T): T[
 
 /**
  * On, off and unknown time across the report's range. On draws as high as the
- * light's brightness. Unknown time is never drawn as on or off: a gap or an
- * unavailable device is hatched, and time before any record stays blank.
+ * light's brightness. Unknown time is never drawn as on or off: an unavailable
+ * device is hatched, and time Home Assistant has no history for stays blank.
  */
 export function UsageStrip({
   range,
@@ -116,7 +116,7 @@ export function UsageStrip({
       })}
       {thinned(
         device.unknown_intervals
-          .filter((interval) => interval.reason !== "no_evidence")
+          .filter((interval) => interval.reason !== "no_history")
           .map((interval) => ({ x0: x(interval.start), x1: x(interval.end) })),
         (first, next) => ({ x0: first.x0, x1: next.x1 }),
       ).map((span) => (
@@ -210,7 +210,7 @@ function Hours({ device }: { device: DeviceUsage }) {
   );
 }
 
-/** One device's recorded usage over a chosen range, in a modal dialog. */
+/** One device's usage over a chosen range, in a modal dialog. */
 export function HistoryDialog({
   entityId,
   name,
@@ -292,7 +292,7 @@ export function HistoryDialog({
         </p>
       ) : !device ? (
         <p className="history-status" role="status">
-          No usage recorded for this device.
+          Home Assistant has no usage for this device.
         </p>
       ) : (
         <>
@@ -306,8 +306,8 @@ export function HistoryDialog({
               {device.device_kind === "light" ? "On, by brightness" : "On"}
             </li>
             <li className="legend-off">Off</li>
-            <li className="legend-unknown">Collection gap or unavailable</li>
-            <li className="legend-none">No record yet</li>
+            <li className="legend-unknown">Unavailable</li>
+            <li className="legend-none">No history</li>
           </ul>
           <Totals device={device} />
           {days > 1 && <Days device={device} />}

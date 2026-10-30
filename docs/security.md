@@ -1,17 +1,17 @@
 # Security boundary
 
-- The Home Keeper API publishes only on `127.0.0.1`. Its API and collector run as an
+- The Home Keeper API publishes only on `127.0.0.1`. Its API and reader run as an
   unprivileged user, without Linux capabilities, with read-only filesystems
   except their mounted volumes. The bundled Home Assistant also publishes only a
   loopback port and runs with its upstream container identity, without
   privileged mode, host networking, USB or Bluetooth access.
-- Only the live collector reads the Home Assistant token at run time, from a
+- Only the reader reads the Home Assistant token at run time, from a
   read-only mount. The API,
   SQLite and browser never receive it. With the `control` profile, the
   controller reads a second token, for the non-admin "Home Keeper control"
   user, from the `ha-control-token` volume, read-only. Only `ha-setup`, which
   writes it with mode `600`, and the controller mount that volume. Revoke
-  control in Home Assistant without breaking collection, and its logbook names
+  control in Home Assistant without breaking the reader, and its logbook names
   that user for every command. In the bundled stack, `ha-setup` writes
   the token with mode `600` to the `ha-token` volume. It keeps the Home
   Assistant owner login, also mode `600`, in the `ha-owner` volume that no other
@@ -20,17 +20,20 @@
   connector until it projects minimal metadata. Raw administrative URLs and
   unused registry identifiers do not enter the catalog or database.
 - The API creates an internal service credential in a restricted file. The
-  collector mounts its volume read-only. Internal endpoints require it.
+  reader mounts its volume read-only. Internal endpoints require it.
   Dashboard mutations require an explicit header and validate Host and Origin.
 - Device and entity names from Home Assistant render as text, never as HTML,
   under a restrictive Content Security Policy. Schema validation limits fields
   and restricts source identity. Error status and logs omit submitted secrets
   and raw connector responses.
-- The collector's Home Assistant operations are fixed registry reads, one state
-  read for each new light or switch candidate at discovery, approved entity-state
-  reads and a state-change subscription filtered inside the connector. Discovery
-  reads a candidate's state only to detect a group and keeps only that answer. It makes no service call and no device write. The collector image
-  contains no controller code.
+- The reader's Home Assistant operations are fixed registry reads, one state
+  read for each new light or switch candidate at discovery, state reads of the
+  lights and switches the API asks for, `history/history_during_period` for
+  their history, and `GET /api/` to check that Home Assistant answers. Discovery reads a candidate's state only to detect a group
+  and keeps only that answer. The reader keeps the projected catalog in memory
+  for up to 10 seconds and never keeps a state or history. It makes no service call, no
+  event subscription and no device write, and it has no `/data` mount. The keeper
+  image contains no controller code.
 - The controller makes exactly four Home Assistant service calls:
   `light.turn_on`, with an optional `brightness_pct` from 1 to 100, and
   `light.turn_off`, on `light.*` entity IDs, and `switch.turn_on` and
@@ -48,15 +51,16 @@
   (dashboard, browser chat, or a Telegram ID and display name) is a label the
   caller reports for the record. It is not authentication: anything that can
   call the API can send a command with any sender. Sender names render as text.
-- The demo collector uses an internal Docker network. The live collector also
-  joins the `home-assistant` bridge network to reach Home Assistant. The API
+- The demo reader uses internal Docker networks only. The live reader also
+  joins the `home-assistant` bridge network to reach Home Assistant. It
+  publishes no port. The API
   never joins that network. It has network access
   needed by a trusted credential service.
 - The controller publishes no port. It joins the internal `control` network,
-  shared only with the API (and, in the demo, the demo collector), and in the
+  shared only with the API (and, in the demo, the demo reader), and in the
   bundled stack the `home-assistant` network. Its command endpoint and the
-  demo collector's need the service credential, which only the API, the
-  collectors and the controller hold. The controller sends its heartbeat to the
+  demo reader's need the service credential, which only the API, the
+  reader and the controller hold. The controller sends its heartbeat to the
   API with the same credential.
 - The optional agent (`--profile agent`) is a separate container. It joins the
   dashboard network to reach the API, an internal network to reach its own

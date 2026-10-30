@@ -40,11 +40,9 @@ const defaults: Replies = {
   "GET /api/monitored": fixtures.emptyMonitored,
   "GET /api/control": fixtures.controlOff,
   "GET /api/health": fixtures.health,
-  "GET /api/coverage": fixtures.emptyCoverage,
   "GET /api/events": fixtures.emptyEvents,
   "GET /api/commands": fixtures.emptyCommands,
   "GET /api/usage": fixtures.emptyUsage,
-  "POST /api/discovery/refresh": fixtures.discoveryRefresh,
   "PUT /api/selection/{entity_id}": fixtures.emptySelection,
 };
 

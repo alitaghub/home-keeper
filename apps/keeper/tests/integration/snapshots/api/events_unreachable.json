@@ -1,0 +1,7 @@
+{
+  "status": 503,
+  "body": {
+    "error": "connection",
+    "message": "Home Assistant does not answer. Check its address and the network."
+  }
+}

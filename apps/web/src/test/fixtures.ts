@@ -1,10 +1,15 @@
 // API responses for dashboard tests. Shapes and values follow the recorded API
 // snapshots in apps/keeper/tests/integration/snapshots/api/*.json.
 import type { components } from "../api/schema";
+import type { ResponseBody } from "./fake-api";
 
 type Schemas = components["schemas"];
 // A light's or a switch's command record. The union has no schema name of its own.
 type CommandRecord = Schemas["CommandsPage"]["commands"][number];
+// Taken from the routes, so a renamed schema does not break the fixtures.
+type Health = ResponseBody<"GET /api/health">;
+type MonitoredEntity = ResponseBody<"GET /api/monitored">["entities"][number];
+type Reading = NonNullable<MonitoredEntity["state"]>;
 
 export const desk = {
   id: "light.hue_desk",
@@ -58,16 +63,12 @@ export const smartPlug = {
 export const catalog = {
   source_id: "demo",
   home_assistant_url: null,
-  freshness: "fresh",
-  refreshed_at: "2026-10-12T10:00:07+00:00",
   entities: [desk, reading, roomGroup, ungroupedSensor],
-} satisfies Schemas["CatalogResponse"];
+} satisfies ResponseBody<"GET /api/catalog">;
 
 export const emptySelection = {
   entity_ids: [],
-  refresh_revision: 0,
-  revision: 0,
-} satisfies Schemas["SelectionSnapshot"];
+} satisfies ResponseBody<"GET /api/selection">;
 
 export const emptyMonitored = {
   entities: [],
@@ -77,98 +78,61 @@ export const health = {
   status: "healthy",
   error: null,
   source_id: "demo",
-  received_at: "2026-10-12T10:00:08Z",
-  persisted_at: "2026-10-12T10:00:08+00:00",
-} satisfies Schemas["HealthReport"];
+  checked_at: "2026-10-12T10:00:08+00:00",
+} satisfies Health;
 
-export const pendingHealth = {
-  status: "pending",
-  source_id: "demo",
-} satisfies Schemas["HealthPending"];
+/** Health while the reader or Home Assistant cannot be reached. */
+export const unreachableHealth = {
+  ...health,
+  status: "unreachable",
+  error: "connection",
+} satisfies Health;
 
-export const openGap = {
-  id: "gap-open",
-  reason: "reconciliation",
-  source_id: "demo",
-  entity_ids: ["light.hue_desk"],
-  last_confirmed_at: "2026-10-12T10:00:06+00:00",
-  detected_at: "2026-10-12T10:00:08+00:00",
-  recovered_at: null,
-  uncertain_start: true,
-} satisfies Schemas["CoverageGap"];
+/** The 503 body of /api/catalog and selecting while Home Assistant cannot be reached. */
+export const unreachableBody = {
+  error: "connection",
+  message: "Can't reach Home Assistant",
+};
 
-export const recoveredGap = {
-  id: "gap-recovered",
-  reason: "connection",
-  source_id: "demo",
-  entity_ids: ["light.hue_desk", "light.hue_reading"],
-  last_confirmed_at: "2026-10-12T10:00:00+00:00",
-  detected_at: "2026-10-12T10:00:05+00:00",
-  recovered_at: "2026-10-12T10:00:06+00:00",
-  uncertain_start: true,
-} satisfies Schemas["CoverageGap"];
+type ChangeRecord = Schemas["ChangeRecord"];
 
-export const coverage = {
-  continuous_coverage: false,
-  outside_recorded_windows: "unknown",
-  state: "interrupted",
-  last_confirmed_at: "2026-10-12T10:00:08+00:00",
-  retained_since: "2026-09-12T10:00:10+00:00",
-  gaps: [openGap, recoveredGap],
-} satisfies Schemas["CoverageReport"];
+/** A change Home Assistant recorded, with the ID the API gives it: entity and time. */
+const change = (
+  fields: Omit<ChangeRecord, "id" | "entity_id" | "source_entity_id" | "device_kind"> &
+    Partial<ChangeRecord>,
+): ChangeRecord => {
+  const entity_id = fields.entity_id ?? "light.hue_desk";
+  return {
+    device_kind: "light",
+    source_entity_id: entity_id,
+    ...fields,
+    entity_id,
+    id: `${entity_id}@${fields.time}`,
+  };
+};
 
-export const emptyCoverage = {
-  continuous_coverage: false,
-  outside_recorded_windows: "unknown",
-  state: "unknown",
-  last_confirmed_at: null,
-  retained_since: "2026-09-12T10:00:00+00:00",
-  gaps: [],
-} satisfies Schemas["CoverageReport"];
-
-const changeEvent = {
-  device_kind: "light",
-  entity_id: "light.hue_desk",
-  source_entity_id: null,
-  source_id: "demo",
-  selection_revision: 2,
-  persisted_at: "2026-10-12T10:00:00+00:00",
-} satisfies Partial<Schemas["EventRecord"]>;
-
-export const change3 = {
-  ...changeEvent,
-  id: "change-3",
-  event_time: "2026-10-12T09:59:50Z",
-  received_at: "2026-10-12T09:59:50Z",
+export const change3 = change({
+  time: "2026-10-12T09:59:50Z",
   old: { device_kind: "light", availability: "available", state: "off" },
   new: { device_kind: "light", availability: "available", state: "on", brightness: 150 },
-} satisfies Schemas["EventRecord"];
+});
 
-export const change2 = {
-  ...changeEvent,
-  id: "change-2",
-  event_time: "2026-10-12T09:59:40Z",
-  received_at: "2026-10-12T09:59:40Z",
+export const change2 = change({
+  time: "2026-10-12T09:59:40Z",
   old: { device_kind: "light", availability: "available", state: "on" },
   new: { device_kind: "light", availability: "available", state: "off" },
-} satisfies Schemas["EventRecord"];
+});
 
-export const change1 = {
-  ...changeEvent,
-  id: "change-1",
-  event_time: "2026-10-12T09:59:30Z",
-  received_at: "2026-10-12T09:59:30Z",
+export const change1 = change({
+  time: "2026-10-12T09:59:30Z",
   old: { device_kind: "light", availability: "available", state: "off" },
   new: { device_kind: "light", availability: "available", state: "on", brightness: 50 },
-} satisfies Schemas["EventRecord"];
+});
 
-// Distinct source, receipt, and storage times so a swapped label shows up.
-export const colorChange = {
-  ...changeEvent,
-  id: "change-color",
-  event_time: "2026-10-12T09:59:55Z",
-  received_at: "2026-10-12T09:59:57Z",
-  persisted_at: "2026-10-12T10:00:01+00:00",
+// A different Home Assistant entity ID, so the details show which one changed.
+export const colorChange = change({
+  source_entity_id: "light.desk_lamp_bulb",
+  time: "2026-10-12T09:59:55Z",
   old: {
     device_kind: "light",
     availability: "available",
@@ -183,44 +147,32 @@ export const colorChange = {
     brightness: 150,
     xy_color: [0.45, 0.41],
   },
-} satisfies Schemas["EventRecord"];
+});
 
 // The smart plug turning on: a switch reading has a state but no light attributes.
-export const plugChange = {
-  ...changeEvent,
+export const plugChange = change({
   device_kind: "switch",
   entity_id: smartPlug.id,
-  id: "change-plug",
-  event_time: "2026-10-12T09:59:58Z",
-  received_at: "2026-10-12T09:59:58Z",
+  time: "2026-10-12T09:59:58Z",
   old: { device_kind: "switch", availability: "available", state: "off" },
   new: { device_kind: "switch", availability: "available", state: "on" },
-} satisfies Schemas["EventRecord"];
+});
 
 export const eventsPage1 = {
-  coverage: "unknown",
   events: [change3, change2],
-  next_cursor: "2026-10-12T09:59:40Z|change-2",
-  retained_since: "2026-09-12T10:00:10+00:00",
+  // Opaque to the dashboard: it only sends it back.
+  next_cursor: "opaque-cursor-after-change-2",
 } satisfies Schemas["EventsPage"];
 
 export const eventsPage2 = {
-  coverage: "unknown",
   events: [change1],
   next_cursor: null,
-  retained_since: "2026-09-12T10:00:10+00:00",
 } satisfies Schemas["EventsPage"];
 
 export const emptyEvents = {
-  coverage: "unknown",
   events: [],
   next_cursor: null,
-  retained_since: "2026-09-12T10:00:00+00:00",
 } satisfies Schemas["EventsPage"];
-
-export const discoveryRefresh = {
-  refresh_revision: 1,
-} satisfies Schemas["DiscoveryRefresh"];
 
 /** The dashboard's `toLocaleString` rendering of an API timestamp. */
 export const localTime = (value: string): string => new Date(value).toLocaleString();
@@ -232,57 +184,68 @@ export const controlOn = {
   heartbeat_at: "2026-10-12T10:00:08+00:00",
 } satisfies Schemas["ControlStatus"];
 
-/** A monitored light whose recorded reading has the given state and availability. */
+const reportedAt = "2026-10-12T10:00:06+00:00";
+
+/** A monitored light in the state Home Assistant reports now. */
 export const monitoredLight = (
   entity: Schemas["Entity"],
-  state: Schemas["LightBaseline"]["state"],
-  availability: Schemas["LightBaseline"]["availability"] = "available",
+  state: Reading["state"],
+  availability: Reading["availability"] = "available",
+  brightness?: number,
 ) =>
   ({
     ...entity,
-    baseline: {
-      kind: "baseline",
+    source_entity_id: entity.id,
+    state: {
       device_kind: "light",
-      id: `baseline-${entity.id}`,
-      entity_id: entity.id,
-      source_entity_id: null,
-      source_id: "demo",
       state,
       availability,
-      collection_started_at: null,
-      coverage_gap_ids: [],
-      received_at: "2026-10-12T10:00:06Z",
-      persisted_at: "2026-10-12T10:00:06+00:00",
+      last_changed: reportedAt,
+      last_updated: reportedAt,
+      ...(brightness === undefined ? {} : { brightness }),
     },
-    freshness: "fresh",
-    confirmed_at: "2026-10-12T10:00:06+00:00",
-  }) satisfies Schemas["MonitoredEntity"];
+    missing: false,
+  }) satisfies MonitoredEntity;
 
-/** A monitored plug or switch whose recorded reading has the given state and availability. */
+/** A monitored plug or switch in the state Home Assistant reports now. */
 export const monitoredSwitch = (
   entity: Schemas["Entity"] & { device_kind: "switch" },
-  state: Schemas["SwitchBaseline"]["state"],
-  availability: Schemas["SwitchBaseline"]["availability"] = "available",
+  state: Reading["state"],
+  availability: Reading["availability"] = "available",
 ) =>
   ({
     ...entity,
-    baseline: {
-      kind: "baseline",
+    source_entity_id: entity.id,
+    state: {
       device_kind: "switch",
-      id: `baseline-${entity.id}`,
-      entity_id: entity.id,
-      source_entity_id: null,
-      source_id: "demo",
       state,
       availability,
-      collection_started_at: null,
-      coverage_gap_ids: [],
-      received_at: "2026-10-12T10:00:06Z",
-      persisted_at: "2026-10-12T10:00:06+00:00",
+      last_changed: reportedAt,
+      last_updated: reportedAt,
     },
-    freshness: "fresh",
-    confirmed_at: "2026-10-12T10:00:06+00:00",
-  }) satisfies Schemas["MonitoredEntity"];
+    missing: false,
+  }) satisfies MonitoredEntity;
+
+/** A monitored device while Home Assistant cannot be reached: listed, with no state. */
+export const unknownDevice = (entity: Schemas["Entity"]) =>
+  ({
+    ...entity,
+    name: entity.id,
+    device_id: null,
+    device_name: null,
+    source_entity_id: null,
+    state: null,
+    missing: false,
+  }) satisfies MonitoredEntity;
+
+/** A monitored device Home Assistant no longer has. */
+export const missingDevice = (entity: Schemas["Entity"]) =>
+  ({
+    ...entity,
+    source_entity_id: null,
+    state: null,
+    missing: true,
+  }) satisfies MonitoredEntity;
 
 /** The command record the controller returns for a light command. */
 export const commandRecord = (
@@ -297,7 +260,6 @@ export const commandRecord = (
     sender: { kind: "dashboard" },
     sent_at: "2026-10-12T10:01:00+00:00",
     outcome,
-    event_id: outcome === "observed" ? "change-4" : null,
   }) satisfies Schemas["LightCommandRecord"];
 
 /** The command record the controller returns for a smart plug command. */
@@ -313,7 +275,6 @@ export const switchCommandRecord = (
     sender: { kind: "dashboard" },
     sent_at: "2026-10-12T10:01:00+00:00",
     outcome,
-    event_id: outcome === "observed" ? "change-plug" : null,
   }) satisfies Schemas["SwitchCommandRecord"];
 
 /** A command history row; override any field. */
@@ -328,7 +289,6 @@ export const historyCommand = (
   sender: { kind: "dashboard" },
   sent_at: "2026-10-12T10:01:00+00:00",
   outcome: "not_observed",
-  event_id: null,
   ...overrides,
 });
 
@@ -344,12 +304,11 @@ export const emptyCommands = commandsPage([]);
 const hourly = (hour: number, seconds: number) =>
   Array.from({ length: 24 }, (_, index) => (index === hour ? seconds : 0));
 
-/** The last day's usage: the desk lamp on 1 h at 75%, with a 30-minute gap; the plug on 2 h. */
+/** The last day's usage: the desk lamp on 1 h at 75%, unavailable for 30 minutes; the plug on 2 h. */
 export const usage = {
   start: "2026-10-11T10:00:00+00:00",
   end: "2026-10-12T10:00:00+00:00",
   timezone: "UTC",
-  retained_since: "2026-09-12T10:00:00+00:00",
   devices: [
     {
       device_kind: "light",
@@ -364,7 +323,11 @@ export const usage = {
       ],
       hours: hourly(10, 3600),
       unknown_intervals: [
-        { start: "2026-10-11T12:00:00+00:00", end: "2026-10-11T12:30:00+00:00", reason: "gap" },
+        {
+          start: "2026-10-11T12:00:00+00:00",
+          end: "2026-10-11T12:30:00+00:00",
+          reason: "unavailable",
+        },
       ],
       periods: [
         {

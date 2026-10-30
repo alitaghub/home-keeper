@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +47,7 @@ def compose(
             *profile,
             *args,
         ],
-        env=os.environ
-        | {"HOME_KEEPER_PORT": HOME_KEEPER_PORT, "HOME_KEEPER_RECONCILIATION_SECONDS": "3"},
+        env=os.environ | {"HOME_KEEPER_PORT": HOME_KEEPER_PORT},
         cwd=REPO,
         check=check,
         capture_output=True,
@@ -77,11 +77,17 @@ def command(client: httpx.Client, action: dict[str, object], entity: str = LIGHT
     )
 
 
-def current_state(client: httpx.Client, entity: str = LIGHT) -> Any:
+def reading(client: httpx.Client, entity: str = LIGHT) -> Any:
+    """The state the demo home reports for `entity` now, or None."""
     for entry in client.get("/api/monitored").json()["entities"]:
-        if entry["id"] == entity and entry["baseline"]:
-            return entry["baseline"]["state"]
+        if entry["id"] == entity and entry["state"]:
+            return entry["state"]
     return None
+
+
+def current_state(client: httpx.Client, entity: str = LIGHT) -> Any:
+    state = reading(client, entity)
+    return state["state"] if state else None
 
 
 def switch(
@@ -109,12 +115,36 @@ def assert_observed(
     assert record["entity_id"] == entity
     assert record["device_kind"] == ("switch" if entity == PLUG else "light"), record
     assert record["command"] == action
-    assert record["event_id"], record
-    events = client.get("/api/events", params={"entity_id": entity, "limit": 100}).json()["events"]
-    [recorded] = [item for item in events if item["id"] == record["event_id"]]
-    assert recorded["new"]["state"] == action["action"], recorded
+    assert "event_id" not in record, record
+    # Observed means the device's state, read after the send, showed the command.
+    shown = reading(client, entity)
+    assert shown["state"] == action["action"], shown
     if action is ON_37:
-        assert abs(recorded["new"]["brightness"] - BRIGHTNESS_37) <= 2, recorded
+        assert abs(shown["brightness"] - BRIGHTNESS_37) <= 2, shown
+
+
+def assert_in_history(
+    client: httpx.Client, action: dict[str, object], record: dict[str, Any], entity: str = LIGHT
+) -> None:
+    """The commanded change shows in the device's history, which the API reads from the demo
+    home's recorder."""
+    since = datetime.fromisoformat(record["sent_at"]) - timedelta(seconds=5)
+
+    def commanded(change: dict[str, Any]) -> bool:
+        new: dict[str, Any] = change["new"] or {}
+        if new.get("state") != action["action"]:
+            return False
+        brightness: int = new.get("brightness", -10)
+        return action is not ON_37 or abs(brightness - BRIGHTNESS_37) <= 2
+
+    def shown() -> bool:
+        response = client.get(
+            "/api/events", params={"entity_id": entity, "start": since.isoformat()}
+        )
+        assert response.status_code == 200, response.text
+        return any(commanded(change) for change in response.json()["events"])
+
+    wait_until(f"the commanded {action['action']} in the history of {entity}", shown, timeout=30)
 
 
 def main() -> None:
@@ -128,7 +158,7 @@ def main() -> None:
         controller_networks = set(services["controller"]["networks"])
         assert controller_networks == {"control"}, controller_networks
         assert "control" in services["api"]["networks"]
-        assert "control" in services["collector"]["networks"]
+        assert "control" in services["reader"]["networks"]
         assert config["networks"]["control"].get("internal") is True
 
         # Without the profile nothing can switch a light.
@@ -149,13 +179,15 @@ def main() -> None:
             client.put(
                 f"/api/selection/{LIGHT}", json={"selected": True}, headers=WRITE
             ).raise_for_status()
-            wait_until("a baseline for the light", lambda: current_state(client))
+            wait_until("a state for the light", lambda: current_state(client))
 
             first_action, first = switch(client)
             assert_observed(client, first_action, first)
+            assert_in_history(client, first_action, first)
             second_action, second = switch(client)
             assert second_action != first_action
             assert_observed(client, second_action, second)
+            assert_in_history(client, second_action, second)
             audit = client.get("/api/commands").json()["commands"]
             assert [record["id"] for record in audit] == [second["id"], first["id"]]
             assert {record["sender"]["kind"] for record in audit} == {"dashboard"}
@@ -164,7 +196,7 @@ def main() -> None:
             client.put(
                 f"/api/selection/{PLUG}", json={"selected": True}, headers=WRITE
             ).raise_for_status()
-            wait_until("a baseline for the plug", lambda: current_state(client, PLUG))
+            wait_until("a state for the plug", lambda: current_state(client, PLUG))
 
             def dimmed_plug() -> bool:
                 response = command(client, ON_37, PLUG)
@@ -176,6 +208,7 @@ def main() -> None:
             for _ in range(2):
                 plug_action, plug_record = switch(client, PLUG, ON)
                 assert_observed(client, plug_action, plug_record, PLUG)
+                assert_in_history(client, plug_action, plug_record, PLUG)
                 plug_actions.append(plug_action)
             assert plug_actions[0] != plug_actions[1]
             plug_audit = [

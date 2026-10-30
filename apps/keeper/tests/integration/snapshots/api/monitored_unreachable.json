@@ -1,0 +1,31 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "device_id": null,
+        "device_kind": "light",
+        "device_name": null,
+        "id": "bulb-a",
+        "missing": false,
+        "name": "bulb-a",
+        "reason": null,
+        "source_entity_id": null,
+        "state": null,
+        "supported": true
+      },
+      {
+        "device_id": null,
+        "device_kind": "light",
+        "device_name": null,
+        "id": "bulb-b",
+        "missing": false,
+        "name": "bulb-b",
+        "reason": null,
+        "source_entity_id": null,
+        "state": null,
+        "supported": true
+      }
+    ]
+  }
+}

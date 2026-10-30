@@ -4,8 +4,6 @@
     "entity_ids": [
       "bulb-a",
       "bulb-b"
-    ],
-    "refresh_revision": 1,
-    "revision": 2
+    ]
   }
 }

@@ -9,7 +9,7 @@ services:
   api:
     environment:
       HOME_KEEPER_HA_PUBLIC_URL: ${HOME_KEEPER_HA_PUBLIC_URL:-}
-  collector:
+  reader:
     environment:
       HOME_KEEPER_HA_URL: ${HOME_KEEPER_HA_URL:?Set the Home Assistant origin}
       HOME_KEEPER_HA_TOKEN_FILE: /run/secrets/ha-token

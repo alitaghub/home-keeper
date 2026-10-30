@@ -5,62 +5,43 @@ import type { DeviceUsage, Usage } from "../useUsage";
 import { lightName } from "./Catalog";
 import { UsageStrip } from "./History";
 
-type Baseline = NonNullable<Schemas["MonitoredEntity"]["baseline"]>;
+type State = NonNullable<Schemas["MonitoredEntity"]["state"]>;
 export type DeviceCommand = Schemas["CommandRequest"]["command"];
 export type DeviceAction = DeviceCommand["action"];
 
 // A slider sends one command once it stops moving, not one per step.
 const DIMMER_SETTLE_MS = 400;
 
-const kindLabels: Record<Baseline["kind"], string> = {
-  baseline: "Initial baseline",
-  reconciliation: "Polling reconciliation snapshot",
-  event: "Latest recorded event",
-  recovery: "Recovery snapshot; transition time unknown",
-};
+/** A light's brightness; plugs and switches have none. */
+const brightnessOf = (state: State | null) =>
+  state?.device_kind === "light" ? (state.brightness ?? null) : null;
 
-const freshnessLabels: Record<Schemas["MonitoredEntity"]["freshness"], string> = {
-  fresh: "fresh",
-  stale: "stale",
-  pending: "waiting",
-};
-
-/** A light's recorded brightness; plugs and switches have none. */
-const brightnessOf = (baseline: Baseline | null) =>
-  baseline?.device_kind === "light" ? (baseline.brightness ?? null) : null;
-
-function stateText(baseline: Baseline | null) {
-  if (!baseline) return "Waiting for a first reading";
-  if (baseline.availability !== "available") {
-    return baseline.availability === "unavailable" ? "Unavailable" : "Unknown";
+function stateText(state: State | null) {
+  if (!state) return "State unknown";
+  if (state.availability !== "available") {
+    return state.availability === "unavailable" ? "Unavailable" : "Unknown";
   }
-  if (baseline.state === "on") {
-    const brightness = brightnessOf(baseline);
+  if (state.state === "on") {
+    const brightness = brightnessOf(state);
     return brightness == null ? "On" : `On · ${brightnessPercent(brightness)}%`;
   }
-  return baseline.state === "off" ? "Off" : "Unknown";
+  return state.state === "off" ? "Off" : "Unknown";
 }
 
-function Evidence({ baseline, confirmedAt }: { baseline: Baseline; confirmedAt: string | null }) {
-  const gapIds = baseline.kind === "event" ? null : baseline.coverage_gap_ids;
-  const brightness = brightnessOf(baseline);
+function StateDetails({ entity, state }: { entity: Schemas["MonitoredEntity"]; state: State }) {
+  const brightness = brightnessOf(state);
   return (
     <>
-      <small>{kindLabels[baseline.kind]}</small>
       {brightness != null && <small>{`Brightness ${brightness} / 255`}</small>}
-      {gapIds?.length ? (
-        <small>{`Related gap evidence: ${gapIds.join(", ")}. Changes during this gap have unknown timing.`}</small>
-      ) : null}
-      <small>{`Source: ${baseline.source_id} · Evidence ID: ${baseline.id}`}</small>
-      <small>{`Latest confirmed collection: ${date(confirmedAt)}`}</small>
-      <small>{`Evidence received: ${date(baseline.received_at)} · Stored: ${date(baseline.persisted_at)}`}</small>
-      <small>{`Source last changed: ${date(baseline.last_changed)}`}</small>
+      <small>{`Home Assistant entity: ${entity.source_entity_id ?? entity.id}`}</small>
+      <small>{`Last changed: ${date(state.last_changed)}`}</small>
+      <small>{`Last updated: ${date(state.last_updated)}`}</small>
     </>
   );
 }
 
-// Shows the recorded state's opposite, never the requested one: the label changes
-// only once the reload after the command records the device's new state.
+// Shows the current state's opposite, never the requested one: the label changes
+// only once the reload after the command reads the device's new state.
 function SwitchButton({
   name,
   action,
@@ -133,15 +114,15 @@ function Tile({
   busy: boolean;
 }) {
   const name = lightName(entity);
-  const { baseline } = entity;
+  const { state } = entity;
   // Only an available device with a known on/off state can be switched.
-  const recorded = baseline?.availability === "available" ? baseline.state : null;
+  const recorded = state?.availability === "available" ? state.state : null;
   const switchable = onSwitch !== null && (recorded === "on" || recorded === "off");
   // Plugs and switches are on or off, with no brightness.
   const dimmable = entity.device_kind !== "switch";
-  const brightness = brightnessOf(baseline);
+  const brightness = brightnessOf(state);
   const percent = recorded === "on" && brightness != null ? brightnessPercent(brightness) : 100;
-  // The slider's value while it moves; null shows the recorded brightness.
+  // The slider's value while it moves; null shows the current brightness.
   const [draft, setDraft] = useState<number | null>(null);
   const settle = useRef<ReturnType<typeof setTimeout>>(undefined);
   const cancelDraft = () => {
@@ -158,11 +139,8 @@ function Tile({
     <article className={recorded === "on" ? "tile lit" : "tile"}>
       <div className="tile-head">
         <h3>{name}</h3>
-        {entity.freshness !== "fresh" && (
-          <span className={`tag ${entity.freshness}`}>{freshnessLabels[entity.freshness]}</span>
-        )}
       </div>
-      <p className="tile-state">{stateText(baseline)}</p>
+      <p className="tile-state">{stateText(state)}</p>
       {!entity.supported && entity.reason && <p className="tile-note">{entity.reason}</p>}
       {switchable && (
         <div className="tile-controls">
@@ -206,10 +184,14 @@ function Tile({
       </button>
       <details className="details">
         <summary>Details</summary>
-        {baseline ? (
-          <Evidence baseline={baseline} confirmedAt={entity.confirmed_at} />
+        {state ? (
+          <StateDetails entity={entity} state={state} />
         ) : (
-          <small>The collector has not confirmed a selected observation yet.</small>
+          <small>
+            {entity.missing
+              ? "Home Assistant no longer has this device."
+              : "Home Assistant cannot be read right now."}
+          </small>
         )}
         <button
           type="button"

@@ -1,8 +1,9 @@
 import type { Schemas } from "../api/client";
 import { brightnessPercent, date, time } from "../format";
 
+type ChangeRecord = Schemas["ChangeRecord"];
 type LightReading = Schemas["LightReading"];
-type Reading = Schemas["EventRecord"]["new"];
+type Reading = ChangeRecord["new"];
 
 const changeFields = [
   "state",
@@ -27,15 +28,13 @@ const colorFields = new Set<string>([
   "rgbww_color",
 ]);
 
-const sourceTimeFields = ["last_changed", "last_updated", "last_reported"] as const;
-
 type Field = (typeof changeFields)[number];
 type Value = LightReading[Field];
 
 /** A field of an event's state. A plug or switch has no light attributes to show. */
-function fieldValue(reading: Reading | undefined, field: Field): Value {
-  if (reading?.device_kind === "light") return reading[field];
-  return field === "state" || field === "availability" ? reading?.[field] : undefined;
+function fieldValue(reading: Reading, field: Field): Value {
+  if (reading.device_kind === "light") return reading[field];
+  return field === "state" || field === "availability" ? reading[field] : undefined;
 }
 
 const valueText = (value: Value) =>
@@ -43,7 +42,7 @@ const valueText = (value: Value) =>
 
 const label = (field: string) => field.replaceAll("_", " ");
 
-function changedFields(event: Schemas["EventRecord"]): Field[] {
+function changedFields(event: ChangeRecord): Field[] {
   return changeFields.filter(
     (field) =>
       JSON.stringify(fieldValue(event.old, field) ?? null) !==
@@ -52,14 +51,14 @@ function changedFields(event: Schemas["EventRecord"]): Field[] {
 }
 
 /** One plain sentence for the change, such as "turned on at 40%". */
-function summary(event: Schemas["EventRecord"], fields: Field[]) {
+function summary(event: ChangeRecord, fields: Field[]) {
   const reading = event.new;
   const brightness = fieldValue(reading, "brightness");
   const percent = typeof brightness === "number" ? ` at ${brightnessPercent(brightness)}%` : "";
-  if (fields.includes("availability") && reading?.availability !== "available") {
-    return reading?.availability === "unavailable" ? "became unavailable" : "state unknown";
+  if (fields.includes("availability") && reading.availability !== "available") {
+    return reading.availability === "unavailable" ? "became unavailable" : "state unknown";
   }
-  if (fields.includes("state") && reading?.state) {
+  if (fields.includes("state")) {
     return reading.state === "on" ? `turned on${percent}` : `turned ${reading.state}`;
   }
   if (fields.includes("availability")) return "became available";
@@ -74,7 +73,7 @@ export function Timeline({
   events,
   names,
 }: {
-  events: Schemas["EventRecord"][] | null;
+  events: ChangeRecord[] | null;
   /** Device names by entity ID; an unknown device shows its Home Assistant entity ID. */
   names: ReadonlyMap<string, string>;
 }) {
@@ -82,8 +81,8 @@ export function Timeline({
     <div id="timeline" className="rows">
       {events && !events.length && (
         <p className="empty">
-          No recorded changes in retained history. Select a light and wait for a change. Earlier
-          changes may be missing.
+          Home Assistant has no changes of monitored devices in the last 30 days. Select a light and
+          wait for a change.
         </p>
       )}
       {events?.map((event) => {
@@ -93,12 +92,10 @@ export function Timeline({
             <details>
               <summary>
                 <span className="row-main">
-                  <strong>
-                    {names.get(event.entity_id) ?? (event.source_entity_id || event.entity_id)}
-                  </strong>{" "}
+                  <strong>{names.get(event.entity_id) ?? event.source_entity_id}</strong>{" "}
                   {summary(event, fields)}
                 </span>
-                <time dateTime={event.event_time ?? undefined}>{time(event.event_time)}</time>
+                <time dateTime={event.time}>{time(event.time)}</time>
               </summary>
               <ul className="change-values">
                 {fields.length ? (
@@ -111,16 +108,8 @@ export function Timeline({
                   <li>No changed field captured.</li>
                 )}
               </ul>
-              <small>{`Source: ${event.source_id} · Entity: ${event.source_entity_id || "Not captured"} · Identity: ${event.entity_id}`}</small>
-              <small className="evidence-id">{`Evidence ID: ${event.id}`}</small>
-              <small>{`Source event: ${date(event.event_time)}`}</small>
-              <small>{`Connector received: ${date(event.received_at)} · Stored: ${date(event.persisted_at)}`}</small>
-              {sourceTimeFields.map((field) => {
-                const value = event.new?.[field];
-                return value ? (
-                  <small key={field}>{`New state source ${label(field)}: ${date(value)}`}</small>
-                ) : null;
-              })}
+              <small>{`Entity: ${event.source_entity_id} · Identity: ${event.entity_id}`}</small>
+              <small>{`Home Assistant time: ${date(event.time)}`}</small>
             </details>
           </article>
         );

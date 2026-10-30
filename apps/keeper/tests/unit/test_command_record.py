@@ -12,7 +12,6 @@ STORED: dict[str, object] = {
     "sender": {"kind": "dashboard"},
     "sent_at": "2026-10-12T10:00:00+00:00",
     "outcome": "observed",
-    "event_id": None,
 }
 
 

@@ -1,7 +1,8 @@
 # AGENTS.md
 
-Home Keeper is an agent that looks after your home; recording is its foundation.
-It reads devices through Home Assistant and records what they do. Only the opt-in
+Home Keeper is an agent that looks after your home. It reads devices, and their
+history from Home Assistant's recorder, through a stateless reader service; it keeps
+only which devices you monitor and its command log. Only the opt-in
 controller (`--profile control`) switches lights, with a fixed command set, and only
 lights that are monitored.
 

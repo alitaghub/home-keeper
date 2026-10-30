@@ -45,13 +45,13 @@ export function Catalog({
                 >
                   Connect your devices in Home Assistant
                 </a>
-                , then refresh discovery. Home Keeper records single lights, plugs and switches, not
-                groups or rooms.
+                . They appear here within seconds. Home Keeper monitors single lights, plugs and
+                switches, not groups or rooms.
               </>
             ) : entities.length ? (
               "No supported lamps found. Check your integrations in Home Assistant."
             ) : (
-              "Waiting for discovery."
+              "Home Assistant lists no devices."
             )}
           </p>
         )}

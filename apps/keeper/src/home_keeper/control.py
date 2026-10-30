@@ -13,8 +13,9 @@ CONTROLLER_TIMEOUT_SECONDS = 6
 
 
 class Controller(Protocol):
-    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
-        """`refused`: Home Assistant rejected the call. Raises ControllerUnreachable."""
+    def send(self, forwarded: ForwardedCommand, timeout_seconds: float) -> Literal["ok", "refused"]:
+        """`refused`: Home Assistant rejected the call. Raises ControllerUnreachable, also
+        when the send takes longer than `timeout_seconds`."""
         ...
 
 

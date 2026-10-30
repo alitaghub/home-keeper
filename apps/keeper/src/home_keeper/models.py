@@ -13,7 +13,7 @@ from pydantic import (
     model_validator,
 )
 
-# The command shape is shared with the controller and the demo collector.
+# The command shape is shared with the controller and the demo reader.
 from home_keeper_light_command import LightCommand, SwitchCommand
 
 Identity = Annotated[
@@ -37,7 +37,7 @@ def device_kind_of(source_entity_id: str) -> DeviceKind | None:
 
 
 def device_kind_tag(value: object) -> object:
-    """Pick a variant from its device kind. A collector may send a light's state without one."""
+    """Pick a variant from its device kind. A stored record may omit a light's kind."""
     if isinstance(value, dict):
         return cast(dict[str, object], value).get("device_kind", "light")
     return getattr(value, "device_kind", "light")
@@ -81,9 +81,9 @@ class Catalog(WireModel):
         return self
 
 
-class SelectionSnapshot(WireModel):
-    revision: int = Field(strict=True, ge=0)
-    refresh_revision: int = Field(default=0, strict=True, ge=0)
+class Selection(WireModel):
+    """The devices the user monitors."""
+
     entity_ids: list[Identity] = Field(max_length=500)
 
 
@@ -154,15 +154,6 @@ class StateHeader(WireModel):
     def utc_timestamp(cls, value: datetime | None) -> datetime | None:
         return None if value is None else to_utc(value)
 
-    def meaningful(self) -> dict[str, object]:
-        return self.model_dump(
-            exclude={"last_changed", "last_updated", "last_reported"}, exclude_none=True
-        )
-
-    def stored(self) -> dict[str, object]:
-        """The state as an event stores it."""
-        return self.model_dump(mode="json", exclude_none=True)
-
 
 class LightState(StateHeader, LightAttributes):
     device_kind: Literal["light"] = "light"
@@ -172,78 +163,6 @@ class SwitchState(StateHeader):
     """A plug or switch: on or off, with no light attributes."""
 
     device_kind: Literal["switch"]
-
-
-DeviceState = Annotated[
-    Annotated[LightState, Tag("light")] | Annotated[SwitchState, Tag("switch")],
-    Discriminator(device_kind_tag),
-]
-
-
-class ObservationFields(WireModel):
-    source_entity_id: Identity | None = None
-    entity_id: Identity
-    selection_revision: int = Field(ge=0)
-    source_id: SourceId
-    kind: Literal["baseline", "reconciliation", "recovery"] = "baseline"
-    received_at: datetime
-    collection_started_at: datetime | None = None
-
-    @field_validator("received_at", "collection_started_at")
-    @classmethod
-    def receipt_timestamp(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else to_utc(value)
-
-
-# Availability is explicit on the existing snapshot protocol. Pydantic allows a subclass
-# to make an optional field required; the checker cannot model that narrowing.
-class Observation(LightState, ObservationFields):
-    """A light snapshot."""
-
-    availability: Literal["available", "unavailable", "unknown"]  # pyright: ignore[reportIncompatibleVariableOverride, reportGeneralTypeIssues]
-
-
-class SwitchObservation(SwitchState, ObservationFields):
-    """A plug or switch snapshot."""
-
-    availability: Literal["available", "unavailable", "unknown"]  # pyright: ignore[reportIncompatibleVariableOverride, reportGeneralTypeIssues]
-
-
-DeviceObservation = Annotated[
-    Annotated[Observation, Tag("light")] | Annotated[SwitchObservation, Tag("switch")],
-    Discriminator(device_kind_tag),
-]
-
-
-class ChangeEvent(WireModel):
-    id: Identity
-    entity_id: Identity
-    source_entity_id: Identity | None = None
-    source_id: SourceId
-    selection_revision: int = Field(ge=0)
-    event_time: datetime
-    received_at: datetime
-    old: DeviceState | None = None
-    new: DeviceState | None = None
-
-    @field_validator("event_time", "received_at")
-    @classmethod
-    def utc_timestamp(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else to_utc(value)
-
-    @model_validator(mode="after")
-    def has_state(self) -> Self:
-        if self.old is None and self.new is None:
-            raise ValueError("An event needs an old or new state")
-        if self.old and self.new and self.old.device_kind != self.new.device_kind:
-            raise ValueError("An event's states must be of one device kind")
-        return self
-
-    @property
-    def device_kind(self) -> DeviceKind:
-        state = self.new or self.old
-        # has_state guarantees one of them.
-        return state.device_kind if state is not None else "light"
 
 
 CollectorError = Literal[
@@ -258,67 +177,26 @@ CollectorError = Literal[
 ]
 
 
-class Health(WireModel):
-    source_id: SourceId
-    status: Literal["healthy", "failed"]
-    error: CollectorError | None = None
-    received_at: datetime
-
-    @field_validator("received_at")
-    @classmethod
-    def utc_timestamp(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else to_utc(value)
-
-
-GapReason = Literal[
-    "connection",
-    "ingestion",
-    "authentication",
-    "timeout",
-    "restart",
-    "overflow",
-    "reconciliation",
-    "heartbeat",
-    "selection",
-    "invalid_data",
-    "configuration",
-    "tls",
-    "missing",
-]
-
-
-class Coverage(WireModel):
-    source_id: SourceId
-    status: Literal["interrupted", "recovered"]
-    reason: GapReason = "connection"
-    received_at: datetime
-    entity_id: Identity | None = None
-    selection_revision: int | None = Field(default=None, ge=0)
-    entity_ids: list[Identity] | None = Field(default=None, max_length=500)
-
-    @field_validator("received_at")
-    @classmethod
-    def utc_timestamp(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else to_utc(value)
-
-
 # Public API responses. Records are stored as JSON and returned as stored, so timestamps
 # stay the exact ISO strings the API wrote instead of being re-serialized as datetimes.
 Timestamp = Annotated[str, Field(json_schema_extra={"format": "date-time"})]
-Freshness = Literal["pending", "fresh", "stale"]
+# Why Home Assistant could not be read: its own failure, or the reader service itself.
+ReaderError = CollectorError | Literal["reader_unreachable"]
 
 
 class CatalogResponse(WireModel):
     source_id: SourceId
     # Browser-facing Home Assistant origin, so the dashboard can link to it. None in the demo.
     home_assistant_url: str | None
-    refreshed_at: Timestamp | None
-    freshness: Freshness
     entities: list[Entity]
 
 
-class DiscoveryRefresh(WireModel):
-    refresh_revision: int
+class Unreachable(WireModel):
+    """The 503 body of a route that needs Home Assistant while it cannot be read."""
+
+    error: ReaderError
+    # Fixed text for the error code; never upstream text, URLs or credentials.
+    message: str
 
 
 class ReadingHeader(WireModel):
@@ -349,151 +227,52 @@ Reading = Annotated[
 ]
 
 
-class BaselineFields(WireModel):
+class ChangeRecord(WireModel):
+    """A change Home Assistant recorded for a monitored device: two consecutive history rows
+    whose state, availability, brightness or color differ."""
+
+    # `{entity_id}@{time}`.
     id: str
-    kind: Literal["baseline", "reconciliation", "recovery"]
     entity_id: Identity
-    source_entity_id: Identity | None
-    source_id: SourceId
-    received_at: Timestamp
-    collection_started_at: Timestamp | None
-    persisted_at: Timestamp
-    # Present only when the snapshot closes a coverage gap.
-    coverage_gap_ids: list[str] | None = None
-    transition_time: Literal["unknown"] | None = None
-
-
-class LightBaseline(BaselineFields, LightReading):
-    pass
-
-
-class SwitchBaseline(BaselineFields, SwitchReading):
-    pass
-
-
-BaselineRecord = Annotated[
-    Annotated[LightBaseline, Tag("light")] | Annotated[SwitchBaseline, Tag("switch")],
-    Discriminator(device_kind_tag),
-]
-
-
-class EventFields(WireModel):
-    """The latest state taken from a recorded change event."""
-
-    id: Identity
-    kind: Literal["event"]
-    entity_id: Identity
-    source_entity_id: Identity | None
-    source_id: SourceId
-    event_time: Timestamp
-    received_at: Timestamp
-    persisted_at: Timestamp
-
-
-class LightEventReading(EventFields, LightReading):
-    pass
-
-
-class SwitchEventReading(EventFields, SwitchReading):
-    pass
-
-
-EventReading = Annotated[
-    Annotated[LightEventReading, Tag("light")] | Annotated[SwitchEventReading, Tag("switch")],
-    Discriminator(device_kind_tag),
-]
-
-
-def record_kind_tag(value: object) -> object:
-    """Pick a current reading's variant: a recorded change event or a snapshot."""
-    if isinstance(value, dict):
-        kind = cast(dict[str, object], value).get("kind")
-    else:
-        kind = getattr(value, "kind", None)
-    return "event" if kind == "event" else "baseline"
-
-
-# The newest state of a monitored device: a snapshot or a recorded change event. A callable
-# discriminator, because a `kind` tag would map to two device kinds, which OpenAPI forbids.
-CurrentReading = Annotated[
-    Annotated[BaselineRecord, Tag("baseline")] | Annotated[EventReading, Tag("event")],
-    Discriminator(record_kind_tag),
-]
-
-
-class BaselinesPage(WireModel):
-    baselines: list[BaselineRecord]
-    next_cursor: int | None
-
-
-class EventRecord(WireModel):
-    id: Identity
-    entity_id: Identity
-    source_entity_id: Identity | None
-    source_id: SourceId
-    selection_revision: int
-    event_time: Timestamp
-    received_at: Timestamp
-    persisted_at: Timestamp
+    source_entity_id: Identity
     device_kind: DeviceKind
-    old: Reading | None
-    new: Reading | None
+    # Home Assistant's last_updated of the new state.
+    time: Timestamp
+    old: Reading
+    new: Reading
 
 
 class EventsPage(WireModel):
-    events: list[EventRecord]
+    events: list[ChangeRecord]
+    # Opaque; it carries the window of the first page.
     next_cursor: str | None
-    retained_since: Timestamp
-    coverage: Literal["unknown"]
 
 
-class CoverageGap(WireModel):
-    id: str
+class HealthStatus(WireModel):
+    """Whether Home Assistant answers through the reader, checked at request time."""
+
     source_id: SourceId
-    entity_ids: list[Identity]
-    last_confirmed_at: Timestamp | None
-    uncertain_start: bool
-    detected_at: Timestamp
-    recovered_at: Timestamp | None
-    reason: GapReason
-
-
-class CoverageReport(WireModel):
-    gaps: list[CoverageGap]
-    state: Literal["interrupted", "collecting", "unknown"]
-    last_confirmed_at: Timestamp | None
-    retained_since: Timestamp
-    continuous_coverage: Literal[False]
-    outside_recorded_windows: Literal["unknown"]
-
-
-class HealthPending(WireModel):
-    status: Literal["pending"]
-    source_id: SourceId
-
-
-class HealthReport(WireModel):
-    status: Literal["healthy", "failed", "stale"]
-    source_id: SourceId
-    error: CollectorError | None
-    received_at: Timestamp
-    persisted_at: Timestamp
-
-
-HealthStatus = Annotated[HealthPending | HealthReport, Field(discriminator="status")]
+    status: Literal["healthy", "unreachable"]
+    error: ReaderError | None
+    checked_at: Timestamp
 
 
 class MonitoredEntity(Entity):
-    baseline: CurrentReading | None
-    freshness: Freshness
-    confirmed_at: Timestamp | None
+    # Home Assistant's entity ID, such as light.kitchen; None while it cannot be read.
+    source_entity_id: Identity | None
+    # What Home Assistant reports now; None when it cannot be read or has no such entity.
+    state: Reading | None
+    # Home Assistant no longer has the entity.
+    missing: bool
 
 
 class MonitoredEntities(WireModel):
     entities: list[MonitoredEntity]
 
 
-UnknownReason = Literal["gap", "no_evidence", "unavailable"]
+# no_history: Home Assistant has no row for the time. unavailable: it reported the device
+# `unavailable` or `unknown`.
+UnknownReason = Literal["no_history", "unavailable"]
 
 
 class UnknownInterval(WireModel):
@@ -553,7 +332,6 @@ class UsageReport(WireModel):
     start: Timestamp
     end: Timestamp
     timezone: str
-    retained_since: Timestamp
     devices: list[DeviceUsage]
 
 
@@ -615,8 +393,6 @@ class LightCommandRecord(WireModel):
     sender: Sender
     sent_at: Timestamp
     outcome: CommandOutcome
-    # The recorded event that showed the change, when an event (not a snapshot) showed it.
-    event_id: Identity | None
 
 
 class SwitchCommandRecord(WireModel):
@@ -627,7 +403,6 @@ class SwitchCommandRecord(WireModel):
     sender: Sender
     sent_at: Timestamp
     outcome: CommandOutcome
-    event_id: Identity | None
 
 
 CommandRecord = Annotated[

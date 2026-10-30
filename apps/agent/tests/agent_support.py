@@ -26,12 +26,11 @@ READ_TOOLS = {
     "list_monitored",
     "get_usage",
     "get_events",
-    "get_coverage",
     "get_health",
     "list_devices",
 }
-# Writes change only the keeper's selection and discovery, never a device.
-WRITE_TOOLS = {"refresh_discovery", "monitor", "stop_monitoring"}
+# Writes change only the keeper's selection, never a device.
+WRITE_TOOLS = {"monitor", "stop_monitoring"}
 
 
 def snapshot(name: str) -> tuple[int, object]:
@@ -107,19 +106,20 @@ def lights_response(
     entity_id: str = "bulb-a",
     extra_ids: Sequence[str] = (),
 ) -> tuple[int, object]:
-    """A /api/monitored response with one light in `state` (None: no baseline yet).
+    """A /api/monitored response with one light in `state` (None: Home Assistant reports no
+    state, as while it cannot be reached).
 
-    The baseline comes from the recorded snapshot so its shape stays the keeper's.
+    The state comes from the recorded response so its shape stays the keeper's.
     """
     _, body = snapshot("monitored")
     entities: dict[str, Any] = json.loads(json.dumps(body))
-    light, pending = entities["entities"]
+    light, missing = entities["entities"]
     if state is None:
-        light["baseline"] = None
+        light["state"] = None
     else:
-        light["baseline"] |= {"state": state, "brightness": brightness}
+        light["state"] |= {"state": state, "brightness": brightness}
     light |= {"id": entity_id, "name": entity_id}
-    others = [pending | {"id": other, "name": other} for other in extra_ids]
+    others = [missing | {"id": other, "name": other} for other in extra_ids]
     return 200, {"entities": [light, *others]}
 
 
@@ -147,11 +147,11 @@ def switch_response(state: str | None = "off", *, entity_id: str = "plug-a") -> 
     body: dict[str, Any] = json.loads(json.dumps(recorded))
     [switch] = body["entities"]
     switch["device_kind"] = "switch"
-    if switch["baseline"] is not None:
-        baseline = {
-            key: value for key, value in switch["baseline"].items() if key not in LIGHT_ATTRIBUTES
+    if switch["state"] is not None:
+        reading = {
+            key: value for key, value in switch["state"].items() if key not in LIGHT_ATTRIBUTES
         }
-        switch["baseline"] = baseline | {"device_kind": "switch", "entity_id": entity_id}
+        switch["state"] = reading | {"device_kind": "switch"}
     return status, body
 
 

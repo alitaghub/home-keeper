@@ -1,11 +1,12 @@
 # Home Keeper
 
-Home Keeper looks after a home through Home Assistant. It records what devices do,
-and, when control is on, switches monitored devices with a fixed command set.
+Home Keeper looks after a home through Home Assistant. It shows what devices report now
+and what Home Assistant recorded them doing, and, when control is on, switches monitored
+devices with a fixed command set.
 
 ## Language
 
-### Recording
+### Seeing
 
 **Device**:
 A single light, plug or switch that Home Assistant exposes as one entity.
@@ -16,15 +17,23 @@ What a device is: a light, which can also have a brightness, or a switch, which 
 _Avoid_: domain, type
 
 **Monitored device**:
-A device the user chose to record. Only a monitored device can receive a command.
+A device the user chose to watch. History, usage and the agent cover only monitored devices, and only a monitored device can receive a command.
 _Avoid_: selected entity, tracked device
 
 **Selection**:
-The set of monitored devices, with a revision that changes on every add or remove. The collector names the revision it read, so it never records a device the user has just dropped.
+The set of monitored devices. It is the only filter: monitoring a device again shows all the history Home Assistant has for it.
 _Avoid_: watch list, tracked devices
 
+**Reader**:
+The process that reads Home Assistant for the API: the device list, current states and history. It holds the Home Assistant owner token, keeps no state and never changes a device.
+_Avoid_: poller, importer
+
+**History**:
+The past states of a device, as Home Assistant's recorder keeps them. Home Keeper reads it on demand and keeps no copy; how far back it goes is a Home Assistant setting.
+_Avoid_: recording, log, timeline (for the data)
+
 **Reading**:
-One recorded state of a device, from an event or a snapshot, with the time Home Keeper received it.
+One state of a device as Home Assistant reports it, now or in its history, with Home Assistant's times.
 _Avoid_: sample, state update
 
 ### Control
@@ -59,4 +68,4 @@ _Avoid_: result, status
 
 **Evidence**:
 A reading, received after the send, that shows the state a command asked for. Evidence makes the outcome observed.
-_Avoid_: observation (the collector's snapshot of a device), confirmation, ack
+_Avoid_: observation, confirmation, ack

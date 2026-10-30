@@ -35,14 +35,14 @@ const geometry = (container: HTMLElement, selector: string) =>
   );
 
 describe("usage strip", () => {
-  it("draws on as tall as its brightness, off as a thin line, and hatches a gap", () => {
+  it("draws on as tall as its brightness, off as a thin line, and hatches unavailable time", () => {
     const device = light(
       [
         { start: at(0), end: at(1), state: "on", brightness: 255 },
         { start: at(1), end: at(2), state: "off", brightness: null },
         { start: at(3), end: at(4), state: "on", brightness: 102 },
       ],
-      [{ start: at(2), end: at(3), reason: "gap" }],
+      [{ start: at(2), end: at(3), reason: "unavailable" }],
     );
     const { container } = render(<UsageStrip range={range} device={device} caption="Day" />);
 

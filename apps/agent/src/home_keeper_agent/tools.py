@@ -21,9 +21,7 @@ from home_keeper_agent.keeper import (
     CommandRecord,
     CommandRequest,
     Control,
-    CoverageReport,
     DeviceUsage,
-    DiscoveryRefresh,
     EventsPage,
     Health,
     KeeperClient,
@@ -42,6 +40,16 @@ from home_keeper_agent.keeper import (
 from home_keeper_light_command import matches_brightness
 
 EVENT_LIMIT = 100
+# A reading's color fields, which a change shows only when one of them changed.
+COLOR_FIELDS = (
+    "color_mode",
+    "color_temp_kelvin",
+    "hs_color",
+    "xy_color",
+    "rgb_color",
+    "rgbw_color",
+    "rgbww_color",
+)
 COMMAND_TOOLS = ("turn_on", "turn_off")
 NOT_ALLOWED = "Not sent: you are not allowed to control lights."
 
@@ -75,12 +83,24 @@ def percent(brightness: float) -> int:
     return math.floor(Fraction(brightness) * 100 / 255 + Fraction(1, 2))
 
 
-def _reading(reading: Reading | None) -> str:
+def _reading(reading: Reading | None, colors: Sequence[str] = ()) -> str:
+    """The state and brightness, then each of the `colors` fields."""
     if reading is None:
-        return "no state"
-    if reading.brightness is None:
-        return reading.state
-    return f"{reading.state} (brightness {percent(reading.brightness)}%)"
+        return "state unknown"
+    details = [] if reading.brightness is None else [f"brightness {percent(reading.brightness)}%"]
+    for field in colors:
+        value: object = getattr(reading, field)
+        if isinstance(value, tuple):
+            value = ", ".join(number(float(part)) for part in value)  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType] -- color tuples hold numbers
+        details.append(f"{field.replace('_', ' ')} {'none' if value is None else value}")
+    return f"{reading.state} ({', '.join(details)})" if details else reading.state
+
+
+def _change(old: Reading, new: Reading) -> str:
+    """Old and new readings; a color change also shows the color mode and what changed."""
+    changed = [field for field in COLOR_FIELDS if getattr(old, field) != getattr(new, field)]
+    colors = ["color_mode", *(f for f in changed if f != "color_mode")] if changed else []
+    return f"{_reading(old, colors)} -> {_reading(new, colors)}"
 
 
 logger = logging.getLogger(__name__)
@@ -110,9 +130,10 @@ def format_monitored(monitored: Monitored) -> str:
         line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
         if device.device_name:
             line += f" device={_name(device.device_name)}"
-        line += f": {_reading(device.baseline)}"
-        line += f", data {device.freshness}, last confirmed {device.confirmed_at or 'never'}"
-        if not device.supported and device.reason:
+        line += f": {_reading(device.state)}"
+        if device.missing:
+            line += ", missing from Home Assistant"
+        elif not device.supported and device.reason:
             line += f", unsupported: {_name(device.reason)}"
         lines.append(line)
     return "\n".join(lines)
@@ -148,7 +169,9 @@ def _device_usage(device: DeviceUsage) -> list[str]:
 def format_usage(usage: Usage) -> str:
     lines = [
         f"Usage from {usage.start} to {usage.end}, days and hours in {usage.timezone}, "
-        f"data retained since {usage.retained_since}. Unknown time is neither on nor off."
+        "from Home Assistant's history. Unknown time is neither on nor off: no_history is time "
+        "Home Assistant has no history for, unavailable is time it reported the device "
+        "unavailable."
     ]
     if not usage.devices:
         lines.append("No monitored lights, plugs or switches match this request.")
@@ -158,9 +181,12 @@ def format_usage(usage: Usage) -> str:
 
 
 def format_events(page: EventsPage) -> str:
-    lines = [f"{len(page.events)} event(s), newest first, retained since {page.retained_since}:"]
+    lines = [
+        f"{len(page.events)} change(s) from Home Assistant's history, newest first. How far "
+        "back it goes depends on Home Assistant's recorder settings:"
+    ]
     lines.extend(
-        f"- {event.event_time} {event.entity_id}: {_reading(event.old)} -> {_reading(event.new)}"
+        f"- {event.time} {event.entity_id}: {_change(event.old, event.new)}"
         for event in page.events
     )
     if page.next_cursor is not None:
@@ -168,35 +194,14 @@ def format_events(page: EventsPage) -> str:
     return "\n".join(lines)
 
 
-def format_coverage(report: CoverageReport) -> str:
-    lines = [
-        f"Collection is {report.state}, last confirmed {report.last_confirmed_at or 'never'}, "
-        f"data retained since {report.retained_since}.",
-        f"{len(report.gaps)} gap(s) where recorded data is unknown:"
-        if report.gaps
-        else "No gaps recorded.",
-    ]
-    for gap in report.gaps:
-        start = gap.last_confirmed_at or gap.detected_at
-        end = gap.recovered_at or "now (still open)"
-        scope = ", ".join(gap.entity_ids) or "all lights"
-        note = ", start uncertain" if gap.uncertain_start else ""
-        lines.append(f"- {scope}: unknown from {start} to {end} ({gap.reason}{note})")
-    return "\n".join(lines)
-
-
 def format_health(health: Health) -> str:
-    if health.status == "pending":
-        return "The collector has not reported yet."
-    line = f"The collector is {health.status}, last report {health.received_at}"
+    # `healthy` or `unreachable`, as the keeper reports it.
+    line = f"Home Assistant is {health.status}, checked {health.checked_at}"
     return f"{line}, error: {health.error}." if health.error else f"{line}."
 
 
 def format_devices(catalog: Catalog) -> str:
-    lines = [
-        f"{len(catalog.entities)} discovered device(s), discovery {catalog.freshness}, "
-        f"refreshed {catalog.refreshed_at or 'never'}:"
-    ]
+    lines = [f"{len(catalog.entities)} device(s) in Home Assistant:"]
     for device in catalog.entities:
         line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
         if device.device_name:
@@ -291,7 +296,7 @@ def _command_refusal(
         # The keeper refuses this too, but only after the user approved it.
         if brightness is not None and device.device_kind == "switch":
             return f"Not sent: {entity_id} is a plug or switch and has no brightness."
-        return _state_refusal(entity_id, device.baseline, action, brightness)
+        return _state_refusal(entity_id, device.state, action, brightness)
 
     return _guard(check)
 
@@ -326,8 +331,8 @@ def format_outcome(entity_id: str, command: LightOn | LightOff, record: CommandR
 def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_monitored() -> str:
-        """List the lights, plugs and switches the keeper records, with each one's kind, latest
-        state and freshness. The first line says whether control is on."""
+        """List the lights, plugs and switches the keeper monitors, with each one's kind and
+        the state Home Assistant reports now. The first line says whether control is on."""
 
         def render() -> str:
             monitored = client.request("GET", "/api/monitored", Monitored)
@@ -360,8 +365,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def get_events(start: str, end: str, entity_id: str | None = None) -> str:
-        """List recorded changes of lights, plugs and switches in a time range, newest first, at
-        most 100.
+        """List changes Home Assistant recorded for monitored lights, plugs and switches in a
+        time range, newest first, at most 100.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset.
@@ -376,22 +381,14 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         )
 
     @tool
-    def get_coverage() -> str:
-        """Report collection gaps: periods when the keeper could not record, so data is
-        unknown."""
-        return _guard(
-            lambda: format_coverage(client.request("GET", "/api/coverage", CoverageReport))
-        )
-
-    @tool
     def get_health() -> str:
-        """Report whether the collector is healthy and when Home Assistant last answered."""
+        """Report whether Home Assistant can be reached right now, and why not."""
         return _guard(lambda: format_health(client.request("GET", "/api/health", Health)))
 
     @tool
     def list_devices() -> str:
-        """List the devices the keeper discovered in Home Assistant, with each one's kind (light
-        or switch, which covers plugs) and whether it can be monitored."""
+        """List the devices in Home Assistant, with each one's kind (light or switch, which
+        covers plugs) and whether it can be monitored."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:
@@ -400,17 +397,6 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         selection = client.request("PUT", path, Selection, body={"selected": selected})
         verb = "Now monitoring" if selected else "Stopped monitoring"
         return f"{verb} {_name(entity_id)}. {len(selection.entity_ids)} device(s) monitored."
-
-    @tool
-    def refresh_discovery() -> str:
-        """Ask the collector to rediscover devices in Home Assistant, for example after a new
-        lamp was added. Records nothing by itself."""
-
-        def render() -> str:
-            client.request("POST", "/api/discovery/refresh", DiscoveryRefresh)
-            return "Discovery refresh requested. Call list_devices shortly to see the result."
-
-        return _guard(render)
 
     @tool
     def monitor(entity_id: str) -> str:
@@ -472,10 +458,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         list_monitored,
         get_usage,
         get_events,
-        get_coverage,
         get_health,
         list_devices,
-        refresh_discovery,
         monitor,
         stop_monitoring,
         turn_on,

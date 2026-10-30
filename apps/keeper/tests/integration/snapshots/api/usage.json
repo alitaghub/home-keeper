@@ -3,12 +3,12 @@
   "body": {
     "devices": [
       {
-        "average_brightness": 100.0,
+        "average_brightness": 116.66666666666667,
         "days": [
           {
             "date": "2026-10-12",
-            "on_seconds": 20.0,
-            "unknown_seconds": 40.0
+            "on_seconds": 30.0,
+            "unknown_seconds": 20.0
           }
         ],
         "device_kind": "light",
@@ -24,7 +24,7 @@
           0.0,
           0.0,
           20.0,
-          0.0,
+          10.0,
           0.0,
           0.0,
           0.0,
@@ -39,8 +39,14 @@
           0.0,
           0.0
         ],
-        "on_seconds": 20.0,
+        "on_seconds": 30.0,
         "periods": [
+          {
+            "brightness": null,
+            "end": "2026-10-12T09:59:30+00:00",
+            "start": "2026-10-12T09:59:20+00:00",
+            "state": "off"
+          },
           {
             "brightness": 50,
             "end": "2026-10-12T09:59:40+00:00",
@@ -55,7 +61,7 @@
           },
           {
             "brightness": 150,
-            "end": "2026-10-12T10:00:00+00:00",
+            "end": "2026-10-12T10:00:10+00:00",
             "start": "2026-10-12T09:59:50+00:00",
             "state": "on"
           }
@@ -63,17 +69,17 @@
         "switch_ons": 2,
         "unknown_intervals": [
           {
-            "end": "2026-10-12T09:59:30+00:00",
-            "reason": "no_evidence",
+            "end": "2026-10-12T09:59:10+00:00",
+            "reason": "no_history",
             "start": "2026-10-12T09:59:00+00:00"
           },
           {
-            "end": "2026-10-12T10:00:10+00:00",
-            "reason": "gap",
-            "start": "2026-10-12T10:00:00+00:00"
+            "end": "2026-10-12T09:59:20+00:00",
+            "reason": "unavailable",
+            "start": "2026-10-12T09:59:10+00:00"
           }
         ],
-        "unknown_seconds": 40.0
+        "unknown_seconds": 20.0
       },
       {
         "average_brightness": null,
@@ -117,26 +123,15 @@
         "switch_ons": 0,
         "unknown_intervals": [
           {
-            "end": "2026-10-12T10:00:00+00:00",
-            "reason": "no_evidence",
-            "start": "2026-10-12T09:59:00+00:00"
-          },
-          {
-            "end": "2026-10-12T10:00:06+00:00",
-            "reason": "gap",
-            "start": "2026-10-12T10:00:00+00:00"
-          },
-          {
             "end": "2026-10-12T10:00:10+00:00",
-            "reason": "no_evidence",
-            "start": "2026-10-12T10:00:06+00:00"
+            "reason": "no_history",
+            "start": "2026-10-12T09:59:00+00:00"
           }
         ],
         "unknown_seconds": 70.0
       }
     ],
     "end": "2026-10-12T10:00:10+00:00",
-    "retained_since": "2026-09-12T10:00:10+00:00",
     "start": "2026-10-12T09:59:00+00:00",
     "timezone": "UTC"
   }

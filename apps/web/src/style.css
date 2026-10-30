@@ -116,10 +116,6 @@ header {
   color: var(--warn);
 }
 
-.tag.stale {
-  color: var(--warn);
-}
-
 main {
   max-width: 1040px;
   margin: 28px auto 40px;
@@ -279,10 +275,6 @@ footer {
   background: var(--accent);
 }
 
-
-.dot.stale {
-  background: var(--warn);
-}
 
 .dot.failed {
   background: var(--danger);
@@ -470,10 +462,6 @@ footer {
   overflow-wrap: anywhere;
 }
 
-.row.gap.open strong {
-  color: var(--warn);
-}
-
 .command-outcome {
   color: var(--warn);
 }
@@ -490,7 +478,6 @@ footer {
   overflow-wrap: anywhere;
 }
 
-.evidence-id,
 .command-evidence {
   font-family: ui-monospace, monospace;
 }

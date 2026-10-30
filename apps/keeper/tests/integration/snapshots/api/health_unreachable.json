@@ -1,0 +1,9 @@
+{
+  "status": 200,
+  "body": {
+    "checked_at": "2026-10-12T10:00:00+00:00",
+    "error": "connection",
+    "source_id": "demo",
+    "status": "unreachable"
+  }
+}

@@ -1,23 +1,30 @@
 import { useCallback, useRef, useState } from "react";
 import { api, type CommandRecord, type Schemas, unwrap } from "./api/client";
-import { date } from "./format";
 
-type EventRecord = Schemas["EventRecord"];
+type ChangeRecord = Schemas["ChangeRecord"];
 
 export function useTimeline() {
-  const busy = useRef(false);
+  // Each request takes a number and only the latest one's result is applied, so
+  // `restart` can discard a page asked for under the previous selection.
+  const latest = useRef(0);
+  const inFlight = useRef<"newest" | "older" | null>(null);
   const cursor = useRef<string | null>(null);
   // Polling stops replacing the list while older pages are open.
   const showingOlder = useRef(false);
-  const loaded = useRef<EventRecord[]>([]);
-  const [events, setEvents] = useState<EventRecord[] | null>(null);
-  const [status, setStatus] = useState("Waiting for recorded history.");
+  const loaded = useRef<ChangeRecord[]>([]);
+  const [events, setEvents] = useState<ChangeRecord[] | null>(null);
+  // Whether the latest read failed, so the list shown may be out of date.
+  const [failed, setFailed] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async (older = false) => {
-    if (busy.current) return;
-    busy.current = true;
+    // A newest page in flight answers any request; a second older page would repeat the first.
+    if (inFlight.current === "newest" || (older && inFlight.current === "older")) return;
+    const seq = ++latest.current;
+    const wasOlder = showingOlder.current;
+    inFlight.current = older ? "older" : "newest";
+    showingOlder.current = older;
     setLoading(true);
     try {
       const history = await unwrap(
@@ -27,25 +34,39 @@ export function useTimeline() {
           },
         }),
       );
-      showingOlder.current = older;
+      if (seq !== latest.current) return;
       const previous = older ? loaded.current : [];
       const ids = new Set(previous.map((event) => event.id));
       loaded.current = [...previous, ...history.events.filter((event) => !ids.has(event.id))];
       cursor.current = history.next_cursor;
       setHasMore(Boolean(history.next_cursor));
       setEvents(loaded.current);
-      setStatus(
-        `${loaded.current.length} changes shown. Retention cutoff: ${date(history.retained_since)}. This cutoff does not establish continuous coverage.${older ? " Older history is open; refresh to see new changes." : " New changes refresh automatically."}`,
-      );
+      setFailed(false);
     } catch {
-      setStatus("Cannot load recorded history. Previously displayed entries may be out of date.");
+      if (seq !== latest.current) return;
+      showingOlder.current = wasOlder;
+      setFailed(true);
     } finally {
-      busy.current = false;
-      setLoading(false);
+      if (seq === latest.current) {
+        inFlight.current = null;
+        setLoading(false);
+      }
     }
   }, []);
 
-  return { events, status, hasMore, loading, load, showingOlder };
+  // After a selection change: drop a removed device's rows at once, discard every
+  // request in flight, and let the next load start again from the newest page.
+  const restart = useCallback((removed: string | null) => {
+    latest.current++;
+    inFlight.current = null;
+    showingOlder.current = false;
+    setLoading(false);
+    if (removed === null) return;
+    loaded.current = loaded.current.filter((event) => event.entity_id !== removed);
+    setEvents((shown) => shown && loaded.current);
+  }, []);
+
+  return { events, failed, hasMore, loading, load, restart, showingOlder };
 }
 
 // Commands page like events, apart from them: the two lists are not interleaved.

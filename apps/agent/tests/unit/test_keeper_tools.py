@@ -23,7 +23,6 @@ CALLS: dict[str, tuple[Mapping[str, object], str]] = {
     "list_monitored": ({}, "/api/monitored"),
     "get_usage": (RANGE, "/api/usage"),
     "get_events": (RANGE, "/api/events"),
-    "get_coverage": ({}, "/api/coverage"),
     "get_health": ({}, "/api/health"),
     "list_devices": ({}, "/api/catalog"),
 }
@@ -42,7 +41,6 @@ def normalized(items: list[tuple[str, str]]) -> dict[str, list[str | datetime]]:
 @pytest.mark.parametrize(
     ("name", "args", "path", "params"),
     [
-        pytest.param("get_coverage", {}, "/api/coverage", {}, id="get_coverage"),
         pytest.param("get_health", {}, "/api/health", {}, id="get_health"),
         pytest.param("list_devices", {}, "/api/catalog", {}, id="list_devices"),
         pytest.param(
@@ -101,7 +99,9 @@ def test_list_monitored_reads_the_lights_and_the_control_state() -> None:
 def test_device_list_shows_each_entity_device_kind() -> None:
     status, recorded = snapshot("catalog")
     body: dict[str, Any] = json.loads(json.dumps(recorded))
-    light, plug, room = body["entities"]
+    light, plug, room = (
+        next(e for e in body["entities"] if e["id"] == id) for id in ("bulb-a", "plug", "room")
+    )
     light |= {"device_kind": "light"}
     plug |= {"supported": True, "reason": None, "device_kind": "switch"}
     room |= {"device_kind": "light"}
@@ -125,16 +125,17 @@ def test_monitored_list_shows_each_entity_device_kind() -> None:
     body: dict[str, Any] = json.loads(json.dumps(recorded))
     light, plug = body["entities"]
     light |= {"device_kind": "light"}
-    light["baseline"] |= {"device_kind": "light"}
+    light["state"] |= {"device_kind": "light"}
     plug |= {
         "device_kind": "switch",
-        "baseline": {
+        "source_entity_id": "switch.plug",
+        "missing": False,
+        "state": {
             key: value
-            for key, value in light["baseline"].items()
-            if key not in {"brightness", "color_mode", "id", "entity_id"}
+            for key, value in light["state"].items()
+            if key not in {"brightness", "color_mode"}
         }
-        | {"id": "plug-baseline", "entity_id": "plug", "device_kind": "switch", "state": "off"},
-        "freshness": "fresh",
+        | {"device_kind": "switch", "state": "off"},
     }
     keeper = FakeKeeper({"/api/monitored": (status, body), "/api/control": control_response("on")})
 
@@ -223,6 +224,68 @@ def test_event_brightness_is_a_percent() -> None:
     assert "/255" not in result
 
 
+def change(time: str, old: dict[str, object], new: dict[str, object]) -> dict[str, object]:
+    """A change in `/api/events`, as Home Assistant's recorder holds it for bulb-a."""
+    return {
+        "id": f"bulb-a@{time}",
+        "entity_id": "bulb-a",
+        "source_entity_id": "light.bulb_a",
+        "device_kind": "light",
+        "time": time,
+        "old": {"device_kind": "light", "availability": "available"} | old,
+        "new": {"device_kind": "light", "availability": "available"} | new,
+    }
+
+
+def test_events_list_each_change_at_home_assistants_time() -> None:
+    page = {
+        "events": [
+            change("2026-10-12T09:59:50Z", {"state": "off"}, {"state": "on", "brightness": 150}),
+            change("2026-10-12T09:59:40Z", {"state": "on"}, {"state": "off"}),
+        ],
+        "next_cursor": None,
+    }
+    keeper = FakeKeeper({"/api/events": (200, page)})
+
+    result = call(keeper.tools(), "get_events", RANGE)
+
+    assert not result.startswith("Keeper error:"), result
+    newest, older = (line for line in result.splitlines() if "bulb-a" in line)
+    assert "2026-10-12T09:59:50Z" in newest, newest
+    assert "brightness 59%" in newest, newest
+    assert "2026-10-12T09:59:40Z" in older, older
+    # History reaches as far back as Home Assistant's recorder; Home Keeper keeps no copy.
+    assert "retained" not in result.lower(), result
+    assert "more events exist" not in result.lower(), result
+
+
+def test_a_color_change_shows_the_color_mode_and_the_color_that_changed() -> None:
+    color: dict[str, object] = {"state": "on", "brightness": 150, "color_mode": "xy"}
+    page = {
+        "events": [
+            change(
+                "2026-10-12T09:59:55Z",
+                color | {"xy_color": [0.3, 0.32]},
+                color | {"xy_color": [0.45, 0.41]},
+            ),
+            change("2026-10-12T09:59:50Z", color, color | {"state": "off"}),
+        ],
+        "next_cursor": None,
+    }
+    keeper = FakeKeeper({"/api/events": (200, page)})
+
+    result = call(keeper.tools(), "get_events", RANGE)
+
+    recolored, switched_off = (line for line in result.splitlines() if "bulb-a" in line)
+    old, new = recolored.split(" -> ")
+    assert "color mode xy" in old, recolored
+    assert "xy color 0.3, 0.32" in old, recolored
+    assert "color mode xy" in new, recolored
+    assert "xy color 0.45, 0.41" in new, recolored
+    # A change of state alone does not repeat the unchanged color.
+    assert "color" not in switched_off, switched_off
+
+
 @pytest.mark.parametrize(
     ("average", "percent"),
     [(255.0, 100), (142.0, 56), (128.5, 50), (100.0, 39), (1.5, 1), (0.5, 0)],
@@ -239,9 +302,11 @@ def test_usage_average_brightness_is_a_rounded_percent(average: float, percent: 
 @pytest.mark.parametrize(
     ("name", "fixture", "expected"),
     [
-        ("list_monitored", "monitored", ["bulb-a", "off", "stale", "bulb-b", "pending"]),
+        # bulb-b is still monitored but gone from Home Assistant.
+        ("list_monitored", "monitored", ["bulb-a", "off", "bulb-b", "missing"]),
+        ("list_monitored", "monitored_unreachable", ["bulb-a", "bulb-b", "unknown"]),
         ("get_health", "health", ["healthy"]),
-        ("get_coverage", "coverage", ["interrupted", "reconciliation"]),
+        ("get_health", "health_unreachable", ["unreachable", "connection"]),
         (
             "list_devices",
             "catalog",
@@ -268,11 +333,50 @@ def test_usage_keeps_unknown_time_and_its_reasons() -> None:
 
     result = call(keeper.tools(), "get_usage", RANGE)
 
-    # bulb-a has 40 s unknown: no evidence until 09:59:30, then a collection gap.
-    assert "unknown" in result.lower()
-    assert re.search(r"(?<![\d.])40(\.0+)?(?![\d.])", result), result
-    for text in ("09:59:30", "no_evidence", "gap"):
+    # bulb-a has 20 s unknown: no history until 09:59:10, then 10 s unavailable.
+    assert re.search(r"unknown 20(\.0+)?s", result), result
+    for text in ("09:59:10", "no_history", "unavailable"):
         assert text in result
+
+
+def test_usage_names_time_without_history_and_unavailable_time_and_no_retention() -> None:
+    hours = [0.0] * 24
+    hours[9] = 30.0
+    usage = {
+        "start": START,
+        "end": END,
+        "timezone": "UTC",
+        "devices": [
+            {
+                "device_kind": "light",
+                "entity_id": "bulb-a",
+                "on_seconds": 30.0,
+                "unknown_seconds": 40.0,
+                "switch_ons": 1,
+                "average_brightness": None,
+                "days": [{"date": "2026-10-12", "on_seconds": 30.0, "unknown_seconds": 40.0}],
+                "hours": hours,
+                "unknown_intervals": [
+                    {"start": START, "end": "2026-10-12T09:59:25+00:00", "reason": "no_history"},
+                    {
+                        "start": "2026-10-12T09:59:25+00:00",
+                        "end": "2026-10-12T09:59:40+00:00",
+                        "reason": "unavailable",
+                    },
+                ],
+            }
+        ],
+    }
+    keeper = FakeKeeper({"/api/usage": (200, usage)})
+
+    result = call(keeper.tools(), "get_usage", RANGE)
+
+    assert not result.startswith("Keeper error:"), result
+    assert "09:59:25" in result, result
+    assert "no_history" in result, result
+    assert "unavailable" in result, result
+    # Usage reaches as far back as Home Assistant's recorder; Home Keeper keeps no copy.
+    assert "retained" not in result.lower(), result
 
 
 @pytest.mark.parametrize(
@@ -317,6 +421,26 @@ def test_rejected_usage_range_relays_the_keeper_reason() -> None:
 
     assert result.startswith("Keeper error:")
     assert "Invalid usage range" in result
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "path", "fixture"),
+    [
+        ("list_devices", {}, "/api/catalog", "catalog_unreachable"),
+        ("monitor", {"entity_id": "bulb-a"}, "/api/selection/bulb-a", "error_select_unreachable"),
+    ],
+)
+def test_unreachable_home_assistant_is_an_error_result_with_the_keepers_safe_message(
+    name: str, args: Mapping[str, object], path: str, fixture: str
+) -> None:
+    status, body = snapshot(fixture)
+    assert isinstance(body, dict)
+    keeper = FakeKeeper({path: (status, body)})
+
+    result = call(keeper.tools(), name, args)
+
+    assert result.startswith("Keeper error:"), result
+    assert body["message"] in result
 
 
 def number(value: int, text: str) -> bool:
@@ -366,7 +490,7 @@ def test_usage_gives_a_switch_its_numbers_without_brightness_and_a_light_keeps_i
         "switch_ons": 11,
         "days": [{"date": "2026-10-11", "on_seconds": 46.0, "unknown_seconds": 31.0}],
         "hours": hours,
-        "unknown_intervals": [{"start": START, "end": END, "reason": "gap"}],
+        "unknown_intervals": [{"start": START, "end": END, "reason": "no_history"}],
     }
     usage["devices"] = [light, plug]
     keeper = FakeKeeper({"/api/usage": (status, usage)})
@@ -428,7 +552,7 @@ def test_usage_keeps_fractional_numbers_unrounded() -> None:
         days=[{"date": "2026-10-12", "on_seconds": 20.5, "unknown_seconds": 0.5}],
         hours=hours,
         unknown_intervals=[
-            {"start": "2026-10-12T10:00:09.500000+00:00", "end": END, "reason": "gap"}
+            {"start": "2026-10-12T10:00:09.500000+00:00", "end": END, "reason": "unavailable"}
         ],
     )
     keeper = FakeKeeper({"/api/usage": (200, usage)})
