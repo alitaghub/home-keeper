@@ -28,9 +28,9 @@ COPY apps/keeper/src ./apps/keeper/src
 COPY --from=web /src/apps/web/dist ./web
 RUN uv sync --locked --no-dev --no-editable --package home-keeper
 ENV PATH="/app/.venv/bin:$PATH"
-# Shared secret and data volumes use a fixed, unprivileged identity.
+# Shared secret volumes use a fixed, unprivileged identity.
 RUN groupadd --gid 10001 keeper && useradd --uid 10001 --gid 10001 keeper \
-    && mkdir /data /secrets /ha-token /ha-owner /ha-control-token \
-    && chown keeper:keeper /data /secrets /ha-token /ha-owner /ha-control-token
+    && mkdir /secrets /ha-token /ha-owner /ha-control-token \
+    && chown keeper:keeper /secrets /ha-token /ha-owner /ha-control-token
 USER 10001:10001
 CMD ["python", "-m", "home_keeper.runtime"]

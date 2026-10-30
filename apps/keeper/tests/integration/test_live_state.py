@@ -6,7 +6,6 @@ Nothing runs between requests: each response comes from the reader at request ti
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -69,13 +68,13 @@ class House:
 
 
 @contextmanager
-def house(tmp_path: Path) -> Generator[House]:
+def house(database: str) -> Generator[House]:
     """Home Assistant reports the desk lamp on and the kettle off; nothing is monitored."""
     clock = [NOW]
     reader = FakeReader([DESK, KETTLE, ROOM], {DESK.id: DESK_ON, KETTLE.id: KETTLE_OFF})
     controller = FakeController(clock)
     app = create_app(
-        tmp_path / "live.sqlite",
+        database,
         TOKEN,
         now=lambda: clock[0],
         reader=reader,
@@ -99,9 +98,9 @@ def unreachable_body(response: Response, error: ReaderError) -> None:
 
 
 def test_monitored_shows_what_home_assistant_reports_now_and_follows_each_change(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with house(tmp_path) as home:
+    with house(database) as home:
         assert home.select(DESK.id).is_success
         assert home.select(KETTLE.id).is_success
 
@@ -130,8 +129,8 @@ def test_monitored_shows_what_home_assistant_reports_now_and_follows_each_change
         assert home.monitored()[DESK.id]["state"]["brightness"] == 40
 
 
-def test_health_is_healthy_while_the_reader_and_home_assistant_answer(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_health_is_healthy_while_the_reader_and_home_assistant_answer(database: str) -> None:
+    with house(database) as home:
         response = home.client.get("/api/health")
         assert response.status_code == 200, response.text
         body = response.json()
@@ -146,9 +145,9 @@ def test_health_is_healthy_while_the_reader_and_home_assistant_answer(tmp_path: 
 
 @pytest.mark.parametrize("error", UNREACHABLE)
 def test_unreachable_home_assistant_unknowns_every_state_but_still_lets_you_stop_monitoring(
-    tmp_path: Path, error: ReaderError
+    database: str, error: ReaderError
 ) -> None:
-    with house(tmp_path) as home:
+    with house(database) as home:
         assert home.select(DESK.id).is_success
         home.reader.error = error
 
@@ -177,8 +176,8 @@ def test_unreachable_home_assistant_unknowns_every_state_but_still_lets_you_stop
         assert home.monitored() == {}
 
 
-def test_unreachable_home_assistant_refuses_a_command_as_state_unknown(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_unreachable_home_assistant_refuses_a_command_as_state_unknown(database: str) -> None:
+    with house(database) as home:
         assert home.select(DESK.id).is_success
         beat(home.client, NOW)
         home.reader.error = "connection"
@@ -191,8 +190,8 @@ def test_unreachable_home_assistant_refuses_a_command_as_state_unknown(tmp_path:
         assert home.client.get("/api/commands").json()["commands"] == []
 
 
-def test_health_recovers_with_the_reader(tmp_path: Path) -> None:
-    with house(tmp_path) as home:
+def test_health_recovers_with_the_reader(database: str) -> None:
+    with house(database) as home:
         assert home.select(DESK.id).is_success
         home.reader.error = "timeout"
         assert home.client.get("/api/health").json()["status"] == "unreachable"
@@ -206,9 +205,9 @@ def test_health_recovers_with_the_reader(tmp_path: Path) -> None:
 
 
 def test_a_device_home_assistant_no_longer_has_is_missing_and_can_be_stopped(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    with house(tmp_path) as home:
+    with house(database) as home:
         assert home.select(DESK.id).is_success
         assert home.select(KETTLE.id).is_success
         home.reader.drop(DESK.id)

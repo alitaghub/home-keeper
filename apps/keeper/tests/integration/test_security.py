@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -20,9 +19,9 @@ from home_keeper_light_command import ForwardedCommand
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong-credential"}])
 def test_every_internal_boundary_rejects_unauthenticated_access(
-    tmp_path: Path, headers: dict[str, str], caplog: pytest.LogCaptureFixture
+    database: str, headers: dict[str, str], caplog: pytest.LogCaptureFixture
 ) -> None:
-    with TestClient(app_for(tmp_path / "auth.sqlite")) as client:
+    with TestClient(app_for(database)) as client:
         with caplog.at_level(logging.DEBUG):
             control = {"received_at": NOW.isoformat()}
             response = client.post("/internal/control", json=control, headers=headers)
@@ -33,10 +32,8 @@ def test_every_internal_boundary_rejects_unauthenticated_access(
         assert TOKEN not in caplog.text
 
 
-def test_cross_site_and_missing_custom_header_cannot_change_selection(tmp_path: Path) -> None:
-    with TestClient(
-        app_for(tmp_path / "origin.sqlite"), base_url="http://127.0.0.1:8000"
-    ) as client:
+def test_cross_site_and_missing_custom_header_cannot_change_selection(database: str) -> None:
+    with TestClient(app_for(database), base_url="http://127.0.0.1:8000") as client:
         initial = client.get("/api/selection").json()
         for headers in (
             {},
@@ -57,9 +54,9 @@ def test_cross_site_and_missing_custom_header_cannot_change_selection(tmp_path: 
 
 
 def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    database: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    with TestClient(app_for(tmp_path / "input.sqlite")) as client:
+    with TestClient(app_for(database)) as client:
         assert "<script>" in client.get("/api/catalog").text
         with caplog.at_level(logging.DEBUG):
             # Malformed input and unexpected credentials must not be echoed in errors.
@@ -87,8 +84,8 @@ def test_malformed_untrusted_inputs_do_not_leak_secrets_or_offer_write_tools(
             assert TOKEN not in client.get(endpoint).text
 
 
-def test_non_ascii_internal_credentials_are_rejected_without_server_error(tmp_path: Path) -> None:
-    with TestClient(app_for(tmp_path / "invalid-auth.sqlite")) as client:
+def test_non_ascii_internal_credentials_are_rejected_without_server_error(database: str) -> None:
+    with TestClient(app_for(database)) as client:
         response = client.post(
             "/internal/control",
             json={"received_at": NOW.isoformat()},
@@ -122,10 +119,10 @@ def heartbeat_state(client: TestClient) -> object:
     "headers", [{}, {"Authorization": "Bearer wrong-credential"}, BROWSER, {"Authorization": TOKEN}]
 )
 def test_controller_heartbeat_needs_the_service_credential(
-    tmp_path: Path, headers: dict[str, str]
+    database: str, headers: dict[str, str]
 ) -> None:
     app = create_app(
-        tmp_path / "heartbeat.sqlite",
+        database,
         TOKEN,
         now=lambda: NOW,
         reader=catalog_reader(),
@@ -143,12 +140,12 @@ def test_controller_heartbeat_needs_the_service_credential(
         assert heartbeat_state(client) == "on"
 
 
-def test_light_command_needs_the_mutation_header_and_a_same_site_origin(tmp_path: Path) -> None:
+def test_light_command_needs_the_mutation_header_and_a_same_site_origin(database: str) -> None:
     reader = catalog_reader()
     reader.set("bulb-a", "light.desk", {"state": "off"})
     controller = RecordingController(reader)
     app = create_app(
-        tmp_path / "command.sqlite",
+        database,
         TOKEN,
         now=lambda: NOW,
         reader=reader,

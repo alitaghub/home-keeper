@@ -401,7 +401,7 @@ class ApiBridge:
 
 @pytest.mark.parametrize("accepted", [True, False], ids=["valid-token", "revoked-token"])
 def test_controller_reports_control_only_while_home_assistant_accepts_its_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, accepted: bool
+    tmp_path: Path, database: str, monkeypatch: pytest.MonkeyPatch, accepted: bool
 ) -> None:
     (tmp_path / "service-token").write_text(SERVICE_TOKEN)
     (tmp_path / "control-token").write_text(HA_TOKEN if accepted else "revoked-control-token")
@@ -409,7 +409,7 @@ def test_controller_reports_control_only_while_home_assistant_accepts_its_token(
     seen: dict[str, Any] = {}
     # Configured like the real API; this test sends commands to the controller directly.
     api_app = create_api(
-        tmp_path / "api.sqlite",
+        database,
         SERVICE_TOKEN,
         controller=HttpController("http://controller:8080", SERVICE_TOKEN),
         # Never read: this test checks the heartbeat, not device state.

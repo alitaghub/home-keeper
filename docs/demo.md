@@ -55,7 +55,7 @@ docker compose -f compose.demo.yaml down
 ```
 
 The demo runs as Compose project `home-keeper-demo`, with its own volumes.
-SQLite data and the internal service credential persist there.
+Postgres data and the internal service credential persist there.
 `docker compose -f compose.demo.yaml down --volumes` deletes those volumes. It
 does not touch the home stack. Stop the home stack before you start the demo;
 both publish port 8000. Changing selection never

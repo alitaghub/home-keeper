@@ -26,3 +26,23 @@ def test_a_chat_origin_with_a_path_stops_the_server_naming_the_variable(
 
     with pytest.raises(SystemExit, match="CHAT_ORIGIN"):
         serve.main()
+
+
+def test_aegra_gets_its_database_password_from_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "password").write_text("db-password-sentinel\n")
+    monkeypatch.setenv("DATABASE_PASSWORD_FILE", str(tmp_path / "password"))
+    # Set first, so the test restores it after main overwrites it.
+    monkeypatch.setenv("POSTGRES_PASSWORD", "")
+    started: list[list[str]] = []
+
+    def execvp(_file: str, command: list[str]) -> None:
+        started.append(command)
+
+    monkeypatch.setattr(serve.os, "execvp", execvp)
+
+    serve.main()
+
+    assert serve.os.environ["POSTGRES_PASSWORD"] == "db-password-sentinel"
+    assert started[0][:2] == ["aegra", "serve"]

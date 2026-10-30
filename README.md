@@ -27,7 +27,7 @@ flowchart LR
     subgraph keeper["Home Keeper · on your machine"]
         reader["Reader"]
         api["Home Keeper API"]
-        db[("SQLite<br/>monitored devices, commands")]
+        db[("Postgres<br/>monitored devices, commands,<br/>conversations, bot state")]
         dashboard["Dashboard<br/>devices and history"]
         api -- "state and history reads" --> reader
         dashboard <-->|"monitoring and history"| api
@@ -38,11 +38,11 @@ flowchart LR
         subgraph optional["Optional agent"]
             chat["Agent Chat UI<br/>browser chat"]
             agent["Agent<br/>served by Aegra"]
-            pg[("Postgres<br/>conversations")]
             bot["Telegram worker<br/>allowed users only"]
             chat <-->|"questions and approvals"| agent
             bot <-->|"questions and approvals"| agent
-            agent --> pg
+            agent --> db
+            bot --> db
         end
 
         agent <-->|"tools over the public API"| api
@@ -59,7 +59,7 @@ flowchart LR
     classDef externalNode fill:#fff7ed,stroke:#c2410c,color:#7c2d12
     class lights,ha homeNode
     class reader,api,db,dashboard,controller keeperNode
-    class chat,agent,pg,bot agentNode
+    class chat,agent,bot agentNode
     class telegram,model externalNode
 ```
 
@@ -68,7 +68,7 @@ same API to answer questions in Agent Chat UI or [Telegram](docs/telegram.md).
 It asks for approval before changing which devices are monitored, and before it
 switches a light, plug or switch with the `control` profile. Neither the agent nor the reader
 talks to Home Assistant to control a device; only the optional controller does,
-when the API asks it to. The SQLite database remains local.
+when the API asks it to. The Postgres database remains local.
 Questions and tool results go to your model provider; Telegram also receives
 your questions and replies.
 
@@ -81,7 +81,7 @@ your questions and replies.
    History covers on/off and availability, plus brightness and color for a light.
    How far back it goes depends on Home Assistant's
    [recorder settings](docs/home-assistant.md#history-retention).
-4. The API stores only what is its own in SQLite: which devices you monitor and
+4. The API stores only what is its own in Postgres: which devices you monitor and
    the commands it sent. If Home Assistant cannot be reached, every tab says so
    and states show as unknown.
 5. The **dashboard** has three tabs. **Home** shows each monitored light and
@@ -155,12 +155,13 @@ instead of repeating onboarding. `docker compose down --volumes` deletes all of 
 [docs/home-assistant.md](docs/home-assistant.md) covers the details, limits,
 and how to use a Home Assistant you already run.
 
-Upgrading from a release that copied device history into its own database: on
-the first start, Home Keeper deletes that old database, logs one line about it
-and starts empty. Select your devices again once. History still comes from Home
-Assistant; the old command log is gone. A database that Home Keeper cannot read,
-for example because another process holds it locked, is kept, and the API stops
-with an error.
+Home Keeper keeps everything of its own in one Postgres. The API, the agent and
+the Telegram bot each get their own database and login in it, with a password
+that only that service can read. Upgrading from a release that used SQLite: Home
+Keeper does not import the old files. Select your devices again once. Chat
+threads and the Telegram bot's state also start empty. History still comes from
+Home Assistant. The old `data`, `agent-postgres` and `telegram-state` volumes are
+no longer used; delete them with `docker volume rm` when you no longer want them.
 
 ## Try the demo
 
@@ -245,7 +246,7 @@ user IDs, setup, limits, and what goes through Telegram.
 
 | Path            | What lives there                                                   |
 | --------------- | ------------------------------------------------------------------ |
-| `apps/keeper`   | Python service: FastAPI API, reader, Home Assistant setup, SQLite store, tests |
+| `apps/keeper`   | Python service: FastAPI API, reader, Home Assistant setup, Postgres store, tests |
 | `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
 | `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
 | `apps/controller` | Optional light controller: the only code that calls Home Assistant services |

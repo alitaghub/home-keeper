@@ -1,13 +1,12 @@
 """Private Telegram transport for the existing Aegra agent.
 
-One synchronous worker owns the token. SQLite stores identity and delivery state;
+One synchronous worker owns the token. Its Postgres database stores identity and delivery state;
 Aegra remains the only owner of conversations and tool execution.
 """
 
 import logging
 import secrets
 import signal
-import sqlite3
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -18,6 +17,8 @@ from typing import Annotated, Literal, Self, TypedDict
 from uuid import uuid4
 
 import httpx
+import psycopg
+from psycopg.conninfo import make_conninfo
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -70,7 +71,10 @@ class Settings(BaseSettings):
     # Who may approve device commands; empty means nobody may switch devices from Telegram.
     control_user_ids: UserIds = frozenset()
     agent_url: str = "http://agent:2026"
-    state_path: str = "/state/telegram.sqlite3"
+    # The bot's own database and login role; the password is read from its own file.
+    database_url: str = "postgresql://telegram@postgres:5432/telegram"
+    # None when the URL carries any password itself.
+    database_password_file: Path | None = Path("/db-password/password")
     api_url: str = "https://api.telegram.org"
 
     @field_validator("bot_token")
@@ -441,19 +445,24 @@ class TelegramBot:
         self.settings = settings
         self.telegram = telegram_client or httpx.Client(timeout=TELEGRAM_HTTP_TIMEOUT)
         self.agent = agent_client or httpx.Client(timeout=AGENT_HTTP_TIMEOUT)
-        if settings.state_path != ":memory:":
-            Path(settings.state_path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(settings.state_path)
-        self.db.executescript(
-            "CREATE TABLE IF NOT EXISTS progress "
-            "(id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL);"
-            "INSERT OR IGNORE INTO progress VALUES (1, 0);"
-            "CREATE TABLE IF NOT EXISTS bot_owner "
-            "(id INTEGER PRIMARY KEY CHECK(id=1), bot_id INTEGER NOT NULL);"
-            "CREATE TABLE IF NOT EXISTS conversations "
-            "(user_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
+        password_file = settings.database_password_file
+        # Autocommit: each statement is durable on its own, and no transaction stays open
+        # through Telegram's long poll.
+        conninfo = (
+            settings.database_url
+            if password_file is None
+            else make_conninfo(settings.database_url, password=password_file.read_text().strip())
         )
-        self.db.commit()
+        self.db = psycopg.connect(conninfo, autocommit=True)
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS progress "
+            "(id INTEGER PRIMARY KEY CHECK(id=1), next_update_id BIGINT NOT NULL);"
+            "INSERT INTO progress VALUES (1, 0) ON CONFLICT DO NOTHING;"
+            "CREATE TABLE IF NOT EXISTS bot_owner "
+            "(id INTEGER PRIMARY KEY CHECK(id=1), bot_id BIGINT NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS conversations "
+            "(user_id BIGINT PRIMARY KEY, state TEXT NOT NULL);"
+        )
 
     def close(self) -> None:
         self.db.close()
@@ -527,24 +536,25 @@ class TelegramBot:
         owner = self.db.execute("SELECT bot_id FROM bot_owner WHERE id=1").fetchone()
         if owner and owner[0] != bot_user.id:
             raise TransportError(
-                "This Telegram state volume belongs to a different bot. "
-                "Restore that bot's token or configure a separate state volume for this bot."
+                "This Telegram database belongs to a different bot. "
+                "Restore that bot's token or configure a separate database for this bot."
             )
-        self.db.execute("INSERT OR IGNORE INTO bot_owner VALUES (1, ?)", (bot_user.id,))
-        self.db.commit()
+        self.db.execute(
+            "INSERT INTO bot_owner VALUES (1, %s) ON CONFLICT DO NOTHING", (bot_user.id,)
+        )
 
     def _load(self, user_id: int) -> Conversation | None:
         row = self.db.execute(
-            "SELECT state FROM conversations WHERE user_id=?", (user_id,)
+            "SELECT state FROM conversations WHERE user_id=%s", (user_id,)
         ).fetchone()
         return CONVERSATION.validate_json(row[0]) if row else None
 
     def _save(self, user_id: int, conversation: Conversation) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO conversations VALUES (?, ?)",
+            "INSERT INTO conversations VALUES (%s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET state=EXCLUDED.state",
             (user_id, conversation.model_dump_json()),
         )
-        self.db.commit()
 
     def _send(self, chat_id: int, text: str, buttons: InlineKeyboard | None = None) -> int:
         result: JsonValue = None
@@ -577,12 +587,13 @@ class TelegramBot:
             position = UpdatePosition.model_validate(update)
         except ValidationError:
             return
-        offset = self.db.execute("SELECT offset FROM progress WHERE id=1").fetchone()[0]
+        offset = self._offset()
         if position.update_id < offset:
             return
         # A redelivered update must never resubmit an uncertain agent mutation.
-        self.db.execute("UPDATE progress SET offset=? WHERE id=1", (position.update_id + 1,))
-        self.db.commit()
+        self.db.execute(
+            "UPDATE progress SET next_update_id=%s WHERE id=1", (position.update_id + 1,)
+        )
         try:
             parsed = Update.model_validate(update)
         except ValidationError:
@@ -808,8 +819,12 @@ class TelegramBot:
             # reject unsubmitted. A fatal error still stops the worker afterwards.
             deliver_best_effort(lambda: self._send(message.chat.id, CONTROL_REFUSED))
 
+    def _offset(self) -> int:
+        row = self.db.execute("SELECT next_update_id FROM progress WHERE id=1").fetchone()
+        return int(row[0]) if row else 0
+
     def poll_once(self) -> None:
-        offset = self.db.execute("SELECT offset FROM progress WHERE id=1").fetchone()[0]
+        offset = self._offset()
         updates = self._telegram(
             "getUpdates",
             {
@@ -855,10 +870,10 @@ def main() -> None:
     except SettingsError as exc:
         logging.error("Telegram bot stopped: %s", exc)
         raise SystemExit(1) from None
-    except (sqlite3.Error, OSError, ValidationError):
+    except (psycopg.Error, OSError, ValidationError):
         logging.error(
-            "Telegram bot stopped: cannot open or read TELEGRAM_STATE_PATH. "
-            "Check the state volume, write permissions, and saved-state integrity."
+            "Telegram bot stopped: cannot reach or read its database. "
+            "Check TELEGRAM_DATABASE_URL, the password file, and saved-state integrity."
         )
         raise SystemExit(1) from None
     except KeyboardInterrupt:

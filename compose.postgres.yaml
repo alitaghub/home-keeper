@@ -1,0 +1,74 @@
+# The one Postgres: the keeper, the agent (Aegra) and the Telegram bot each own a database
+# and a login role in it. compose.yaml and compose.demo.yaml include this file.
+services:
+  postgres:
+    image: postgres:18.6
+    restart: unless-stopped
+    user: postgres
+    environment:
+      # Only for the first start: db-setup then removes the superuser's password, so no
+      # one logs in as it over the network. db-setup uses the Unix socket instead.
+      POSTGRES_PASSWORD: replaced-by-db-setup
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - postgres-socket:/var/run/postgresql
+    # No published port: only the services on `database` reach it.
+    networks: [database]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      # TCP, because the temporary server during first-run init listens only on the socket.
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+  # Creates each service's role, password file and database, then exits. Every start
+  # repeats it, so a lost password file gets a new password.
+  db-setup:
+    image: postgres:18.6
+    entrypoint: [sh, -euc]
+    command:
+      - |
+        for name in keeper agent telegram; do
+          file=/passwords/$$name/password
+          [ -s "$$file" ] || od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$$file"
+          psql -X -q -v ON_ERROR_STOP=1 -h /var/run/postgresql -U postgres -d postgres \
+            -v name="$$name" -v password="$$(cat "$$file")" <<'SQL'
+        SELECT format('CREATE ROLE %I LOGIN', :'name')
+          WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'name') \gexec
+        ALTER ROLE :"name" PASSWORD :'password';
+        SELECT format('CREATE DATABASE %I OWNER %I', :'name', :'name')
+          WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'name') \gexec
+        REVOKE ALL ON DATABASE :"name" FROM PUBLIC;
+        SQL
+        done
+        psql -X -q -v ON_ERROR_STOP=1 -h /var/run/postgresql -U postgres -d postgres <<'SQL'
+        ALTER ROLE postgres PASSWORD NULL;
+        REVOKE ALL ON DATABASE postgres FROM PUBLIC;
+        SQL
+    volumes:
+      - postgres-socket:/var/run/postgresql
+      - keeper-db-password:/passwords/keeper
+      - agent-db-password:/passwords/agent
+      - telegram-db-password:/passwords/telegram
+    # The socket is its only way in.
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      postgres:
+        condition: service_healthy
+networks:
+  database:
+    internal: true
+volumes:
+  postgres-data:
+  postgres-socket:
+  # One password per service, each mounted only by db-setup and that service.
+  keeper-db-password:
+  agent-db-password:
+  telegram-db-password:

@@ -1,11 +1,15 @@
+import logging
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from datetime import MAXYEAR, UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
+import anyio.to_thread
+import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -40,6 +44,8 @@ from home_keeper.reader import Reader, ReaderUnavailable
 from home_keeper.store import Store
 from home_keeper.usage import device_usage
 
+logger = logging.getLogger(__name__)
+
 UTC_ZONE = ZoneInfo("UTC")
 # History's window when a request names no start.
 HISTORY_WINDOW = timedelta(days=30)
@@ -60,9 +66,10 @@ UNREACHABLE_MESSAGES: dict[ReaderError, str] = {
 
 
 def create_app(
-    db_path: Path,
+    database: str,
     service_token: str,
     *,
+    database_password: str | None = None,
     reader: Reader,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     source_id: str = "demo",
@@ -86,12 +93,7 @@ def create_app(
         raise ValueError("Service credential required")
     if source_id not in ("demo", "home_assistant"):
         raise ValueError("Unsupported collection source")
-    store = Store(Path(db_path))
-    with store.transaction() as db:
-        existing = db.execute("SELECT value FROM metadata WHERE key='source_id'").fetchone()
-        if existing and existing[0] != source_id:
-            raise ValueError("Use a separate database for a different collection source")
-        db.execute("INSERT OR IGNORE INTO metadata VALUES('source_id', ?)", (source_id,))
+    store = Store(database, password=database_password)
     device_commands = Commands(
         store,
         controller,
@@ -101,14 +103,36 @@ def create_app(
         wait_seconds=command_wait_seconds,
         stale_seconds=control_stale_seconds,
     )
-    device_commands.interrupt_pending()
     monitoring = Monitoring(store, reader)
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+        # At startup, not in create_app, so the OpenAPI schema builds without a database.
+        store.open()
+        try:
+            with store.transaction() as db:
+                existing = db.execute("SELECT value FROM metadata WHERE key='source_id'").fetchone()
+                if existing and existing[0] != source_id:
+                    raise ValueError("Use a separate database for a different collection source")
+                db.execute(
+                    "INSERT INTO metadata VALUES('source_id', %s) ON CONFLICT DO NOTHING",
+                    (source_id,),
+                )
+            device_commands.interrupt_pending()
+            yield
+        finally:
+            store.close()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     next_cleanup = 0.0
 
     def retention_cutoff() -> str:
         return (now().astimezone(UTC) - timedelta(days=retention_days)).isoformat()
+
+    def cleanup() -> None:
+        with store.transaction() as db:
+            store.cleanup(db, retention_cutoff())
 
     def conflict(code: str, message: str) -> HTTPException:
         return HTTPException(409, {"code": code, "message": message})
@@ -140,9 +164,12 @@ def create_app(
             request._body = bytes(body)  # pyright: ignore[reportPrivateUsage] -- no public setter
         nonlocal next_cleanup
         if time.monotonic() >= next_cleanup:
-            with store.transaction() as db:
-                store.cleanup(db, retention_cutoff())
             next_cleanup = time.monotonic() + 60
+            # In a worker thread: a cleanup waiting on a lock must not stop every request.
+            try:
+                await anyio.to_thread.run_sync(cleanup)
+            except psycopg.Error:
+                logger.warning("Command log cleanup failed; it runs again in a minute")
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "

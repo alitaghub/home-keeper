@@ -1,4 +1,5 @@
-"""Container entry point: write Aegra's config for CHAT_ORIGIN, then run `aegra serve`.
+"""Container entry point: write Aegra's config for CHAT_ORIGIN, pass on its database
+password, then run `aegra serve`.
 
 CORS must allow exactly the chat origin, and aegra.json cannot read the environment.
 """
@@ -25,9 +26,13 @@ def aegra_config(origin: str, graph_file: Path) -> dict[str, object]:
 
 def main() -> None:
     try:
-        origin = load(AgentSettings).chat_origin or DEFAULT_CHAT_ORIGIN
+        settings = load(AgentSettings)
     except SettingsError as error:
         sys.exit(f"Agent configuration invalid: {error}")
+    origin = settings.chat_origin or DEFAULT_CHAT_ORIGIN
+    if settings.database_password_file is not None:
+        # Compose keeps the password out of the environment it shows; Aegra reads it from here.
+        os.environ["POSTGRES_PASSWORD"] = settings.database_password_file.read_text().strip()
     config = Path(tempfile.gettempdir()) / "aegra.json"
     config.write_text(json.dumps(aegra_config(origin, Path(__file__).with_name("server.py"))))
     # `aegra serve` ignores an AEGRA_CONFIG outside the working directory; --config sets it.

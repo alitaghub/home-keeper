@@ -1,11 +1,16 @@
+from pathlib import Path
+
 import httpx
 import pytest
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from home_keeper_agent import telegram
 
 
 def run_startup(
     monkeypatch: pytest.MonkeyPatch,
+    database: str,
+    tmp_path: Path,
     fatal_code: int | None,
 ) -> tuple[list[str], list[float], object]:
     requests: list[str] = []
@@ -36,7 +41,11 @@ def run_startup(
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:synthetic-secret")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "11")
-    monkeypatch.setenv("TELEGRAM_STATE_PATH", ":memory:")
+    # Configured like Compose: a URL without the password, and the password in a file.
+    password = tmp_path / "db-password"
+    password.write_text(f"{conninfo_to_dict(database)['password']}\n")
+    monkeypatch.setenv("TELEGRAM_DATABASE_URL", make_conninfo(database, password=""))
+    monkeypatch.setenv("TELEGRAM_DATABASE_PASSWORD_FILE", str(password))
     monkeypatch.setenv("TELEGRAM_API_URL", "https://telegram.test")
     monkeypatch.setattr(telegram, "TelegramBot", make_bot)
     monkeypatch.setattr(telegram.time, "sleep", delays.append)
@@ -50,9 +59,9 @@ def run_startup(
 
 
 def test_temporary_startup_failure_recovers_without_process_restart(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, database: str, tmp_path: Path
 ) -> None:
-    requests, delays, exit_code = run_startup(monkeypatch, None)
+    requests, delays, exit_code = run_startup(monkeypatch, database, tmp_path, None)
     assert exit_code is None
     assert requests == ["getWebhookInfo", "getWebhookInfo", "getMe", "getUpdates"]
     assert delays == [1]
@@ -60,9 +69,9 @@ def test_temporary_startup_failure_recovers_without_process_restart(
 
 @pytest.mark.parametrize("fatal_code", [401, 404, 409])
 def test_rejected_startup_exits_without_retry(
-    monkeypatch: pytest.MonkeyPatch, fatal_code: int
+    monkeypatch: pytest.MonkeyPatch, database: str, tmp_path: Path, fatal_code: int
 ) -> None:
-    requests, delays, exit_code = run_startup(monkeypatch, fatal_code)
+    requests, delays, exit_code = run_startup(monkeypatch, database, tmp_path, fatal_code)
     assert exit_code == 1
     assert requests == ["getWebhookInfo"]
     assert delays == []

@@ -1,20 +1,22 @@
 """The device command routes: control heartbeat, how a refusal maps to HTTP, request
-validation, the history scope, and dashboard reads while commands wait.
+validation, the history scope, dashboard reads while commands wait, and what the API does
+to the command log at startup and on requests.
 
 The command rules themselves are proved through `Commands` in test_commands.py.
 """
 
+import json
 import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import anyio
 import httpx
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from support.api import AUTH, BROWSER, NOW, TOKEN, Payload, catalog_reader
@@ -23,6 +25,7 @@ from support.reader import FakeReader
 
 from home_keeper.api import create_app
 from home_keeper.models import CommandRefused
+from home_keeper.store import Store
 
 
 @dataclass
@@ -40,7 +43,7 @@ class House:
 
 
 @contextmanager
-def home(tmp_path: Path, *, heartbeat: bool = True, wait: float = 0.3) -> Generator[House]:
+def home(database: str, *, heartbeat: bool = True, wait: float = 0.3) -> Generator[House]:
     """bulb-a monitored and off in Home Assistant; bulb-b in the catalog but not monitored.
 
     The API's clock runs with real time from NOW, so a command's wait for the device's new
@@ -52,7 +55,7 @@ def home(tmp_path: Path, *, heartbeat: bool = True, wait: float = 0.3) -> Genera
     reader = catalog_reader()
     reader.set("bulb-a", DESK, {"state": "off"})
     app = create_app(
-        tmp_path / "commands.sqlite",
+        database,
         TOKEN,
         now=lambda: clock[0] + timedelta(seconds=time.monotonic() - started),
         reader=reader,
@@ -82,16 +85,16 @@ def home(tmp_path: Path, *, heartbeat: bool = True, wait: float = 0.3) -> Genera
     ],
 )
 def test_future_or_malformed_heartbeat_is_rejected_and_control_stays_off(
-    tmp_path: Path, body: Payload
+    database: str, body: Payload
 ) -> None:
-    with home(tmp_path, heartbeat=False) as house:
+    with home(database, heartbeat=False) as house:
         response = house.client.post("/internal/control", json=body, headers=AUTH)
         assert response.status_code == 422, response.text
         assert house.client.get("/api/control").json()["state"] == "off"
 
 
-def test_refused_command_is_a_conflict_with_its_code_and_message(tmp_path: Path) -> None:
-    with home(tmp_path) as house:
+def test_refused_command_is_a_conflict_with_its_code_and_message(database: str) -> None:
+    with home(database) as house:
         response = command(house.client, ON, entity="bulb-b")
         assert response.status_code == 409, response.text
         # The body the route declares in OpenAPI.
@@ -109,9 +112,9 @@ def test_refused_command_is_a_conflict_with_its_code_and_message(tmp_path: Path)
     [("missing", 404, "Unknown entity"), ("room", 422, "Entity is unsupported")],
 )
 def test_unknown_or_unsupported_entity_is_not_found_or_invalid(
-    tmp_path: Path, entity: str, status: int, detail: str
+    database: str, entity: str, status: int, detail: str
 ) -> None:
-    with home(tmp_path) as house:
+    with home(database) as house:
         response = command(house.client, ON, entity=entity)
         assert (response.status_code, response.json()) == (status, {"detail": detail})
         assert house.controller.sent == []
@@ -126,8 +129,8 @@ def test_unknown_or_unsupported_entity_is_not_found_or_invalid(
         "/api/devices//command",
     ],
 )
-def test_path_shaped_entity_ids_reach_no_light(tmp_path: Path, path: str) -> None:
-    with home(tmp_path) as house:
+def test_path_shaped_entity_ids_reach_no_light(database: str, path: str) -> None:
+    with home(database) as house:
         response = house.client.post(
             path,
             json={"command": ON, "sender": DASHBOARD},
@@ -138,8 +141,8 @@ def test_path_shaped_entity_ids_reach_no_light(tmp_path: Path, path: str) -> Non
         assert house.commands() == []
 
 
-def test_retired_light_command_route_is_not_found_and_reaches_nothing(tmp_path: Path) -> None:
-    with home(tmp_path) as house:
+def test_retired_light_command_route_is_not_found_and_reaches_nothing(database: str) -> None:
+    with home(database) as house:
         response = house.client.post(
             "/api/lights/bulb-a/command",
             json={"command": ON, "sender": DASHBOARD},
@@ -169,12 +172,14 @@ def test_retired_light_command_route_is_not_found_and_reaches_nothing(tmp_path: 
         {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1.5, "name": "A"}},
         {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1, "name": ""}},
         {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1, "name": "x" * 257}},
+        # Postgres JSONB cannot hold a NUL character, so it never reaches the command log.
+        {"command": {"action": "on"}, "sender": {"kind": "telegram", "id": 1, "name": "A\u0000B"}},
     ],
 )
 def test_malformed_command_is_an_invalid_request_and_reaches_nothing(
-    tmp_path: Path, body: Payload
+    database: str, body: Payload
 ) -> None:
-    with home(tmp_path) as house:
+    with home(database) as house:
         response = house.client.post(
             "/api/devices/bulb-a/command", json=body, headers={"X-Home-Keeper": "1"}
         )
@@ -235,9 +240,9 @@ def dashboard_read_latency(
     return statuses
 
 
-def test_dashboard_reads_are_not_held_up_by_a_burst_of_command_waits(tmp_path: Path) -> None:
+def test_dashboard_reads_are_not_held_up_by_a_burst_of_command_waits(database: str) -> None:
     burst = 40  # AnyIO's default worker-thread limit.
-    with home(tmp_path, wait=3) as house:
+    with home(database, wait=3) as house:
         # Sends advance a private clock, so the heartbeat stays fresh for every command.
         house.controller.clock = [house.clock[0]]
         statuses = dashboard_read_latency(house, burst, until_sent=False)
@@ -245,9 +250,9 @@ def test_dashboard_reads_are_not_held_up_by_a_burst_of_command_waits(tmp_path: P
     assert all(status < 500 for status in statuses), statuses
 
 
-def test_dashboard_reads_are_not_held_up_by_stalled_controller_sends(tmp_path: Path) -> None:
+def test_dashboard_reads_are_not_held_up_by_stalled_controller_sends(database: str) -> None:
     burst = 40  # AnyIO's default worker-thread limit.
-    with home(tmp_path, wait=0.1) as house:
+    with home(database, wait=0.1) as house:
         house.controller.clock = [house.clock[0]]
         # A stalled controller: every send blocks until the dashboard read is answered.
         release = threading.Event()
@@ -272,7 +277,56 @@ def test_dashboard_reads_are_not_held_up_by_stalled_controller_sends(tmp_path: P
         {"start": NOW.isoformat(), "end": (NOW - timedelta(seconds=1)).isoformat()},
     ],
 )
-def test_invalid_command_scope_is_rejected(tmp_path: Path, params: dict[str, str | int]) -> None:
-    with home(tmp_path) as house:
+def test_invalid_command_scope_is_rejected(database: str, params: dict[str, str | int]) -> None:
+    with home(database) as house:
         response = house.client.get("/api/commands", params=params)
         assert response.status_code == 422, response.text
+
+
+def seed_commands(database: str, *records: Payload) -> None:
+    """Store command records before the API starts, as an earlier run left them."""
+    store = Store(database)
+    store.open()
+    try:
+        with store.transaction() as db:
+            for record in records:
+                db.execute(
+                    "INSERT INTO commands VALUES(%s, %s, %s, %s)",
+                    (record["id"], record["entity_id"], record["sent_at"], json.dumps(record)),
+                )
+    finally:
+        store.close()
+
+
+def stored_record(identity: str, sent_at: datetime, outcome: str) -> Payload:
+    return {
+        "id": identity,
+        "entity_id": "bulb-a",
+        "device_kind": "light",
+        "command": ON,
+        "sender": DASHBOARD,
+        "sent_at": sent_at.isoformat(),
+        "outcome": outcome,
+    }
+
+
+def test_a_command_left_pending_by_a_crash_shows_as_interrupted_after_start(
+    database: str,
+) -> None:
+    seed_commands(database, stored_record("left", NOW - timedelta(minutes=1), "pending"))
+    with home(database) as house:
+        [left] = house.commands()
+        assert (left["id"], left["outcome"]) == ("left", "interrupted")
+
+
+def test_the_api_deletes_commands_older_than_retention(database: str) -> None:
+    seed_commands(
+        database,
+        stored_record("expired", NOW - timedelta(days=31), "observed"),
+        stored_record("recent", NOW - timedelta(days=1), "observed"),
+    )
+    with home(database):
+        pass
+    with psycopg.connect(database) as db:
+        rows = db.execute("SELECT id FROM commands ORDER BY id").fetchall()
+    assert rows == [("recent",)]
