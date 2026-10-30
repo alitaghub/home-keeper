@@ -3,13 +3,16 @@
 Home Keeper has three running parts: a reader that reads Home Assistant when
 asked, an API that decides what to show, and a dashboard that shows it. Device
 history stays in Home Assistant's recorder; Home Keeper keeps no copy of it.
-They run as two containers from one image. The default stack adds a bundled Home
-Assistant and a one-shot `ha-setup` container that onboards it and stores the
-reader's and the controller's tokens.
+They run as two containers from one image, next to one Postgres. The default
+stack adds a bundled Home Assistant and a one-shot `ha-setup` container that
+onboards it and stores the reader's and the controller's tokens.
+A one-shot `db-setup` container gives the API, the agent and the Telegram worker
+each a database, a login role and a password file of their own in that Postgres
+(`compose.postgres.yaml`). Each role can connect only to its own database.
 The optional `control` profile adds a controller, from its own image, that
 switches monitored lights, plugs and switches for the API; [control.md](control.md) covers it.
-The optional `agent` profile adds a chat agent, its chat page and a Postgres for
-its threads; [agent.md](agent.md) covers it.
+The optional `agent` profile adds a chat agent and its chat page; the agent keeps
+its threads in its own database. [agent.md](agent.md) covers it.
 The separate `telegram` profile adds a polling worker that connects private
 Telegram chats to the same agent; [telegram.md](telegram.md) covers setup.
 
@@ -29,7 +32,7 @@ flowchart LR
         direction LR
         reader["Reader<br/><i>live or demo</i>"]
         api["API<br/><i>FastAPI</i>"]
-        db[("SQLite")]
+        db[("Postgres<br/><i>one database per service</i>")]
         api -- "catalog, current state,<br/>history, reachability" --> reader
         api --> db
         controller["Controller<br/><i>profile control</i>"]
@@ -45,9 +48,9 @@ flowchart LR
         direction LR
         chat["Chat page<br/><i>Agent Chat UI</i>"]
         agent["Agent<br/><i>Aegra</i>"]
-        pg[("Postgres<br/><i>threads</i>")]
-        agent --> pg
     end
+    agent -- "threads" --> db
+    bot -- "bot state" --> db
 
     chat -- "questions, from your browser" --> agent
     telegram["Telegram<br/><i>private chats</i>"] <-->|"outbound polling,<br/>replies and approval buttons"| bot["Telegram worker<br/><i>profile telegram</i>"]
@@ -66,7 +69,7 @@ flowchart LR
 | Monitoring | `monitoring.py`                       | Owns the selection, checks a new selection against Home Assistant's catalog, and answers each monitored device's current state from the reader. |
 | Commands  | `commands.py`                          | Checks, forwards and records commands to monitored lights, plugs and switches, then reads the device's state every 0.5 s for up to 5 s to confirm the outcome. |
 | Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo reader. Publishes no port. |
-| Store     | `store.py`                             | SQLite: the selection, the command log and a few metadata values. Replaces a database an earlier release wrote. Command retention. |
+| Store     | `store.py`                             | Postgres: the selection, the command log and a few metadata values. Command retention. |
 | Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline and the command log.               |
 | Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
 | Chat      | `apps/chat`                            | Optional. Builds the unmodified Agent Chat UI. Your browser talks to the agent directly.    |

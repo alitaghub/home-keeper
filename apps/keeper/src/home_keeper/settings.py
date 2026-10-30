@@ -16,7 +16,9 @@ class ApiSettings(BaseSettings):
     port: Port = 8000
     # The API creates this credential at its first start; the others wait for it.
     token_file: Path = Path("/secrets/service-token")
-    db: Path = Path("/data/home.sqlite")
+    # The keeper's own database and login role; the password is read from its own file.
+    database_url: str = "postgresql://keeper@postgres:5432/keeper"
+    database_password_file: Path = Path("/db-password/password")
     source_id: str = "demo"
     bind: str = "127.0.0.1"
     # Shown on the dashboard as a link; empty means no link.

@@ -34,7 +34,7 @@ class Monitoring:
         self.reader = reader
 
     def selection(self) -> Selection:
-        with self.store.transaction("DEFERRED") as db:
+        with self.store.transaction() as db:
             return Selection(entity_ids=self.store.selected(db))
 
     def select(
@@ -55,16 +55,16 @@ class Monitoring:
         with store.transaction() as db:
             if selected:
                 db.execute(
-                    "INSERT OR IGNORE INTO selection(id, device_kind) VALUES(?, ?)",
+                    "INSERT INTO selection(id, device_kind) VALUES(%s, %s) ON CONFLICT DO NOTHING",
                     (entity_id, kind),
                 )
             else:
-                db.execute("DELETE FROM selection WHERE id=?", (entity_id,))
+                db.execute("DELETE FROM selection WHERE id=%s", (entity_id,))
             return Selection(entity_ids=store.selected(db))
 
     def kinds(self) -> dict[str, DeviceKind | None]:
         """Each monitored device with the kind it was selected as, in ID order."""
-        with self.store.transaction("DEFERRED") as db:
+        with self.store.transaction() as db:
             rows = db.execute("SELECT id, device_kind FROM selection ORDER BY id").fetchall()
         return {row[0]: stored_kind.validate_python(row[1]) for row in rows}
 

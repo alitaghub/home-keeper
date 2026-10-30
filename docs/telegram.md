@@ -120,8 +120,8 @@ The bot has no Compose healthcheck, so `up --wait` does not prove that Telegram
 polling works. Send `/help` privately to verify it after setup.
 
 Stopping only `telegram` leaves browser chat and the dashboard running. Normal
-`down` keeps the bot's small SQLite state volume and Aegra's conversation
-volume. `down --volumes` deletes them along with the stack's other saved data.
+`down` keeps the bot's state and Aegra's conversations, both in the shared
+Postgres. `down --volumes` deletes them along with the stack's other saved data.
 
 Missing settings, invalid IDs, rejected tokens, a preexisting webhook, or a
 second polling worker produce a diagnostic without printing the token. The
@@ -152,12 +152,11 @@ saved. If a completed answer was lost during an uncertain request, the bot
 does not recover that old answer when it accepts the next question.
 
 The saved polling progress belongs to one bot's numeric ID. Rotating the token
-for that same bot keeps its state. To switch to a different bot, use a fresh
-Telegram state volume. The worker refuses to reuse another bot's volume rather
-than silently skip the new bot's messages. Keep the old volume as a backup;
-there is no need to delete Home Keeper history or Aegra's conversations. Volumes
-created before this identity check bind to the configured bot on their first
-upgraded startup; keep the original bot configured for that startup.
+for that same bot keeps its state. To switch to a different bot, give the worker
+a fresh database: drop the `telegram` database, and `db-setup` creates an empty
+one at the next start. The worker refuses to reuse another bot's database rather
+than silently skip the new bot's messages. There is no need to delete Home Keeper
+data or Aegra's conversations.
 
 Only private text chats and approval buttons are supported. Groups, channels,
 message edits, voice, photos, and proactive notifications are outside scope.

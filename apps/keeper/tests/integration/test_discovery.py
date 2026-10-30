@@ -1,7 +1,5 @@
 """The catalog comes live from the reader; the selection is Home Keeper's own record."""
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 from support.api import BROWSER, CATALOG_ENTITIES, NOW, TOKEN, app_for, catalog_reader
 
@@ -9,9 +7,9 @@ from home_keeper.api import create_app
 from home_keeper.models import Entity
 
 
-def test_catalog_is_the_readers_catalog_at_request_time(tmp_path: Path) -> None:
+def test_catalog_is_the_readers_catalog_at_request_time(database: str) -> None:
     reader = catalog_reader()
-    with TestClient(app_for(tmp_path / "catalog.sqlite", reader=reader)) as client:
+    with TestClient(app_for(database, reader=reader)) as client:
         body = client.get("/api/catalog").json()
         assert set(body) == {"source_id", "home_assistant_url", "entities"}
         assert body["entities"] == [Entity.model_validate(e).model_dump() for e in CATALOG_ENTITIES]
@@ -21,9 +19,9 @@ def test_catalog_is_the_readers_catalog_at_request_time(tmp_path: Path) -> None:
         assert ids == ["bulb-a", "room", "plug"]
 
 
-def test_catalog_tells_the_dashboard_where_home_assistant_is(tmp_path: Path) -> None:
+def test_catalog_tells_the_dashboard_where_home_assistant_is(database: str) -> None:
     app = create_app(
-        tmp_path / "linked.sqlite",
+        database,
         TOKEN,
         now=lambda: NOW,
         reader=catalog_reader(),
@@ -39,9 +37,9 @@ def test_catalog_tells_the_dashboard_where_home_assistant_is(tmp_path: Path) -> 
 
 
 def test_only_a_supported_catalog_entry_can_be_selected_and_the_selection_survives_restart(
-    tmp_path: Path,
+    database: str,
 ) -> None:
-    db = tmp_path / "home.sqlite"
+    db = database
     with TestClient(app_for(db)) as client:
         assert client.get("/api/selection").json() == {"entity_ids": []}
         assert client.get("/api/monitored").json() == {"entities": []}
@@ -65,10 +63,10 @@ def test_only_a_supported_catalog_entry_can_be_selected_and_the_selection_surviv
 
 
 def test_a_rename_in_home_assistant_keeps_the_selection_and_shows_the_new_name(
-    tmp_path: Path,
+    database: str,
 ) -> None:
     reader = catalog_reader()
-    with TestClient(app_for(tmp_path / "rename.sqlite", reader=reader)) as client:
+    with TestClient(app_for(database, reader=reader)) as client:
         assert client.put(
             "/api/selection/bulb-b", json={"selected": True}, headers=BROWSER
         ).is_success

@@ -1,6 +1,5 @@
 import json
 import logging
-from pathlib import Path
 
 import pytest
 from agent_support import FakeKeeper, command_requests
@@ -12,7 +11,7 @@ from home_keeper_agent.telegram import UNCERTAIN, Settings, TelegramBot
 
 
 def test_new_recovers_from_invalid_saved_conversation(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    database: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     telegram = FakeTelegram()
     agent = GraphAegra([AIMessage("Recovered answer.")], FakeKeeper())
@@ -20,7 +19,8 @@ def test_new_recovers_from_invalid_saved_conversation(
         Settings(
             bot_token=SecretStr("123:secret"),
             allowed_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
+            database_url=database,
+            database_password_file=None,
         ),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
@@ -28,8 +28,7 @@ def test_new_recovers_from_invalid_saved_conversation(
     # Seed a corrupted external state file; assertions exercise the bot's public update boundary.
     invalid = '{"thread_id":"private-old-thread","status":"pending"}'
     try:
-        bot.db.execute("INSERT INTO conversations VALUES (?, ?)", (11, invalid))
-        bot.db.commit()
+        bot.db.execute("INSERT INTO conversations VALUES (%s, %s)", (11, invalid))
         with caplog.at_level(logging.WARNING):
             bot.handle_update(incoming(1, 11, "Private question"))
         assert agent.requests == []
@@ -51,7 +50,7 @@ def test_new_recovers_from_invalid_saved_conversation(
 
 @pytest.mark.parametrize("old_name", ["turn_on_light", "turn_off_light", "monitor_light"])
 def test_saved_approval_for_a_renamed_tool_is_unusable_and_new_recovers(
-    tmp_path: Path, old_name: str
+    database: str, old_name: str
 ) -> None:
     telegram = FakeTelegram()
     keeper = FakeKeeper()
@@ -61,7 +60,8 @@ def test_saved_approval_for_a_renamed_tool_is_unusable_and_new_recovers(
             bot_token=SecretStr("123:secret"),
             allowed_user_ids=frozenset({11}),
             control_user_ids=frozenset({11}),
-            state_path=str(tmp_path / "bot.sqlite3"),
+            database_url=database,
+            database_password_file=None,
         ),
         telegram_client=telegram.client(),
         agent_client=agent.client(),
@@ -84,8 +84,7 @@ def test_saved_approval_for_a_renamed_tool_is_unusable_and_new_recovers(
         },
     }
     try:
-        bot.db.execute("INSERT INTO conversations VALUES (?, ?)", (11, json.dumps(saved)))
-        bot.db.commit()
+        bot.db.execute("INSERT INTO conversations VALUES (%s, %s)", (11, json.dumps(saved)))
 
         bot.handle_update(clicked(1, 11, "old:0:approve", 101))
         bot.handle_update(incoming(2, 11, "Is it on?"))

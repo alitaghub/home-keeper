@@ -217,13 +217,15 @@ def check_profiles() -> None:
             if "telegram" in services:
                 bot = services["telegram"]
                 assert not bot.ports
-                assert set(bot.networks) == {"default"}
+                assert set(bot.networks) == {"default", "database"}
                 assert set(bot.environment) == {
                     "TELEGRAM_BOT_TOKEN",
                     "TELEGRAM_ALLOWED_USER_IDS",
                     "TELEGRAM_CONTROL_USER_IDS",
+                    "TELEGRAM_DATABASE_URL",
+                    "TELEGRAM_DATABASE_PASSWORD_FILE",
                 }
-                assert [volume.source for volume in bot.volumes] == ["telegram-state"]
+                assert [volume.source for volume in bot.volumes] == ["telegram-db-password"]
                 assert bot.restart == "unless-stopped"
 
 
@@ -239,7 +241,13 @@ def main() -> None:
         override = root / "compose.yaml"
         override.write_text(f"""services:
   agent:
-    command: [aegra, serve, --host, 0.0.0.0, --port, '2026', --config, /app/telegram-proof.json]
+    # Bypasses serve.py, so it passes on the database password itself.
+    command:
+      - sh
+      - -c
+      - >-
+        POSTGRES_PASSWORD=$$(cat /db-password/password) exec aegra serve
+        --host 0.0.0.0 --port 2026 --config /app/telegram-proof.json
     volumes:
       - {config}:/app/telegram-proof.json:ro
       - {REPO / "e2e/telegram_graph.py"}:/fixture/telegram_graph.py:ro

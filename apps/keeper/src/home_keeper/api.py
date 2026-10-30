@@ -1,6 +1,7 @@
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from datetime import MAXYEAR, UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -60,9 +61,10 @@ UNREACHABLE_MESSAGES: dict[ReaderError, str] = {
 
 
 def create_app(
-    db_path: Path,
+    database: str,
     service_token: str,
     *,
+    database_password: str | None = None,
     reader: Reader,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     source_id: str = "demo",
@@ -86,12 +88,7 @@ def create_app(
         raise ValueError("Service credential required")
     if source_id not in ("demo", "home_assistant"):
         raise ValueError("Unsupported collection source")
-    store = Store(Path(db_path))
-    with store.transaction() as db:
-        existing = db.execute("SELECT value FROM metadata WHERE key='source_id'").fetchone()
-        if existing and existing[0] != source_id:
-            raise ValueError("Use a separate database for a different collection source")
-        db.execute("INSERT OR IGNORE INTO metadata VALUES('source_id', ?)", (source_id,))
+    store = Store(database, password=database_password)
     device_commands = Commands(
         store,
         controller,
@@ -101,9 +98,27 @@ def create_app(
         wait_seconds=command_wait_seconds,
         stale_seconds=control_stale_seconds,
     )
-    device_commands.interrupt_pending()
     monitoring = Monitoring(store, reader)
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+        # At startup, not in create_app, so the OpenAPI schema builds without a database.
+        store.open()
+        try:
+            with store.transaction() as db:
+                existing = db.execute("SELECT value FROM metadata WHERE key='source_id'").fetchone()
+                if existing and existing[0] != source_id:
+                    raise ValueError("Use a separate database for a different collection source")
+                db.execute(
+                    "INSERT INTO metadata VALUES('source_id', %s) ON CONFLICT DO NOTHING",
+                    (source_id,),
+                )
+            device_commands.interrupt_pending()
+            yield
+        finally:
+            store.close()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     next_cleanup = 0.0
 

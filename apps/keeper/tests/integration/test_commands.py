@@ -2,11 +2,10 @@
 controller. `now` is a test clock that `sleep` moves, so no test waits in real time."""
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
-from pathlib import Path
 from typing import Literal
 
 import anyio
@@ -158,11 +157,11 @@ class Home:
         with self.store.transaction() as db:
             if selected:
                 db.execute(
-                    "INSERT OR IGNORE INTO selection(id, device_kind) VALUES(?, ?)",
+                    "INSERT INTO selection(id, device_kind) VALUES(%s, %s) ON CONFLICT DO NOTHING",
                     (device.entity_id, device.kind),
                 )
             else:
-                db.execute("DELETE FROM selection WHERE id=?", (device.entity_id,))
+                db.execute("DELETE FROM selection WHERE id=%s", (device.entity_id,))
 
     def report(self, device: Device, state: Payload, *, source: str | None = None) -> None:
         """Home Assistant now reports `state` for the device."""
@@ -219,8 +218,16 @@ def make_commands(
     )
 
 
+@pytest.fixture
+def store(database: str) -> Generator[Store]:
+    store = Store(database)
+    store.open()
+    yield store
+    store.close()
+
+
 def home(
-    tmp_path: Path,
+    store: Store,
     *,
     controller: bool = True,
     queue: float = 3.0,
@@ -229,7 +236,6 @@ def home(
 ) -> Home:
     """bulb-a and plug-a monitored, Home Assistant reporting no state, no heartbeat."""
     clock = Clock()
-    store = Store(tmp_path / "commands.sqlite")
     scripted = ScriptedController()
     reader = FakeReader(CATALOG)
     commands = make_commands(
@@ -248,7 +254,7 @@ def home(
 
 
 def ready(
-    tmp_path: Path,
+    store: Store,
     device: Device,
     state: Payload = IS_OFF,
     *,
@@ -257,7 +263,7 @@ def ready(
     retention_days: int = 30,
 ) -> Home:
     """A home with control on and Home Assistant reporting `device` in `state`."""
-    house = home(tmp_path, queue=queue, slots=slots, retention_days=retention_days)
+    house = home(store, queue=queue, slots=slots, retention_days=retention_days)
     house.report(device, state)
     assert house.commands.heartbeat(NOW)
     return house
@@ -307,8 +313,8 @@ def anyio_backend() -> str:
 # Control status
 
 
-async def test_control_is_on_only_while_the_controller_heartbeat_is_fresh(tmp_path: Path) -> None:
-    house = home(tmp_path)
+async def test_control_is_on_only_while_the_controller_heartbeat_is_fresh(store: Store) -> None:
+    house = home(store)
     house.report(LIGHT, IS_OFF)
     assert house.commands.status().model_dump() == {"state": "off", "heartbeat_at": None}
     assert await switch(house, LIGHT, ON) == refused("control_off")
@@ -336,16 +342,16 @@ async def test_control_is_on_only_while_the_controller_heartbeat_is_fresh(tmp_pa
     assert len(house.controller.sent) == 1
 
 
-async def test_heartbeat_received_after_now_is_not_stored(tmp_path: Path) -> None:
-    house = home(tmp_path)
+async def test_heartbeat_received_after_now_is_not_stored(store: Store) -> None:
+    house = home(store)
     assert not house.commands.heartbeat(NOW + timedelta(seconds=1))
     assert house.commands.status().model_dump() == {"state": "off", "heartbeat_at": None}
 
 
 async def test_without_a_controller_control_is_off_and_commands_are_refused(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = home(tmp_path, controller=False)
+    house = home(store, controller=False)
     house.report(LIGHT, IS_OFF)
     # Whether or not the heartbeat is stored, no controller means no control.
     house.commands.heartbeat(NOW)
@@ -371,10 +377,10 @@ async def test_without_a_controller_control_is_off_and_commands_are_refused(
     ],
 )
 async def test_unknown_or_unsupported_entity_is_reported_before_control_is_checked(
-    tmp_path: Path, entity: str, expected: type[UnknownEntity] | type[UnsupportedEntity]
+    store: Store, entity: str, expected: type[UnknownEntity] | type[UnsupportedEntity]
 ) -> None:
     # Control is off, so any other answer means the catalog checks did not come first.
-    house = home(tmp_path)
+    house = home(store)
     house.report(LIGHT, IS_OFF)
     assert isinstance(await switch(house, entity, ON), expected)
     assert house.controller.sent == []
@@ -441,7 +447,7 @@ def refusal_cases() -> list[object]:
     ("device", "action", "state", "monitored", "heartbeat", "code"), refusal_cases()
 )
 async def test_refusals_come_in_a_fixed_order_and_nothing_is_sent_or_stored(
-    tmp_path: Path,
+    store: Store,
     *,
     device: Device,
     action: Payload,
@@ -450,7 +456,7 @@ async def test_refusals_come_in_a_fixed_order_and_nothing_is_sent_or_stored(
     heartbeat: bool,
     code: CommandRefusalCode,
 ) -> None:
-    house = home(tmp_path)
+    house = home(store)
     if state is not None:
         house.report(device, state)
     if not monitored:
@@ -464,9 +470,9 @@ async def test_refusals_come_in_a_fixed_order_and_nothing_is_sent_or_stored(
 
 @pytest.mark.parametrize("device", DEVICES)
 async def test_unreachable_home_assistant_makes_the_state_unknown_and_nothing_is_sent(
-    tmp_path: Path, device: Device
+    store: Store, device: Device
 ) -> None:
-    house = ready(tmp_path, device)
+    house = ready(store, device)
     house.reader.error = "connection"
     assert await switch(house, device, ON) == refused("state_unknown", device)
     assert house.controller.sent == []
@@ -474,9 +480,9 @@ async def test_unreachable_home_assistant_makes_the_state_unknown_and_nothing_is
 
 
 async def test_brightness_is_refused_for_a_switch_reading_even_when_the_catalog_says_light(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = home(tmp_path)
+    house = home(store)
     # The catalog lists bulb-a as a light; Home Assistant now reports it as a switch.
     house.report(Device("bulb-a", "switch.desk", "switch", "device"), IS_OFF)
     assert house.commands.heartbeat(NOW)
@@ -485,10 +491,10 @@ async def test_brightness_is_refused_for_a_switch_reading_even_when_the_catalog_
 
 
 async def test_state_from_outside_the_device_domain_makes_the_entity_unsupported(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
     # The controller only takes a light's own `light.*` entity ID.
-    house = home(tmp_path)
+    house = home(store)
     house.report(LIGHT, IS_OFF, source="switch.desk")
     assert house.commands.heartbeat(NOW)
     assert isinstance(await switch(house, LIGHT, ON), UnsupportedEntity)
@@ -515,9 +521,9 @@ async def test_state_from_outside_the_device_domain_makes_the_entity_unsupported
     ],
 )
 async def test_change_is_forwarded_to_the_source_entity_home_assistant_reports(
-    tmp_path: Path, device: Device, state: Payload, action: Payload
+    store: Store, device: Device, state: Payload, action: Payload
 ) -> None:
-    house = ready(tmp_path, device, state)
+    house = ready(store, device, state)
     record = recorded(await switch(house, device, action))
     assert house.controller.bodies() == [forwarded(device, action)]
     assert record.device_kind == device.kind
@@ -525,9 +531,9 @@ async def test_change_is_forwarded_to_the_source_entity_home_assistant_reports(
 
 @pytest.mark.parametrize("device", DEVICES)
 async def test_forwarding_follows_a_renamed_home_assistant_entity(
-    tmp_path: Path, device: Device
+    store: Store, device: Device
 ) -> None:
-    house = ready(tmp_path, device)
+    house = ready(store, device)
     # Home Assistant now attributes the device to a renamed entity.
     renamed = f"{device.source}_2"
     house.report(device, IS_OFF, source=renamed)
@@ -546,9 +552,9 @@ async def test_forwarding_follows_a_renamed_home_assistant_entity(
     ],
 )
 async def test_command_is_observed_when_home_assistant_shows_the_commanded_state(
-    tmp_path: Path, device: Device, action: Payload, shown: Payload
+    store: Store, device: Device, action: Payload, shown: Payload
 ) -> None:
-    house = ready(tmp_path, device)
+    house = ready(store, device)
     house.controller.steps.append(lambda: house.report(device, shown))
     record = recorded(await switch(house, device, action, TELEGRAM))
     assert record.model_dump(mode="json", exclude={"id", "sent_at", "command"}) == {
@@ -565,16 +571,16 @@ async def test_command_is_observed_when_home_assistant_shows_the_commanded_state
 
 
 @pytest.mark.parametrize("device", DEVICES)
-async def test_off_command_is_observed_from_an_off_state(tmp_path: Path, device: Device) -> None:
-    house = ready(tmp_path, device, IS_ON)
+async def test_off_command_is_observed_from_an_off_state(store: Store, device: Device) -> None:
+    house = ready(store, device, IS_ON)
     house.controller.steps.append(lambda: house.report(device, IS_OFF))
     assert recorded(await switch(house, device, OFF, BROWSER_CHAT)).outcome == "observed"
 
 
 async def test_reads_every_half_second_and_stops_at_the_five_second_deadline(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     record = recorded(await switch(house, LIGHT, ON))
     assert record.outcome == "not_observed"
 
@@ -591,8 +597,8 @@ async def test_reads_every_half_second_and_stops_at_the_five_second_deadline(
     assert house.audit() == [record]
 
 
-async def test_reading_stops_at_the_first_state_that_shows_the_command(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT)
+async def test_reading_stops_at_the_first_state_that_shows_the_command(store: Store) -> None:
+    house = ready(store, LIGHT)
     house.report_from(2.0, LIGHT, IS_ON)
     record = recorded(await switch(house, LIGHT, ON))
     assert record.outcome == "observed"
@@ -602,9 +608,9 @@ async def test_reading_stops_at_the_first_state_that_shows_the_command(tmp_path:
 
 
 async def test_reading_continues_past_a_state_that_does_not_show_the_command(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     # The light ramps up: on, but not yet at the requested level.
     house.controller.steps.append(lambda: house.report(LIGHT, {"state": "on", "brightness": 20}))
     house.report_from(1.5, LIGHT, {"state": "on", "brightness": 77})
@@ -615,9 +621,9 @@ async def test_reading_continues_past_a_state_that_does_not_show_the_command(
 
 @pytest.mark.parametrize("error", ["connection", "reader_unreachable", "timeout"])
 async def test_failing_reads_after_the_send_end_as_not_observed_by_the_deadline(
-    tmp_path: Path, error: Literal["connection", "reader_unreachable", "timeout"]
+    store: Store, error: Literal["connection", "reader_unreachable", "timeout"]
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
 
     def lose_home_assistant() -> None:
         house.reader.error = error
@@ -630,8 +636,8 @@ async def test_failing_reads_after_the_send_end_as_not_observed_by_the_deadline(
     assert house.clock.now - house.sent_at <= timedelta(seconds=WAIT_SECONDS)
 
 
-async def test_slow_reads_end_as_not_observed_and_never_stay_pending(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT)
+async def test_slow_reads_end_as_not_observed_and_never_stay_pending(store: Store) -> None:
+    house = ready(store, LIGHT)
 
     def slow_read() -> None:
         # Each read takes three seconds of the clock.
@@ -650,16 +656,16 @@ async def test_slow_reads_end_as_not_observed_and_never_stay_pending(tmp_path: P
     [(76, "observed"), (78, "observed"), (79, "observed"), (74, "not_observed")],
 )
 async def test_brightness_within_two_steps_of_the_requested_percent_counts_as_observed(
-    tmp_path: Path, brightness: int, outcome: str
+    store: Store, brightness: int, outcome: str
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     shown: Payload = {"state": "on", "brightness": brightness}
     house.controller.steps.append(lambda: house.report(LIGHT, shown))
     assert recorded(await switch(house, LIGHT, on(30))).outcome == outcome
 
 
-async def test_another_devices_change_does_not_count(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT)
+async def test_another_devices_change_does_not_count(store: Store) -> None:
+    house = ready(store, LIGHT)
     house.select(OTHER_LIGHT)
     house.report(OTHER_LIGHT, IS_OFF)
     house.controller.steps.append(lambda: house.report(OTHER_LIGHT, IS_ON))
@@ -667,9 +673,9 @@ async def test_another_devices_change_does_not_count(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("device", DEVICES)
-async def test_device_that_keeps_its_state_is_not_observed(tmp_path: Path, device: Device) -> None:
+async def test_device_that_keeps_its_state_is_not_observed(store: Store, device: Device) -> None:
     # Home Assistant took the call, but the device still reports the old state.
-    house = ready(tmp_path, device)
+    house = ready(store, device)
     record = recorded(await switch(house, device, ON))
     assert record.outcome == "not_observed"
     assert house.audit() == [record]
@@ -678,9 +684,9 @@ async def test_device_that_keeps_its_state_is_not_observed(tmp_path: Path, devic
 @pytest.mark.parametrize("outcome", ["refused", "unreachable"])
 @pytest.mark.parametrize("device", DEVICES)
 async def test_controller_that_refuses_or_fails_is_audited_without_reading(
-    tmp_path: Path, device: Device, outcome: str
+    store: Store, device: Device, outcome: str
 ) -> None:
-    house = ready(tmp_path, device)
+    house = ready(store, device)
     house.controller.reply = "refused"
     house.controller.unreachable = outcome == "unreachable"
     record = recorded(await switch(house, device, ON))
@@ -694,8 +700,8 @@ async def test_controller_that_refuses_or_fails_is_audited_without_reading(
 # The stored record
 
 
-async def test_command_is_stored_as_pending_while_the_controller_works(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT)
+async def test_command_is_stored_as_pending_while_the_controller_works(store: Store) -> None:
+    house = ready(store, LIGHT)
     during_send: list[list[Recorded]] = []
     house.controller.steps.append(lambda: during_send.append(house.audit()))
     record = recorded(await switch(house, LIGHT, on(30), TELEGRAM))
@@ -709,9 +715,9 @@ class SimulatedCrashError(Exception):
 
 
 async def test_command_left_pending_by_a_crash_is_interrupted_after_restart(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
 
     def crash() -> None:
         raise SimulatedCrashError
@@ -748,9 +754,9 @@ def hold_the_only_slot(house: Home) -> tuple[threading.Event, threading.Event]:
 
 
 async def test_command_that_waits_too_long_for_a_send_slot_is_refused_as_busy(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT, slots=1, queue=0.2)
+    house = ready(store, LIGHT, slots=1, queue=0.2)
     entered, release = hold_the_only_slot(house)
     first: list[Result] = []
 
@@ -771,9 +777,9 @@ async def test_command_that_waits_too_long_for_a_send_slot_is_refused_as_busy(
 
 
 async def test_queued_command_is_not_sent_after_its_device_stops_being_monitored(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT, slots=1, queue=5)
+    house = ready(store, LIGHT, slots=1, queue=5)
     entered, release = hold_the_only_slot(house)
     first: list[Result] = []
     queued: list[Result] = []
@@ -796,9 +802,9 @@ async def test_queued_command_is_not_sent_after_its_device_stops_being_monitored
 
 
 async def test_device_that_stops_being_monitored_during_the_last_state_read_is_not_sent(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     reads = 0
 
     def stop_monitoring_during_the_second_check() -> None:
@@ -841,17 +847,17 @@ def slow_catalog(house: Home, *seconds: float) -> None:
     ],
 )
 async def test_command_whose_checks_outlast_the_deadline_is_refused_as_busy(
-    tmp_path: Path, seconds: tuple[float, ...]
+    store: Store, seconds: tuple[float, ...]
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     slow_catalog(house, *seconds)
     assert await switch(house, LIGHT, ON) == refused("busy")
     assert house.controller.sent == []
     assert house.audit() == []
 
 
-async def test_waiting_for_a_send_slot_ends_at_the_deadline(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT, slots=1, queue=5)
+async def test_waiting_for_a_send_slot_ends_at_the_deadline(store: Store) -> None:
+    house = ready(store, LIGHT, slots=1, queue=5)
     entered, release = hold_the_only_slot(house)
     # The queued command's answer and the real seconds it waited for it.
     queued: list[tuple[Result, float]] = []
@@ -888,8 +894,8 @@ def slow_send(house: Home, seconds: float) -> None:
     house.controller.steps.append(take)
 
 
-async def test_the_send_gets_only_the_time_left_before_the_deadline(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT)
+async def test_the_send_gets_only_the_time_left_before_the_deadline(store: Store) -> None:
+    house = ready(store, LIGHT)
     slow_catalog(house, 3, 3)
     house.controller.steps.append(lambda: house.report(LIGHT, IS_ON))
     assert recorded(await switch(house, LIGHT, ON)).outcome == "observed"
@@ -897,9 +903,9 @@ async def test_the_send_gets_only_the_time_left_before_the_deadline(tmp_path: Pa
 
 
 async def test_a_send_slower_than_the_time_left_ends_unreachable_by_the_deadline(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     slow_catalog(house, 3, 3)
     # Within the controller's own 6-second limit, but past the command's deadline.
     slow_send(house, 3)
@@ -908,9 +914,9 @@ async def test_a_send_slower_than_the_time_left_ends_unreachable_by_the_deadline
 
 
 async def test_a_command_with_too_little_time_left_to_send_is_refused_as_busy(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     # 0.4 s left: under the half second a send needs at least.
     slow_catalog(house, DEADLINE_SECONDS - 0.4)
     assert await switch(house, LIGHT, ON) == refused("busy")
@@ -919,9 +925,9 @@ async def test_a_command_with_too_little_time_left_to_send_is_refused_as_busy(
 
 
 async def test_a_state_read_that_returns_after_the_observation_window_does_not_count(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
 
     def slow_first_read() -> None:
         if len(house.confirmation_reads) == 1:
@@ -939,8 +945,8 @@ async def test_a_state_read_that_returns_after_the_observation_window_does_not_c
 @pytest.mark.parametrize(
     "sender", [DASHBOARD, BROWSER_CHAT, TELEGRAM], ids=["dashboard", "chat", "telegram"]
 )
-async def test_sender_round_trips_through_the_audit(tmp_path: Path, sender: Payload) -> None:
-    house = ready(tmp_path, LIGHT)
+async def test_sender_round_trips_through_the_audit(store: Store, sender: Payload) -> None:
+    house = ready(store, LIGHT)
     house.controller.reply = "refused"
     record = recorded(await switch(house, LIGHT, ON, sender))
     assert record.sender.model_dump() == sender
@@ -948,9 +954,9 @@ async def test_sender_round_trips_through_the_audit(tmp_path: Path, sender: Payl
 
 
 async def test_the_audit_lists_light_and_switch_commands_with_their_device_kind(
-    tmp_path: Path,
+    store: Store,
 ) -> None:
-    house = ready(tmp_path, LIGHT)
+    house = ready(store, LIGHT)
     house.report(PLUG, IS_OFF)
     house.controller.reply = "refused"
     recorded(await switch(house, LIGHT, on(40), TELEGRAM))
@@ -970,8 +976,8 @@ async def test_the_audit_lists_light_and_switch_commands_with_their_device_kind(
     assert house.controller.bodies() == [forwarded(LIGHT, on(40)), forwarded(PLUG, ON)]
 
 
-async def test_history_is_newest_first_in_pages_and_filters_by_send_time(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT)
+async def test_history_is_newest_first_in_pages_and_filters_by_send_time(store: Store) -> None:
+    house = ready(store, LIGHT)
     # Refused commands leave the light off, so the same command stays valid.
     house.controller.reply = "refused"
     sent: list[Recorded] = []
@@ -1007,14 +1013,14 @@ async def test_history_is_newest_first_in_pages_and_filters_by_send_time(tmp_pat
     ],
 )
 async def test_invalid_history_scope_reads_nothing(
-    tmp_path: Path, start: datetime | None, end: datetime | None, cursor: str | None
+    store: Store, start: datetime | None, end: datetime | None, cursor: str | None
 ) -> None:
-    house = home(tmp_path)
+    house = home(store)
     assert house.commands.history(start=start, end=end, limit=50, cursor=cursor) is None
 
 
-async def test_commands_older_than_retention_are_hidden_then_cleaned_up(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT, retention_days=1)
+async def test_commands_older_than_retention_are_hidden_then_cleaned_up(store: Store) -> None:
+    house = ready(store, LIGHT, retention_days=1)
     house.controller.reply = "refused"
     old = recorded(await switch(house, LIGHT, ON))
     house.clock.now = NOW + timedelta(days=1, seconds=30)

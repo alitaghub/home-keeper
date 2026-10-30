@@ -43,7 +43,8 @@ def main() -> None:
     port = settings.port
     hosts = local_authorities(port, ("127.0.0.1", "localhost", "api"))
     app = create_app(
-        db_path=settings.db,
+        database=settings.database_url,
+        database_password=load_token(settings.database_password_file),
         service_token=token,
         reader=HttpReader(settings.reader_url, token),
         source_id=settings.source_id,

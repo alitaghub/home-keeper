@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parents[1]
 # The browser addresses: localhost, which also reaches the stack through an SSH port forward.
 AGENT_URL = f"http://localhost:{os.environ.get('AGENT_PORT', '2026')}"
 CHAT_URL = f"http://localhost:{os.environ.get('CHAT_PORT', '3000')}"
-AGENT_SERVICES = {"postgres", "agent", "chat"}
+AGENT_SERVICES = {"agent", "chat"}
 TIMEOUT = 90
 
 
@@ -43,6 +43,8 @@ def config(file: str, *profile: str) -> dict[str, Any]:
 def check_profile_config(file: str) -> None:
     plain = config(file)
     assert not AGENT_SERVICES & plain["services"].keys(), f"{file}: agent services without profile"
+    # The one Postgres runs in every stack: the keeper keeps its data there too.
+    assert "postgres" in plain["services"], f"{file}: no Postgres without the agent profile"
     services: dict[str, Any] = config(file, "--profile", "agent")["services"]
     assert services.keys() >= AGENT_SERVICES, f"{file}: missing {AGENT_SERVICES - services.keys()}"
     assert not [
@@ -50,8 +52,9 @@ def check_profile_config(file: str) -> None:
     ], f"{file}: Redis in the agent profile"
     agent = services["agent"]
     assert "home-assistant" not in agent.get("networks", {}), f"{file}: agent joins home-assistant"
+    # Only its own database password: no keeper data, secrets or other passwords.
     mounted = {volume.get("source") for volume in agent.get("volumes", [])}
-    assert not mounted & set(plain.get("volumes", {})), f"{file}: agent mounts {mounted}"
+    assert mounted == {"agent-db-password"}, f"{file}: agent mounts {mounted}"
     for name, service in services.items():
         for port in service.get("ports", []):
             assert port.get("host_ip") == "127.0.0.1", f"{file}: non-local port on {name}"

@@ -65,15 +65,15 @@ Open the chat at <http://localhost:3000>. To use Telegram too, see
 [Telegram setup](telegram.md). It uses this same agent with separate
 conversations and explicit monitoring approvals.
 
-The profile adds three containers:
+The profile adds two containers:
 
 | Service    | Port (on `127.0.0.1`) | Job                                                         |
 | ---------- | --------------------- | ----------------------------------------------------------- |
 | `agent`    | 2026 (`AGENT_PORT`)   | [Aegra](https://github.com/ibbybuilds/aegra) serving the agent with the LangGraph API |
 | `chat`     | 3000 (`CHAT_PORT`)    | [Agent Chat UI](https://github.com/langchain-ai/agent-chat-ui), unmodified |
-| `postgres` | none                  | Stores chat threads for Aegra                               |
 
-Threads are stored in Postgres, so a conversation survives a restart.
+Threads are stored in the agent's own database in the shared Postgres, so a
+conversation survives a restart.
 `docker compose --profile agent down` keeps them; add `--volumes` to delete them
 with everything else.
 

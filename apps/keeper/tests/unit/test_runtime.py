@@ -31,7 +31,8 @@ def test_settings_reach_the_app_and_server(monkeypatch: pytest.MonkeyPatch, tmp_
     for name, value in {
         "HOME_KEEPER_TOKEN_FILE": str(tmp_path / "token"),
         "HOME_KEEPER_PORT": "9001",
-        "HOME_KEEPER_DB": str(tmp_path / "home.sqlite"),
+        "HOME_KEEPER_DATABASE_URL": "postgresql://keeper@db.example.test/home",
+        "HOME_KEEPER_DATABASE_PASSWORD_FILE": str(tmp_path / "db-password"),
         "HOME_KEEPER_SOURCE_ID": "home_assistant",
         "HOME_KEEPER_HA_PUBLIC_URL": "http://ha.example.test:8123",
         "HOME_KEEPER_RETENTION_DAYS": "7",
@@ -40,9 +41,12 @@ def test_settings_reach_the_app_and_server(monkeypatch: pytest.MonkeyPatch, tmp_
     }.items():
         monkeypatch.setenv(name, value)
 
+    (tmp_path / "db-password").write_text("db-password-sentinel\n")
+
     runtime.main()
 
-    assert received["db_path"] == tmp_path / "home.sqlite"
+    assert received["database"] == "postgresql://keeper@db.example.test/home"
+    assert received["database_password"] == "db-password-sentinel"
     assert received["source_id"] == "home_assistant"
     assert received["home_assistant_url"] == "http://ha.example.test:8123"
     assert received["retention_days"] == 7
@@ -86,6 +90,8 @@ def test_an_empty_controller_url_turns_control_off(
     monkeypatch.setattr(runtime.uvicorn, "run", fake_run)
     monkeypatch.setenv("HOME_KEEPER_TOKEN_FILE", str(tmp_path / "token"))
     monkeypatch.setenv("HOME_KEEPER_CONTROLLER_URL", "")
+    monkeypatch.setenv("HOME_KEEPER_DATABASE_PASSWORD_FILE", str(tmp_path / "db-password"))
+    (tmp_path / "db-password").write_text("db-password")
 
     runtime.main()
 

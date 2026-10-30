@@ -4,6 +4,7 @@ name: home-keeper
 # Add `--profile agent` to also start the chat agent (compose.agent.yaml), and
 # `--profile control` to let the API switch monitored lights.
 include:
+  - compose.postgres.yaml
   - compose.agent.yaml
 services:
   homeassistant:
@@ -51,11 +52,14 @@ services:
       HOME_KEEPER_TIMEZONE: ${HOME_KEEPER_TIMEZONE:-UTC}
       HOME_KEEPER_CONTROLLER_URL: http://controller:8080
       HOME_KEEPER_READER_URL: http://reader:8080
+      HOME_KEEPER_DATABASE_URL: postgresql://keeper@postgres:5432/keeper
+      HOME_KEEPER_DATABASE_PASSWORD_FILE: /db-password/password
     volumes:
-      - data:/data
       - service-secret:/secrets
-    # `collection` reaches the reader and `control` the controller. Never home-assistant.
-    networks: [dashboard, collection, control]
+      - keeper-db-password:/db-password:ro
+    # `collection` reaches the reader, `control` the controller and `database` Postgres.
+    # Never home-assistant.
+    networks: [dashboard, collection, control, database]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -65,6 +69,9 @@ services:
       interval: 5s
       timeout: 4s
       retries: 10
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
   # Reads Home Assistant for the API: the only keeper container with the owner token.
   # Stateless: no /data, no loop. No published port: only the API reaches it, over `collection`.
   reader:
@@ -130,7 +137,6 @@ networks:
   # Home Assistant, the reader and the controller; the API never joins it.
   home-assistant:
 volumes:
-  data:
   service-secret:
   home-assistant-config:
   ha-token:
