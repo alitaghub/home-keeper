@@ -55,7 +55,7 @@ A request to turn one device on or off. A light can also be turned on at a brigh
 _Avoid_: action, instruction, light command
 
 **Sender**:
-Who asked for a command: the dashboard, the browser chat, or a Telegram user. A label for the record, not authentication.
+Who asked for a command: the dashboard, the browser chat (the agent, approved in the dashboard's agent panel), or a Telegram user. A label for the record, not authentication.
 _Avoid_: actor, user
 
 **Refusal**:

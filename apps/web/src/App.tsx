@@ -1,4 +1,4 @@
-import { House, RefreshCw, TriangleAlert } from "lucide-react";
+import { House, MessageSquare, RefreshCw, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
@@ -8,6 +8,7 @@ import {
   type Schemas,
   unwrap,
 } from "./api/client";
+import { AgentSlot } from "./components/AgentSlot";
 import { Catalog, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { HistoryDialog } from "./components/History";
@@ -20,6 +21,7 @@ import { Card, CardContent, CardHeader } from "./components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { date, time } from "./format";
 import { cn } from "./lib/utils";
+import { useAgentPanel } from "./useAgentPanel";
 import { useCommands, useTimeline } from "./useTimeline";
 import { useRecentUsage } from "./useUsage";
 
@@ -134,6 +136,13 @@ export function App() {
   const sending = useRef(new Set<string>());
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const [historyFor, setHistoryFor] = useState<Schemas["MonitoredEntity"] | null>(null);
+  const [agentOpen, setAgentOpen] = useAgentPanel();
+  const askButton = useRef<HTMLButtonElement>(null);
+  const closeAgent = () => {
+    setAgentOpen(false);
+    // On a phone the sheet covered the page; focus returns to where it was opened.
+    askButton.current?.focus();
+  };
 
   const load = useCallback(async () => {
     const seq = ++order.current.started;
@@ -286,7 +295,12 @@ export function App() {
         const next = TABS.find((entry) => entry.id === value);
         if (next) openTab(next.id);
       }}
-      className="min-h-svh gap-0"
+      // On wide screens the agent panel takes a second column, so the cards reflow beside it.
+      // items-start: the rows grow to the panel's height, the content keeps its own.
+      className={cn(
+        "grid min-h-svh grid-rows-[auto_1fr] items-start gap-0",
+        agentOpen && "lg:grid-cols-[minmax(0,1fr)_auto]",
+      )}
     >
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
@@ -312,6 +326,19 @@ export function App() {
           <Badge id="source" variant="outline" className="ml-auto font-mono tracking-wide">
             {snapshot ? (live ? "HOME ASSISTANT" : "SYNTHETIC DEMO") : "CONNECTING"}
           </Badge>
+          <Button
+            ref={askButton}
+            id="ask"
+            type="button"
+            variant={agentOpen ? "secondary" : "outline"}
+            size="sm"
+            aria-expanded={agentOpen}
+            aria-controls={agentOpen ? "agent-panel" : undefined}
+            onClick={() => (agentOpen ? closeAgent() : setAgentOpen(true))}
+          >
+            <MessageSquare aria-hidden="true" />
+            Ask
+          </Button>
         </div>
       </header>
       <main className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-6">
@@ -548,6 +575,7 @@ export function App() {
           History comes from Home Assistant · Changes show what happened, not why
         </footer>
       </main>
+      {agentOpen && <AgentSlot names={names} onClose={closeAgent} />}
     </Tabs>
   );
 }

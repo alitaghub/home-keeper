@@ -1,0 +1,4 @@
+{
+  "graphs": { "agent": "/fixture/dashboard_graph.py:agent" },
+  "http": { "cors": { "allow_origins": [] } }
+}

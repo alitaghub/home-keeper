@@ -28,7 +28,7 @@ flowchart LR
         reader["Reader"]
         api["Home Keeper API"]
         db[("Postgres<br/>monitored devices, commands,<br/>conversations, bot state")]
-        dashboard["Dashboard<br/>devices and history"]
+        dashboard["Dashboard<br/>devices, history, agent panel"]
         api -- "state and history reads" --> reader
         dashboard <-->|"monitoring and history, through web"| api
         api --> db
@@ -36,16 +36,15 @@ flowchart LR
         api -- "light on/off" --> controller
 
         subgraph optional["Optional agent"]
-            chat["Agent Chat UI<br/>browser chat"]
             agent["Agent<br/>served by Aegra"]
             bot["Telegram worker<br/>allowed users only"]
-            chat <-->|"questions and approvals"| agent
             bot <-->|"questions and approvals"| agent
             agent --> db
             bot --> db
         end
 
         agent <-->|"tools over the public API"| api
+        dashboard <-->|"questions and approvals, through web"| agent
     end
 
     reader -- "read-only state and history" --> ha
@@ -59,12 +58,13 @@ flowchart LR
     classDef externalNode fill:#fff7ed,stroke:#c2410c,color:#7c2d12
     class lights,ha homeNode
     class reader,api,db,dashboard,controller keeperNode
-    class chat,agent,bot agentNode
+    class agent,bot agentNode
     class telegram,model externalNode
 ```
 
 The dashboard works on its own. The optional [agent](docs/agent.md) uses the
-same API to answer questions in Agent Chat UI or [Telegram](docs/telegram.md).
+same API to answer questions in the dashboard's agent panel or in
+[Telegram](docs/telegram.md).
 It asks for approval before changing which devices are monitored, and before it
 switches a light, plug or switch with the `control` profile. Neither the agent nor the reader
 talks to Home Assistant to control a device; only the optional controller does,
@@ -209,9 +209,11 @@ reached. It uses only Home Assistant's history and says how much time is unknown
 docker compose --profile agent up --build --wait
 ```
 
-Open the chat at <http://localhost:3000>. The demo works too: add
-`--profile agent` to its command. [docs/agent.md](docs/agent.md) covers models,
-ports and limits.
+Open the dashboard at <http://localhost:8000> and select **Ask** in the header.
+The agent panel opens beside the current tab: answers stream in, you approve or
+reject each proposed device change there, and **Recent chats** brings back
+earlier conversations. The demo works too: add `--profile agent` to its command.
+[docs/agent.md](docs/agent.md) covers models, ports and limits.
 
 ## Telegram
 
@@ -249,10 +251,9 @@ user IDs, setup, limits, and what goes through Telegram.
 | Path            | What lives there                                                   |
 | --------------- | ------------------------------------------------------------------ |
 | `apps/keeper`   | Python service: FastAPI API, reader, Home Assistant setup, Postgres store, tests |
-| `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI, and the Caddy image that serves it |
+| `apps/web`      | Dashboard and agent panel: React and TypeScript, API types generated from OpenAPI, and the Caddy image that serves it |
 | `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
 | `apps/controller` | Optional light controller: the only code that calls Home Assistant services |
-| `apps/chat`     | Image recipe for the unmodified Agent Chat UI                      |
 | `packages/light-command` | Shared Python code: the fixed light command shapes |
 | `packages/settings` | Shared Python code: reads each service's environment into typed settings |
 | `e2e`           | Compose smoke tests, a fake Home Assistant, Playwright specs       |

@@ -61,32 +61,55 @@ docker compose --profile agent up --build --wait                     # bundled H
 docker compose -f compose.demo.yaml --profile agent up --build --wait  # synthetic demo
 ```
 
-Open the chat at <http://localhost:3000>. To use Telegram too, see
-[Telegram setup](telegram.md). It uses this same agent with separate
-conversations and explicit monitoring approvals.
+Open the dashboard at <http://localhost:8000> and select **Ask** in the header.
+The agent panel opens beside the current tab, so the device cards stay in view
+while you talk about them. On a narrow screen it fills the screen; **Close agent
+panel** returns to the tab you were on. The panel stays open or closed across
+reloads in the same browser. Without the `agent` profile, the panel says the
+agent isn't running and links here; the rest of the dashboard works as before.
 
-The profile adds two containers:
+To use Telegram too, see [Telegram setup](telegram.md). It uses this same agent
+with separate conversations and explicit monitoring approvals.
 
-| Service    | Port (on `127.0.0.1`) | Job                                                         |
-| ---------- | --------------------- | ----------------------------------------------------------- |
-| `agent`    | 2026 (`AGENT_PORT`)   | [Aegra](https://github.com/ibbybuilds/aegra) serving the agent with the LangGraph API |
-| `chat`     | 3000 (`CHAT_PORT`)    | [Agent Chat UI](https://github.com/langchain-ai/agent-chat-ui), unmodified |
+The profile adds one container:
+
+| Service | Port (on `127.0.0.1`) | Job                                                                                    |
+| ------- | --------------------- | -------------------------------------------------------------------------------------- |
+| `agent` | 2026 (`AGENT_PORT`)   | [Aegra](https://github.com/ibbybuilds/aegra) serving the agent with the LangGraph API |
+
+The dashboard reaches Aegra through the web container, at `/agent` on the
+dashboard's own address. Port 2026 is only for
+LangGraph Studio and other local tools.
+
+## Use the agent panel
+
+- Answers stream in as the agent writes them. When the agent uses a tool, the
+  panel shows the call collapsed; open it to see the arguments and the result.
+- When the agent proposes a device change (`monitor`, `stop_monitoring`,
+  `turn_on`, `turn_off`), a card on that call names the device and the action,
+  with **Approve** and **Reject**. The device name comes from the dashboard; a
+  device the dashboard does not know shows its entity id. When one proposal
+  holds several changes, you decide each one; the agent continues once all of
+  them have a decision. A card disappears once you decide.
+- After you approve a command, the agent reports what Home Keeper observed (see
+  [control.md](control.md)). The device card on the page changes on its next
+  refresh, never before Home Keeper sees the change.
+- **Recent chats** lists the chats you started in the dashboard, newest first,
+  titled by their first question. Telegram conversations do not appear.
+  **New chat** starts another; **Delete chat** deletes the open chat from the
+  agent's database. A reload reopens the chat you had open.
 
 Threads are stored in the agent's own database in the shared Postgres, so a
 conversation survives a restart.
 `docker compose --profile agent down` keeps them; add `--volumes` to delete them
 with everything else.
 
-If a port is taken, override it, for example
-`AGENT_PORT=12026 CHAT_PORT=13000 docker compose --profile agent up --build --wait`.
-The chat page in your browser calls Aegra directly on its port. Aegra allows
-only the chat page's origin, `http://localhost:$CHAT_PORT`, and refuses every
-other website. Open the chat at `localhost`, not `127.0.0.1`: the browser treats them as
-different origins, so the page at `127.0.0.1` cannot reach Aegra. `localhost` also
-works through an SSH port forward. The chat image has Aegra's address built in, so changing
-`AGENT_PORT` rebuilds it. Agent Chat UI also ships an `/api` proxy to Aegra; it
-is left without a target, because it would let any website through.
-The container writes its Aegra config at startup from `CHAT_ORIGIN`; `apps/agent/aegra.json` is only for running `aegra dev` locally.
+If port 2026 is taken, override it, for example
+`AGENT_PORT=12026 docker compose --profile agent up --build --wait`. The
+dashboard does not use that port, so the panel keeps working.
+Aegra's CORS allows no browser origin: the panel calls it on the dashboard's own
+origin, and no other website may read its answers. The container writes its Aegra
+config at startup; `apps/agent/aegra.json` is only for running `aegra dev` locally.
 
 ## Set the model
 
@@ -135,15 +158,14 @@ credential never leave. [security.md](security.md) has the full boundary.
 
 ## Limits
 
-- Neither Aegra nor the chat page has authentication. Anyone who can reach
-  port 2026 can read and write every thread and start the agent. With the
-  `control` profile, they can also propose and approve their own device
+- Aegra has no authentication. Anyone who can reach port 2026, or `/agent` on
+  the dashboard's address, can read and write every thread and start the agent.
+  With the `control` profile, they can also propose and approve their own device
   commands. Both bind to `127.0.0.1` for that reason. Do not publish them on
   your network.
-- CORS only stops other websites from reading Aegra's answers. A page you visit
-  can still send simple cross-site requests to it, and Aegra does not check the
-  `Host` header, so DNS rebinding is not blocked.
-- Known Aegra issue
-  [#468](https://github.com/ibbybuilds/aegra/issues/468): when you switch
-  threads, the chat can show an approval prompt that belongs to another thread.
-  Check the proposed device before you approve.
+- The web container refuses `/agent` requests that browsers mark as sent by
+  another website. Port 2026 has no such check: a page you visit can still send
+  simple cross-site requests to it. Aegra does not check the `Host` header, so
+  DNS rebinding is not blocked on either.
+- There is no separate chat page. Threads made in the earlier Agent Chat UI do
+  not appear in Recent chats.

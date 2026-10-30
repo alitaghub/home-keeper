@@ -17,7 +17,6 @@ PROJECT = "keeper-telegram-proof"
 FAKE_PORT = 18312
 HOME_KEEPER_PORT = 18003
 AGENT_PORT = 18227
-CHAT_PORT = 18311
 FAKE_URL = f"http://127.0.0.1:{FAKE_PORT}"
 HOME_KEEPER_URL = f"http://127.0.0.1:{HOME_KEEPER_PORT}"
 AGENT_URL = f"http://127.0.0.1:{AGENT_PORT}"
@@ -283,7 +282,6 @@ def main() -> None:
         env = os.environ | {
             "HOME_KEEPER_PORT": str(HOME_KEEPER_PORT),
             "AGENT_PORT": str(AGENT_PORT),
-            "CHAT_PORT": str(CHAT_PORT),
         }
         command = [
             "docker",

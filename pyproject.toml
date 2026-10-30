@@ -30,8 +30,8 @@ home-keeper-settings = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
-# The web app and the chat image are not Python projects.
-exclude = ["apps/web", "apps/chat"]
+# The web app is not a Python project.
+exclude = ["apps/web"]
 
 [tool.pytest.ini_options]
 testpaths = [

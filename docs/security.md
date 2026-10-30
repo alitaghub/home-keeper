@@ -51,7 +51,7 @@
 - The API forwards a command only for a monitored light with a known, available
   state that differs from the request, and only while the controller's
   heartbeat is fresh. It records every forwarded command. A command's `sender`
-  (dashboard, browser chat, or a Telegram ID and display name) is a label the
+  (dashboard, browser chat for the dashboard's agent panel, or a Telegram ID and display name) is a label the
   caller reports for the record. It is not authentication: anything that can
   call the API can send a command with any sender. Sender names render as text.
 - The demo reader uses internal Docker networks only. The live reader also
@@ -74,19 +74,22 @@
   calls only the public `/api/*` routes, through the `api` host name, and sends
   the same mutation header as the dashboard. Its only writes are discovery
   refresh, selection changes and light commands. A selection change or a light
-  command waits for your approval in the chat. A light command goes through the
+  command waits for your approval in the agent panel or Telegram. A light command goes through the
   API's own checks and the controller, like one from the dashboard. It runs
   read-only, without Linux capabilities.
-- Aegra, which serves the agent, and the chat page publish only on `127.0.0.1`.
-  The chat page calls Aegra directly, and Aegra's CORS allows only the chat
-  origin built from `CHAT_PORT`. Agent Chat UI's own `/api` proxy has no target,
-  because it allows every origin. Aegra runs without authentication
-  (`AUTH_TYPE=noop`): anyone who can reach its port can read and write every
-  chat thread and start the agent. With the `control` profile, they can also
-  propose and approve their own light commands, because the approval prompt
-  is answered on the same unauthenticated port. CORS does not stop simple cross-site
-  requests from a page you visit, and Aegra has no `Host` check, so DNS
-  rebinding is not mitigated.
+- Aegra, which serves the agent, publishes only on `127.0.0.1`, for LangGraph
+  Studio. The dashboard's agent panel reaches it through `web` at `/agent`, on
+  the dashboard's own origin, so the page's `connect-src 'self'` policy still
+  holds. Aegra's CORS allows no origin: no other website can read its answers.
+  `web` refuses `/agent` requests that the browser marks as cross-site or
+  same-site (`Sec-Fetch-Site`), because Aegra reads `text/plain` bodies as JSON
+  and would otherwise accept a form post from a page you visit. Aegra runs
+  without authentication (`AUTH_TYPE=noop`): anyone who can reach its port or
+  the dashboard's `/agent` route can read and write every chat thread and start
+  the agent. With the `control` profile, they can also propose and approve their
+  own light commands, because the approval is answered on the same
+  unauthenticated API. Port 2026 has no cross-site check, and neither route
+  checks `Host`, so DNS rebinding is not mitigated.
 - One Postgres serves the API, the agent and the Telegram worker. It publishes no
   port, and only those three join its internal `database` network. `db-setup`
   gives each a login role, a random password in a volume only it and that
@@ -124,5 +127,5 @@ Its small persistent state stores Telegram progress, conversation references,
 and pending approvals; Aegra keeps the actual conversation history.
 
 The existing local agent API remains unauthenticated and loopback-only. Telegram
-allowlisting does not add authentication to browser chat or the agent port.
+allowlisting does not add authentication to the agent panel or the agent port.
 See [Telegram setup and limits](telegram.md).

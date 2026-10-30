@@ -27,8 +27,8 @@ ROOT = Path(__file__).resolve().parent.parent
 INTERPOLATION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
 EXAMPLE_LINE = re.compile(r"^#?\s*([A-Z][A-Z0-9_]*)=", re.MULTILINE)
 
-# The settings class each of our services reads. Home Assistant, Postgres, db-setup and the
-# chat UI are third-party images.
+# The settings class each of our services reads. Home Assistant, Postgres and db-setup are
+# third-party images; web is Caddy with a fixed config.
 SERVICE_SETTINGS: Mapping[str, type[BaseSettings]] = {
     "api": ApiSettings,
     "reader": ReaderSettings,

@@ -1,8 +1,5 @@
-# The opt-in agent: Aegra serving the agent graph, and Agent Chat UI. Aegra keeps its threads
-# in its own database of the shared Postgres (compose.postgres.yaml).
-# compose.yaml and compose.demo.yaml include this file; start it with
-#   docker compose --profile agent up --build --wait
-# Telegram is a separate opt-in profile; enable it together with `agent`.
+# The opt-in agent (`--profile agent`, see docs/agent.md): Aegra serving the agent graph,
+# reached by the dashboard through web's /agent route. Telegram is its own profile.
 services:
   agent:
     profiles: [agent]
@@ -11,7 +8,7 @@ services:
       dockerfile: apps/agent/Dockerfile
     # Give up after three crashes, so a missing model key does not restart forever.
     restart: on-failure:3
-    # The browser calls Aegra here directly from the chat page; LangGraph Studio uses it too.
+    # For LangGraph Studio only; the browser reaches Aegra through the web container.
     ports:
       - "127.0.0.1:${AGENT_PORT:-2026}:2026"
     environment:
@@ -21,11 +18,10 @@ services:
       POSTGRES_DB: agent
       DATABASE_PASSWORD_FILE: /db-password/password
       REDIS_BROKER_ENABLED: "false"
-      # No auth: acceptable only because the port binds to 127.0.0.1.
+      # No auth: acceptable only because Aegra is reachable on 127.0.0.1 alone, on this port
+      # and through the dashboard's /agent route.
       AUTH_TYPE: noop
       HOME_KEEPER_URL: http://api:${HOME_KEEPER_PORT:-8000}
-      # The only browser origin Aegra allows (CORS): the chat page.
-      CHAT_ORIGIN: http://localhost:${CHAT_PORT:-3000}
       # Passed through from the shell or .env; left unset when missing, so the
       # agent keeps its default model and names any missing variable at startup.
       AGENT_MODEL:
@@ -35,7 +31,7 @@ services:
       OPENAI_API_KEY:
     volumes:
       - agent-db-password:/db-password:ro
-    # `dashboard` reaches the keeper API, `database` reaches Postgres, and
+    # `dashboard` reaches the keeper API and lets `web` reach Aegra, `database` reaches Postgres, and
     # `default` is egress to the model provider. Never the home-assistant network.
     networks: [dashboard, database, default]
     read_only: true
@@ -51,32 +47,6 @@ services:
       db-setup:
         condition: service_completed_successfully
       api:
-        condition: service_healthy
-  chat:
-    profiles: [agent]
-    build:
-      context: apps/chat
-      args:
-        # The browser calls Aegra directly, so this is its published loopback URL.
-        # It is baked into the browser bundle.
-        NEXT_PUBLIC_API_URL: http://localhost:${AGENT_PORT:-2026}
-        NEXT_PUBLIC_ASSISTANT_ID: agent
-    restart: unless-stopped
-    # No LANGGRAPH_API_URL: upstream's /api passthrough answers every origin with
-    # `Access-Control-Allow-Origin: *`, so it stays without a target and cannot reach Aegra.
-    ports:
-      - "127.0.0.1:${CHAT_PORT:-3000}:3000"
-    read_only: true
-    tmpfs: [/tmp, "/app/.next/cache:uid=1000,gid=1000"]
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
-      interval: 5s
-      timeout: 4s
-      retries: 10
-    depends_on:
-      agent:
         condition: service_healthy
   telegram:
     profiles: [telegram]

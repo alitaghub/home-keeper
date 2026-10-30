@@ -1,4 +1,5 @@
-# The dashboard's front door: serves the web app and forwards /api to the keeper.
+# The dashboard's front door: serves the web app, forwards /api to the keeper and /agent to
+# the agent (compose.agent.yaml), when its profile runs.
 # compose.yaml and compose.demo.yaml include this file. It is the only service the
 # browser reaches; the API publishes no port of its own.
 services:

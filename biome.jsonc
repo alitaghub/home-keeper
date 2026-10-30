@@ -14,6 +14,22 @@
   "linter": { "rules": { "preset": "recommended" } },
   "overrides": [
     {
+      // Vendored assistant-ui registry components, kept close to upstream so updates diff cleanly.
+      "includes": ["apps/web/src/components/assistant-ui/**"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            // The load-earlier slot is a `display: contents` wrapper that only tracks focus.
+            "noStaticElementInteractions": "off",
+            // The streaming indicator is a labelled span, as upstream ships it.
+            "useAriaPropsSupportedByRole": "off"
+          }
+        }
+      },
+      // Upstream orders imports its own way.
+      "assist": { "actions": { "source": { "organizeImports": "off" } } }
+    },
+    {
       // Vendored shadcn/ui components, kept as upstream ships them so updates diff cleanly.
       "includes": ["apps/web/src/components/ui/**"],
       "linter": {
