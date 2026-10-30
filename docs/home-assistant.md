@@ -15,17 +15,18 @@ From the repository root:
 docker compose up --build --wait
 ```
 
-This starts four services:
+This starts five services:
 
 - `homeassistant`: Home Assistant `2026.10.1`, published on
   <http://127.0.0.1:8123> (set `HA_PORT` to change the port).
 - `ha-setup`: a one-shot container that sets up Home Assistant, then exits.
-- `api`: the Home Keeper API and dashboard, published on <http://127.0.0.1:8000>
-  (set `HOME_KEEPER_PORT` to change the port).
+- `web`: the dashboard, published on <http://127.0.0.1:8000> (set
+  `HOME_KEEPER_PORT` to change the port). It forwards `/api` to the API.
+- `api`: the Home Keeper API. It publishes no port.
 - `reader`: reads devices, their states and their history from Home Assistant
   for the API. It publishes no port.
 
-With `--profile control`, a fifth service, `controller`, switches monitored
+With `--profile control`, a sixth service, `controller`, switches monitored
 lights, plugs and switches. See [Switch lights](#switch-lights).
 
 ### What setup does

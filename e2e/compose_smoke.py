@@ -11,9 +11,16 @@ import subprocess
 import time
 from collections.abc import Callable
 from datetime import datetime
+from email.message import Message
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+# Only the dashboard's own scripts and styles run, and no other site can frame it.
+DASHBOARD_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; "
+    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+)
 
 EXPECTED = {
     "light.hue_desk",
@@ -36,12 +43,14 @@ def main() -> None:
         parser.error("--timeout must be positive")
     base = args.base_url.rstrip("/")
 
-    def request(path: str, body: dict[str, object] | None = None) -> str:
+    def fetch(
+        path: str, body: dict[str, object] | None = None, origin: str = base
+    ) -> tuple[str, Message]:
         data = None if body is None else json.dumps(body).encode()
         headers = (
             {}
             if body is None
-            else {"Content-Type": "application/json", "X-Home-Keeper": "1", "Origin": base}
+            else {"Content-Type": "application/json", "X-Home-Keeper": "1", "Origin": origin}
         )
         with urlopen(
             Request(
@@ -49,7 +58,10 @@ def main() -> None:
             ),
             timeout=3,
         ) as response:
-            return response.read().decode()
+            return response.read().decode(), response.headers
+
+    def request(path: str, body: dict[str, object] | None = None) -> str:
+        return fetch(path, body)[0]
 
     def get(path: str) -> Any:
         return json.loads(request(path))
@@ -92,7 +104,9 @@ def main() -> None:
             for port in service.get("ports", []):
                 assert port.get("host_ip") == "127.0.0.1", f"Non-local published port on {name}"
                 published.append(name)
-        assert published == ["api"], f"Unexpected published services: {published}"
+        # The web container is the only browser entry point; the API is internal.
+        assert published == ["web"], f"Unexpected published services: {published}"
+        assert not config["services"]["api"].get("ports"), "API port published"
         assert not config["services"]["reader"].get("ports"), "Reader port published"
         assert "controller" in config["services"], "Control profile adds no controller"
 
@@ -106,11 +120,26 @@ def main() -> None:
         )
 
     wait_until("five-entity catalog and healthy reader", ready)
-    page = request("/")
+    page, page_headers = fetch("/")
     assert "<html" in page.lower(), "Dashboard HTML not served"
     script = re.search(r'<script[^>]+src="(/assets/[^"]+\.js)"', page)
     assert script, "Dashboard script not referenced"
-    assert "/api/" in request(script.group(1)), "Dashboard JavaScript not served"
+    bundle, bundle_headers = fetch(script.group(1))
+    assert "/api/" in bundle, "Dashboard JavaScript not served"
+    for name, headers in (("HTML", page_headers), ("JavaScript", bundle_headers)):
+        assert headers["Content-Security-Policy"] == DASHBOARD_CSP, f"Dashboard {name} CSP"
+        assert headers["X-Content-Type-Options"] == "nosniff", f"Dashboard {name} nosniff"
+        assert headers["Cache-Control"] == "no-store", f"Dashboard {name} cached"
+    if not args.skip_bindings:
+        # `web` serves the dashboard, so the API image must not carry a copy.
+        subprocess.run(
+            [
+                *("docker", "compose", "-f", "compose.demo.yaml", "exec", "-T", "api"),
+                *("python", "-c", "import pathlib; assert not pathlib.Path('web').exists()"),
+            ],
+            check=True,
+            timeout=30,
+        )
     entity = "light.hue_desk"
     initially_selected = entity in get("/api/selection")["entity_ids"]
     try:
@@ -135,13 +164,29 @@ def main() -> None:
         offset = datetime.fromisoformat(state["last_changed"]).utcoffset()
         assert offset is not None
         assert offset.total_seconds() == 0
+        try:
+            fetch(f"/api/selection/{entity}", {"selected": False}, origin="http://evil.example")
+            refused = None
+        except HTTPError as error:
+            refused = error.code
+        assert refused == 403, f"Foreign-origin write through the dashboard answered {refused}"
+        assert entity in get("/api/selection")["entity_ids"], "Foreign-origin write applied"
+        # `web` must pass the browser's Host through: the API refuses unknown hosts,
+        # which stops DNS rebinding.
+        try:
+            urlopen(Request(base + "/api/selection", headers={"Host": "evil.example"}), timeout=3)
+            foreign_host = None
+        except HTTPError as error:
+            foreign_host = error.code
+        assert foreign_host == 400, f"Foreign Host through the dashboard answered {foreign_host}"
         json.loads(request(f"/api/selection/{entity}", {"selected": False}))
         assert entity not in {entry["id"] for entry in get("/api/monitored")["entities"]}
     finally:
         request(f"/api/selection/{entity}", {"selected": initially_selected})
     print(
-        "Compose smoke passed: local bindings, healthy reader, five discoveries, "
-        "dashboard assets, the selected light's current state and its removal"
+        "Compose smoke passed: only the web container published, healthy reader, five "
+        "discoveries, dashboard assets with security headers, no dashboard in the API "
+        "image, foreign-origin write refused, the selected light's current state and its removal"
     )
 
 

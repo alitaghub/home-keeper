@@ -1,0 +1,24 @@
+{
+	admin off
+	auto_https off
+}
+
+# A fixed port inside the container; Compose publishes it on HOME_KEEPER_PORT.
+:8080 {
+	# The browser's Host and Origin pass through unchanged: the keeper checks both.
+	handle /api/* {
+		reverse_proxy api:{$HOME_KEEPER_PORT}
+	}
+
+	handle {
+		# Only the dashboard's own scripts and styles may run, and it cannot be framed.
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+			X-Content-Type-Options nosniff
+			Cache-Control no-store
+			-Server
+		}
+		root * /srv
+		file_server
+	}
+}
