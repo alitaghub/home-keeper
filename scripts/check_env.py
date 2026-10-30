@@ -18,7 +18,7 @@ import yaml
 from pydantic import BaseModel, JsonValue, TypeAdapter
 from pydantic_settings import BaseSettings
 
-from home_keeper.settings import ApiSettings, CollectorSettings, SetupSettings
+from home_keeper.settings import ApiSettings, ReaderSettings, SetupSettings
 from home_keeper_agent.settings import AgentSettings
 from home_keeper_agent.telegram import Settings as TelegramSettings
 from home_keeper_controller.settings import ControllerSettings
@@ -27,11 +27,11 @@ ROOT = Path(__file__).resolve().parent.parent
 INTERPOLATION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
 EXAMPLE_LINE = re.compile(r"^#?\s*([A-Z][A-Z0-9_]*)=", re.MULTILINE)
 
-# The settings class each of our services reads. The demo collector reads a subset of
-# CollectorSettings. Home Assistant, Postgres and the chat UI are third-party images.
+# The settings class each of our services reads. Home Assistant, Postgres and the chat UI
+# are third-party images.
 SERVICE_SETTINGS: Mapping[str, type[BaseSettings]] = {
     "api": ApiSettings,
-    "collector": CollectorSettings,
+    "reader": ReaderSettings,
     "ha-setup": SetupSettings,
     "controller": ControllerSettings,
     "agent": AgentSettings,

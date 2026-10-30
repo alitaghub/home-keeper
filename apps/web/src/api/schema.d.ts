@@ -4,23 +4,6 @@
  */
 
 export interface paths {
-    "/api/baselines": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Baselines */
-        get: operations["baselines_api_baselines_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/catalog": {
         parameters: {
             query?: never;
@@ -72,23 +55,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/coverage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Coverage */
-        get: operations["coverage_api_coverage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/devices/{entity_id}/command": {
         parameters: {
             query?: never;
@@ -106,23 +72,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/discovery/refresh": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Refresh Discovery */
-        post: operations["refresh_discovery_api_discovery_refresh_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/events": {
         parameters: {
             query?: never;
@@ -130,7 +79,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Events */
+        /**
+         * Events
+         * @description Changes Home Assistant recorded for monitored devices in `[start, end)`, newest
+         *     first. A cursor keeps the window of the first page and overrides `start` and `end`.
+         */
         get: operations["events_api_events_get"];
         put?: never;
         post?: never;
@@ -215,7 +168,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Usage */
+        /**
+         * Usage
+         * @description On-time, switch-ons and brightness of selected devices in `[start, end)`, from
+         *     Home Assistant's history.
+         */
         get: operations["usage_api_usage_get"];
         put?: never;
         post?: never;
@@ -229,13 +186,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** BaselinesPage */
-        BaselinesPage: {
-            /** Baselines */
-            baselines: (components["schemas"]["LightBaseline"] | components["schemas"]["SwitchBaseline"])[];
-            /** Next Cursor */
-            next_cursor: number | null;
-        };
         /** BrowserChatSender */
         BrowserChatSender: {
             /**
@@ -248,20 +198,40 @@ export interface components {
         CatalogResponse: {
             /** Entities */
             entities: components["schemas"]["Entity"][];
-            /**
-             * Freshness
-             * @enum {string}
-             */
-            freshness: "pending" | "fresh" | "stale";
             /** Home Assistant Url */
             home_assistant_url: string | null;
-            /** Refreshed At */
-            refreshed_at: string | null;
             /**
              * Source Id
              * @enum {string}
              */
             source_id: "demo" | "home_assistant";
+        };
+        /**
+         * ChangeRecord
+         * @description A change Home Assistant recorded for a monitored device: two consecutive history rows
+         *     whose state, availability, brightness or color differ.
+         */
+        ChangeRecord: {
+            /**
+             * Device Kind
+             * @enum {string}
+             */
+            device_kind: "light" | "switch";
+            /** Entity Id */
+            entity_id: string;
+            /** Id */
+            id: string;
+            /** New */
+            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"];
+            /** Old */
+            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"];
+            /** Source Entity Id */
+            source_entity_id: string;
+            /**
+             * Time
+             * Format: date-time
+             */
+            time: string;
         };
         /** CommandRefusal */
         CommandRefusal: {
@@ -309,61 +279,6 @@ export interface components {
              */
             state: "on" | "off";
         };
-        /** CoverageGap */
-        CoverageGap: {
-            /**
-             * Detected At
-             * Format: date-time
-             */
-            detected_at: string;
-            /** Entity Ids */
-            entity_ids: string[];
-            /** Id */
-            id: string;
-            /** Last Confirmed At */
-            last_confirmed_at: string | null;
-            /**
-             * Reason
-             * @enum {string}
-             */
-            reason: "connection" | "ingestion" | "authentication" | "timeout" | "restart" | "overflow" | "reconciliation" | "heartbeat" | "selection" | "invalid_data" | "configuration" | "tls" | "missing";
-            /** Recovered At */
-            recovered_at: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /** Uncertain Start */
-            uncertain_start: boolean;
-        };
-        /** CoverageReport */
-        CoverageReport: {
-            /**
-             * Continuous Coverage
-             * @constant
-             */
-            continuous_coverage: false;
-            /** Gaps */
-            gaps: components["schemas"]["CoverageGap"][];
-            /** Last Confirmed At */
-            last_confirmed_at: string | null;
-            /**
-             * Outside Recorded Windows
-             * @constant
-             */
-            outside_recorded_windows: "unknown";
-            /**
-             * Retained Since
-             * Format: date-time
-             */
-            retained_since: string;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "interrupted" | "collecting" | "unknown";
-        };
         /** DashboardSender */
         DashboardSender: {
             /**
@@ -380,11 +295,6 @@ export interface components {
             on_seconds: number;
             /** Unknown Seconds */
             unknown_seconds: number;
-        };
-        /** DiscoveryRefresh */
-        DiscoveryRefresh: {
-            /** Refresh Revision */
-            refresh_revision: number;
         };
         /** Entity */
         Entity: {
@@ -403,198 +313,40 @@ export interface components {
             /** Supported */
             supported: boolean;
         };
-        /** EventRecord */
-        EventRecord: {
-            /**
-             * Device Kind
-             * @enum {string}
-             */
-            device_kind: "light" | "switch";
-            /** Entity Id */
-            entity_id: string;
-            /**
-             * Event Time
-             * Format: date-time
-             */
-            event_time: string;
-            /** Id */
-            id: string;
-            /** New */
-            new: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
-            /** Old */
-            old: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Selection Revision */
-            selection_revision: number;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-        };
         /** EventsPage */
         EventsPage: {
-            /**
-             * Coverage
-             * @constant
-             */
-            coverage: "unknown";
             /** Events */
-            events: components["schemas"]["EventRecord"][];
+            events: components["schemas"]["ChangeRecord"][];
             /** Next Cursor */
             next_cursor: string | null;
-            /**
-             * Retained Since
-             * Format: date-time
-             */
-            retained_since: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** HealthPending */
-        HealthPending: {
+        /**
+         * HealthStatus
+         * @description Whether Home Assistant answers through the reader, checked at request time.
+         */
+        HealthStatus: {
             /**
-             * Source Id
-             * @enum {string}
+             * Checked At
+             * Format: date-time
              */
-            source_id: "demo" | "home_assistant";
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            status: "pending";
-        };
-        /** HealthReport */
-        HealthReport: {
+            checked_at: string;
             /** Error */
-            error: ("authentication" | "connection" | "tls" | "timeout" | "invalid_data" | "missing" | "discovery" | "configuration") | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
+            error: ("authentication" | "connection" | "tls" | "timeout" | "invalid_data" | "missing" | "discovery" | "configuration") | "reader_unreachable" | null;
             /**
              * Source Id
              * @enum {string}
              */
             source_id: "demo" | "home_assistant";
             /**
-             * @description discriminator enum property added by openapi-typescript
+             * Status
              * @enum {string}
              */
-            status: "failed" | "healthy" | "stale";
-        };
-        /** LightBaseline */
-        LightBaseline: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Brightness */
-            brightness?: number | null;
-            /** Collection Started At */
-            collection_started_at: string | null;
-            /** Color Mode */
-            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
-            /** Color Temp Kelvin */
-            color_temp_kelvin?: number | null;
-            /** Coverage Gap Ids */
-            coverage_gap_ids?: string[] | null;
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "light";
-            /** Entity Id */
-            entity_id: string;
-            /** Hs Color */
-            hs_color?: [
-                number,
-                number
-            ] | null;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "baseline" | "reconciliation" | "recovery";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Rgb Color */
-            rgb_color?: [
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbw Color */
-            rgbw_color?: [
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbww Color */
-            rgbww_color?: [
-                number,
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Transition Time */
-            transition_time?: "unknown" | null;
-            /** Xy Color */
-            xy_color?: [
-                number,
-                number
-            ] | null;
+            status: "healthy" | "unreachable";
         };
         /** LightCommandRecord */
         LightCommandRecord: {
@@ -607,8 +359,6 @@ export interface components {
             device_kind: "light";
             /** Entity Id */
             entity_id: string;
-            /** Event Id */
-            event_id: string | null;
             /** Id */
             id: string;
             /**
@@ -623,98 +373,6 @@ export interface components {
              * Format: date-time
              */
             sent_at: string;
-        };
-        /** LightEventReading */
-        LightEventReading: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Brightness */
-            brightness?: number | null;
-            /** Color Mode */
-            color_mode?: ("unknown" | "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white") | null;
-            /** Color Temp Kelvin */
-            color_temp_kelvin?: number | null;
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "light";
-            /** Entity Id */
-            entity_id: string;
-            /**
-             * Event Time
-             * Format: date-time
-             */
-            event_time: string;
-            /** Hs Color */
-            hs_color?: [
-                number,
-                number
-            ] | null;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "event";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Rgb Color */
-            rgb_color?: [
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbw Color */
-            rgbw_color?: [
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Rgbww Color */
-            rgbww_color?: [
-                number,
-                number,
-                number,
-                number,
-                number
-            ] | null;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Xy Color */
-            xy_color?: [
-                number,
-                number
-            ] | null;
         };
         /** LightOff */
         LightOff: {
@@ -852,102 +510,39 @@ export interface components {
         };
         /** MonitoredEntity */
         MonitoredEntity: {
-            /** Baseline */
-            baseline: ((components["schemas"]["LightBaseline"] | components["schemas"]["SwitchBaseline"]) | (components["schemas"]["LightEventReading"] | components["schemas"]["SwitchEventReading"])) | null;
-            /** Confirmed At */
-            confirmed_at: string | null;
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
             device_kind?: ("light" | "switch") | null;
             /** Device Name */
             device_name?: string | null;
-            /**
-             * Freshness
-             * @enum {string}
-             */
-            freshness: "pending" | "fresh" | "stale";
             /** Id */
             id: string;
+            /** Missing */
+            missing: boolean;
             /** Name */
             name: string;
             /** Reason */
             reason?: string | null;
+            /** Source Entity Id */
+            source_entity_id: string | null;
+            /** State */
+            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
             /** Supported */
             supported: boolean;
+        };
+        /**
+         * Selection
+         * @description The devices the user monitors.
+         */
+        Selection: {
+            /** Entity Ids */
+            entity_ids: string[];
         };
         /** SelectionChange */
         SelectionChange: {
             /** Selected */
             selected: boolean;
-        };
-        /** SelectionSnapshot */
-        SelectionSnapshot: {
-            /** Entity Ids */
-            entity_ids: string[];
-            /**
-             * Refresh Revision
-             * @default 0
-             */
-            refresh_revision: number;
-            /** Revision */
-            revision: number;
-        };
-        /** SwitchBaseline */
-        SwitchBaseline: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /** Collection Started At */
-            collection_started_at: string | null;
-            /** Coverage Gap Ids */
-            coverage_gap_ids?: string[] | null;
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "switch";
-            /** Entity Id */
-            entity_id: string;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "baseline" | "reconciliation" | "recovery";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
-            /** Transition Time */
-            transition_time?: "unknown" | null;
         };
         /** SwitchCommandRecord */
         SwitchCommandRecord: {
@@ -960,8 +555,6 @@ export interface components {
             device_kind: "switch";
             /** Entity Id */
             entity_id: string;
-            /** Event Id */
-            event_id: string | null;
             /** Id */
             id: string;
             /**
@@ -976,61 +569,6 @@ export interface components {
              * Format: date-time
              */
             sent_at: string;
-        };
-        /** SwitchEventReading */
-        SwitchEventReading: {
-            /**
-             * Availability
-             * @enum {string}
-             */
-            availability: "available" | "unavailable" | "unknown";
-            /**
-             * Device Kind
-             * @constant
-             */
-            device_kind: "switch";
-            /** Entity Id */
-            entity_id: string;
-            /**
-             * Event Time
-             * Format: date-time
-             */
-            event_time: string;
-            /** Id */
-            id: string;
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "event";
-            /** Last Changed */
-            last_changed?: string | null;
-            /** Last Reported */
-            last_reported?: string | null;
-            /** Last Updated */
-            last_updated?: string | null;
-            /**
-             * Persisted At
-             * Format: date-time
-             */
-            persisted_at: string;
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
-            /** Source Entity Id */
-            source_entity_id: string | null;
-            /**
-             * Source Id
-             * @enum {string}
-             */
-            source_id: "demo" | "home_assistant";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "on" | "off" | "unavailable" | "unknown";
         };
         /** SwitchOff */
         SwitchOff: {
@@ -1149,12 +687,22 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "gap" | "no_evidence" | "unavailable";
+            reason: "no_history" | "unavailable";
             /**
              * Start
              * Format: date-time
              */
             start: string;
+        };
+        /**
+         * Unreachable
+         * @description The 503 body of a route that needs Home Assistant while it cannot be read.
+         */
+        Unreachable: {
+            /** Error */
+            error: ("authentication" | "connection" | "tls" | "timeout" | "invalid_data" | "missing" | "discovery" | "configuration") | "reader_unreachable";
+            /** Message */
+            message: string;
         };
         /** UsageReport */
         UsageReport: {
@@ -1165,11 +713,6 @@ export interface components {
              * Format: date-time
              */
             end: string;
-            /**
-             * Retained Since
-             * Format: date-time
-             */
-            retained_since: string;
             /**
              * Start
              * Format: date-time
@@ -1200,39 +743,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    baselines_api_baselines_get: {
-        parameters: {
-            query: {
-                entity_id: string;
-                limit?: number;
-                cursor?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BaselinesPage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     catalog_api_catalog_get: {
         parameters: {
             query?: never;
@@ -1249,6 +759,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CatalogResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };
@@ -1307,37 +826,6 @@ export interface operations {
             };
         };
     };
-    coverage_api_coverage_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CoverageReport"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     command_device_api_devices__entity_id__command_post: {
         parameters: {
             query?: never;
@@ -1382,30 +870,9 @@ export interface operations {
             };
         };
     };
-    refresh_discovery_api_discovery_refresh_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DiscoveryRefresh"];
-                };
-            };
-        };
-    };
     events_api_events_get: {
         parameters: {
             query?: {
-                source_id?: ("demo" | "home_assistant") | null;
                 entity_id?: string | null;
                 start?: string | null;
                 end?: string | null;
@@ -1436,6 +903,15 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
+                };
+            };
         };
     };
     health_api_health_get: {
@@ -1453,7 +929,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HealthPending"] | components["schemas"]["HealthReport"];
+                    "application/json": components["schemas"]["HealthStatus"];
                 };
             };
         };
@@ -1493,7 +969,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SelectionSnapshot"];
+                    "application/json": components["schemas"]["Selection"];
                 };
             };
         };
@@ -1519,7 +995,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SelectionSnapshot"];
+                    "application/json": components["schemas"]["Selection"];
                 };
             };
             /** @description Validation Error */
@@ -1529,6 +1005,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };
@@ -1562,6 +1047,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };

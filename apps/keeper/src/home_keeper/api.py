@@ -1,67 +1,70 @@
-import json
 import secrets
-import sqlite3
 import time
 from collections.abc import Callable
 from datetime import MAXYEAR, UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import TypeAdapter
 from starlette.middleware.base import RequestResponseEndpoint
 
+from home_keeper.changes import BEFORE_START, read_cursor, read_page
 from home_keeper.commands import Commands, Refusal
 from home_keeper.control import Controller
 from home_keeper.models import (
-    BaselinesPage,
-    Catalog,
     CatalogResponse,
-    ChangeEvent,
     CommandRecord,
     CommandRefused,
     CommandRequest,
     CommandsPage,
     ControlHeartbeat,
     ControlStatus,
-    Coverage,
-    CoverageGap,
-    CoverageReport,
-    CurrentReading,
     DeviceKind,
-    DeviceObservation,
-    DiscoveryRefresh,
-    EventRecord,
     EventsPage,
-    Health,
-    HealthPending,
-    HealthReport,
     HealthStatus,
     Identity,
     MonitoredEntities,
+    ReaderError,
+    Selection,
     SelectionChange,
-    SelectionSnapshot,
+    Unreachable,
     UsageReport,
     to_utc,
 )
 from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
-from home_keeper.recorder import Recorder, Rejected, update_current
-from home_keeper.store import Store, baseline_record, current_reading
+from home_keeper.reader import Reader, ReaderUnavailable
+from home_keeper.store import Store
 from home_keeper.usage import device_usage
 
 UTC_ZONE = ZoneInfo("UTC")
+# History's window when a request names no start.
+HISTORY_WINDOW = timedelta(days=30)
+EARLIEST_START = datetime.min.replace(tzinfo=UTC) + BEFORE_START
+
+# Fixed text for each reason Home Assistant cannot be read: never upstream text, URLs or tokens.
+UNREACHABLE_MESSAGES: dict[ReaderError, str] = {
+    "authentication": "Home Assistant rejected the reader's token.",
+    "connection": "Home Assistant does not answer. Check its address and the network.",
+    "tls": "The certificate of Home Assistant could not be verified.",
+    "timeout": "Home Assistant did not answer in time.",
+    "invalid_data": "Home Assistant sent data Home Keeper cannot read.",
+    "missing": "Home Assistant no longer has a device Home Keeper asked for.",
+    "discovery": "Home Assistant refused to list its devices.",
+    "configuration": "The reader's Home Assistant address or token file is invalid.",
+    "reader_unreachable": "The reader service does not answer.",
+}
 
 
 def create_app(
     db_path: Path,
     service_token: str,
     *,
+    reader: Reader,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
-    reconciliation_seconds: int = 60,
     source_id: str = "demo",
     home_assistant_url: str | None = None,
     retention_days: int = 30,
@@ -79,8 +82,8 @@ def create_app(
         or retention_days < 1
     ):
         raise ValueError("Retention must be a positive number of days")
-    if reconciliation_seconds < 1 or not service_token:
-        raise ValueError("Positive reconciliation interval and service credential required")
+    if not service_token:
+        raise ValueError("Service credential required")
     if source_id not in ("demo", "home_assistant"):
         raise ValueError("Unsupported collection source")
     store = Store(Path(db_path))
@@ -88,44 +91,18 @@ def create_app(
         existing = db.execute("SELECT value FROM metadata WHERE key='source_id'").fetchone()
         if existing and existing[0] != source_id:
             raise ValueError("Use a separate database for a different collection source")
-        # Existing records without source metadata must remain demo-only.
-        if (
-            not existing
-            and source_id != "demo"
-            and any(
-                db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608 -- fixed table names
-                for table in ("catalog", "selection", "baselines", "confirmed")
-            )
-        ):
-            raise ValueError("Use an empty database for live mode")
         db.execute("INSERT OR IGNORE INTO metadata VALUES('source_id', ?)", (source_id,))
-        db.execute("INSERT OR IGNORE INTO metadata VALUES('refresh_revision', '0')")
-        # Migrate retained snapshots to a separate cache before retention removes history.
-        for row in db.execute(
-            "SELECT b.entity_id, b.data FROM baselines b WHERE b.rowid="
-            "(SELECT MAX(newest.rowid) FROM baselines newest WHERE newest.entity_id=b.entity_id) "
-            "AND NOT EXISTS (SELECT 1 FROM current_state c WHERE c.entity_id=b.entity_id)"
-        ).fetchall():
-            if db.execute(
-                "SELECT 1 FROM current_state WHERE entity_id=?", (row["entity_id"],)
-            ).fetchone():
-                continue
-            value = baseline_record.validate_json(row["data"])
-            source_time = value.last_updated or value.received_at
-            update_current(db, row["entity_id"], source_time, value)
-        if store.last_confirmed(db):
-            store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "restart")
     device_commands = Commands(
         store,
         controller,
+        reader,
         now=now,
         retention_days=retention_days,
         wait_seconds=command_wait_seconds,
         stale_seconds=control_stale_seconds,
     )
     device_commands.interrupt_pending()
-    recorder = Recorder(store, source_id, now)
-    monitoring = Monitoring(store, now=now, reconciliation_seconds=reconciliation_seconds)
+    monitoring = Monitoring(store, reader)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     next_cleanup = 0.0
@@ -135,11 +112,6 @@ def create_app(
 
     def conflict(code: str, message: str) -> HTTPException:
         return HTTPException(409, {"code": code, "message": message})
-
-    def rejection(rejected: Rejected) -> HTTPException:
-        if rejected.code == "future_timestamp":
-            return HTTPException(422, rejected.message)
-        return conflict(rejected.code, rejected.message)
 
     @app.middleware("http")
     async def browser_boundary(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -191,55 +163,26 @@ def create_app(
     async def validation_error(_request: Request, _exc: RequestValidationError) -> JSONResponse:
         return JSONResponse({"detail": "Invalid request"}, status_code=422)
 
-    @app.get("/api/catalog", response_model=CatalogResponse)
-    def catalog():
-        with store.transaction() as db:
-            refreshed = db.execute("SELECT value FROM metadata WHERE key='catalog_at'").fetchone()
-            age = (
-                (now() - datetime.fromisoformat(refreshed[0])).total_seconds()
-                if refreshed
-                else None
-            )
-            return CatalogResponse(
-                source_id=source_id,
-                home_assistant_url=home_assistant_url,
-                refreshed_at=refreshed[0] if refreshed else None,
-                freshness="pending"
-                if age is None
-                else (
-                    "fresh"
-                    if 0 <= age <= 2 * reconciliation_seconds
-                    and get_health(db).status not in ("failed", "stale")
-                    else "stale"
-                ),
-                entities=store.entities(db),
-            )
+    @app.exception_handler(ReaderUnavailable)
+    async def unreachable(_request: Request, exc: ReaderUnavailable) -> JSONResponse:
+        body = Unreachable(error=exc.error, message=UNREACHABLE_MESSAGES[exc.error])
+        return JSONResponse(body.model_dump(), status_code=503)
 
-    @app.get("/api/selection", response_model=SelectionSnapshot)
-    @app.get(
-        "/internal/selection",
-        response_model=SelectionSnapshot,
-        dependencies=[Depends(internal_auth)],
-        include_in_schema=False,
-    )
+    needs_home_assistant: dict[int | str, dict[str, object]] = {503: {"model": Unreachable}}
+
+    @app.get("/api/catalog", response_model=CatalogResponse, responses=needs_home_assistant)
+    def catalog():
+        return CatalogResponse(
+            source_id=source_id,
+            home_assistant_url=home_assistant_url,
+            entities=reader.catalog(),
+        )
+
+    @app.get("/api/selection", response_model=Selection)
     def selection():
         return monitoring.selection()
 
-    @app.post("/api/discovery/refresh", response_model=DiscoveryRefresh)
-    def refresh_discovery():
-        with store.transaction() as db:
-            revision = (
-                int(
-                    db.execute(
-                        "SELECT value FROM metadata WHERE key='refresh_revision'"
-                    ).fetchone()[0]
-                )
-                + 1
-            )
-            db.execute("UPDATE metadata SET value=? WHERE key='refresh_revision'", (str(revision),))
-            return DiscoveryRefresh(refresh_revision=revision)
-
-    @app.put("/api/selection/{entity_id}", response_model=SelectionSnapshot)
+    @app.put("/api/selection/{entity_id}", response_model=Selection, responses=needs_home_assistant)
     def select(entity_id: str, change: SelectionChange):
         result = monitoring.select(entity_id, selected=change.selected)
         if isinstance(result, UnknownEntity):
@@ -248,351 +191,100 @@ def create_app(
             raise HTTPException(422, "Entity is unsupported")
         return result
 
-    @app.post("/internal/catalog", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_catalog(payload: Catalog):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        with store.transaction() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO metadata VALUES('catalog_at', ?)", (now().isoformat(),)
-            )
-            db.execute("DELETE FROM catalog")
-            db.executemany(
-                "INSERT INTO catalog VALUES(?, ?)",
-                [(e.id, e.model_dump_json()) for e in payload.entities],
-            )
-            # Discovery describes support; it never changes the user's approval.
-        return {"accepted": True}
-
-    @app.post("/internal/baselines", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_observation(payload: DeviceObservation):
-        baseline = recorder.observe(payload)
-        if isinstance(baseline, Rejected):
-            raise rejection(baseline)
-        return {"accepted": True, "baseline": baseline.model_dump(mode="json", exclude_unset=True)}
-
-    # Stored readings omit unset light attributes; excluding unset fields returns them as stored.
-    @app.get("/api/baselines", response_model=BaselinesPage, response_model_exclude_unset=True)
-    def baselines(
-        entity_id: Identity,
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        cursor: Annotated[int | None, Query(ge=1)] = None,
-    ):
-        with store.transaction() as db:
-            rows = db.execute(
-                # Only fixed SQL fragments are concatenated; values are bound parameters.
-                "SELECT rowid,data FROM baselines WHERE entity_id=? AND persisted_at>=? "  # noqa: S608
-                + ("AND rowid<? " if cursor is not None else "")
-                + "ORDER BY rowid DESC LIMIT ?",
-                (
-                    entity_id,
-                    retention_cutoff(),
-                    *((cursor,) if cursor is not None else ()),
-                    limit + 1,
-                ),
-            ).fetchall()
-            return BaselinesPage(
-                baselines=[baseline_record.validate_json(row["data"]) for row in rows[:limit]],
-                next_cursor=rows[limit - 1]["rowid"] if len(rows) > limit else None,
-            )
-
-    @app.post("/internal/events", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_event(payload: ChangeEvent):
-        outcome = recorder.record(payload)
-        if isinstance(outcome, Rejected):
-            raise rejection(outcome)
-        return {
-            "accepted": True,
-            "recorded": outcome == "recorded",
-            "duplicate": outcome == "duplicate",
-        }
-
-    @app.get("/api/events", response_model=EventsPage, response_model_exclude_unset=True)
+    # Readings omit unset light attributes; excluding unset fields keeps them absent.
+    @app.get(
+        "/api/events",
+        response_model=EventsPage,
+        response_model_exclude_unset=True,
+        responses=needs_home_assistant,
+    )
     def events(
         *,
-        source_id: Literal["demo", "home_assistant"] | None = None,
         entity_id: Identity | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        cursor: Annotated[str | None, Query(max_length=200)] = None,
+        cursor: Annotated[str | None, Query(max_length=1000)] = None,
     ):
+        """Changes Home Assistant recorded for monitored devices in `[start, end)`, newest
+        first. A cursor keeps the window of the first page and overrides `start` and `end`."""
         try:
-            start = to_utc(start) if start else None
-            end = to_utc(end) if end else None
-            if start and end and start > end:
-                raise ValueError("Reversed range")
-            position = None
-            if cursor is not None:
-                timestamp, identity = cursor.split("|", 1)
-                position = (to_utc(datetime.fromisoformat(timestamp)).isoformat(), identity)
-                # Reuse the boundary type rather than accepting arbitrary cursor identifiers.
-                position = (position[0], TypeAdapter(Identity).validate_python(identity))
-        except (ValueError, TypeError):
+            after = None if cursor is None else read_cursor(cursor)
+            if after is not None:
+                window_start, window_end = to_utc(after.start), to_utc(after.end)
+            else:
+                window_end = to_utc(end) if end else now().astimezone(UTC)
+                window_start = to_utc(start) if start else window_end - HISTORY_WINDOW
+                if window_start > window_end:
+                    raise ValueError("Reversed range")
+            # History is read from just before the window start, which must stay a valid date.
+            if window_start < EARLIEST_START:
+                raise ValueError("Start before the calendar")
+        # OverflowError: a timestamp near year 1 or 9999 can fall outside the calendar.
+        except (ValueError, TypeError, OverflowError):
             raise HTTPException(422, "Invalid event scope") from None
-        clauses, parameters = ["persisted_at>=?"], [retention_cutoff()]
-        for column, value in (("source_id", source_id), ("entity_id", entity_id)):
-            if value is not None:
-                clauses.append(f"{column}=?")
-                parameters.append(value)
-        for operator, value in ((">=", start), ("<=", end)):
-            if value is not None:
-                clauses.append(f"event_time {operator} ?")
-                parameters.append(value.isoformat())
-        if position:
-            clauses.append("(event_time < ? OR (event_time=? AND id < ?))")
-            parameters.extend((position[0], position[0], position[1]))
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        with store.transaction() as db:
-            rows = db.execute(
-                # Only fixed SQL fragments are concatenated; values are bound parameters.
-                "SELECT data FROM events" + where + " ORDER BY event_time DESC, id DESC LIMIT ?",  # noqa: S608
-                (*parameters, limit + 1),
-            ).fetchall()
-        values = [EventRecord.model_validate_json(row[0]) for row in rows[:limit]]
-        next_cursor = None
-        if len(rows) > limit:
-            next_cursor = f"{values[-1].event_time}|{values[-1].id}"
-        return EventsPage(
-            events=values,
-            next_cursor=next_cursor,
-            retained_since=(now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
-            coverage="unknown",
+        devices = [
+            device
+            for device in monitoring.selection().entity_ids
+            if entity_id is None or device == entity_id
+        ]
+        return read_page(
+            reader, devices, start=window_start, end=window_end, after=after, limit=limit
         )
 
-    @app.post("/internal/health", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_health(payload: Health):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        persisted = now().astimezone(UTC)
-        if payload.received_at > persisted:
-            raise HTTPException(422, "Future receipt timestamp")
-        with store.transaction() as db:
-            previous = store.health(db)
-            # A delayed heartbeat cannot erase a newer failure. When the API's
-            # clock rolled back, allow the new clock's heartbeat to reset health.
-            if (
-                previous
-                and persisted >= datetime.fromisoformat(previous.persisted_at)
-                and payload.received_at < datetime.fromisoformat(previous.received_at)
-            ):
-                raise conflict("heartbeat_older", "Heartbeat is older than latest health")
-            if payload.status == "failed":
-                reason = (
-                    "invalid_data"
-                    if payload.error == "discovery"
-                    else payload.error or "connection"
-                )
-                store.interrupt(db, source_id, persisted.isoformat(), reason)
-            if payload.status == "healthy":
-                db.execute(
-                    "INSERT OR REPLACE INTO metadata VALUES('last_healthy_at', ?)",
-                    (persisted.isoformat(),),
-                )
-            data = payload.model_dump(mode="json") | {"persisted_at": persisted.isoformat()}
-            db.execute("INSERT OR REPLACE INTO metadata VALUES('health', ?)", (json.dumps(data),))
-        return {"accepted": True}
-
-    def get_health(db: sqlite3.Connection) -> HealthPending | HealthReport:
-        result = store.health(db)
-        if result is None:
-            return HealthPending(status="pending", source_id=source_id)
-        age = (now() - datetime.fromisoformat(result.received_at)).total_seconds()
-        if age < 0 or age > 2 * reconciliation_seconds:
-            result.status = "stale"
-            store.interrupt(db, source_id, now().astimezone(UTC).isoformat(), "heartbeat")
-        return result
-
-    @app.post("/internal/coverage", dependencies=[Depends(internal_auth)], include_in_schema=False)
-    def ingest_coverage(payload: Coverage):
-        if payload.source_id != source_id:
-            raise conflict("source_mismatch", "Collection source mismatch")
-        persisted = now().astimezone(UTC)
-        if payload.received_at > persisted:
-            raise HTTPException(422, "Future receipt timestamp")
-        with store.transaction() as db:
-            current = store.selection(db)
-            if (
-                payload.entity_id is not None
-                and payload.entity_id not in store.selection(db).entity_ids
-            ):
-                raise conflict(
-                    "selection_changed", "Selection no longer permits this coverage scope"
-                )
-            if payload.status == "interrupted":
-                gap = store.interrupt(
-                    db, source_id, persisted.isoformat(), payload.reason, payload.entity_id
-                )
-                return {"accepted": True, "gap": gap}
-            if payload.selection_revision != store.selection(db).revision:
-                raise conflict("selection_changed", "Selection changed before recovery completed")
-            recovered_entities = (
-                payload.entity_ids if payload.entity_ids is not None else current.entity_ids
-            )
-            if not set(recovered_entities).issubset(current.entity_ids):
-                raise conflict(
-                    "selection_changed", "Selection no longer permits this recovery scope"
-                )
-            # Recovery is a collector assertion that subscription and snapshots completed.
-            rows = db.execute(
-                "SELECT id, scope, data FROM coverage WHERE recovered_at IS NULL"
-            ).fetchall()
-            relevant = [
-                row
-                for row in rows
-                if (
-                    row["scope"] == payload.entity_id
-                    if payload.entity_id is not None
-                    else row["scope"] == "*" or row["scope"] in recovered_entities
-                )
-            ]
-            gaps = [CoverageGap.model_validate_json(row["data"]) for row in relevant]
-            if any(payload.received_at < datetime.fromisoformat(gap.detected_at) for gap in gaps):
-                raise conflict("recovery_older", "Recovery is older than interruption")
-            for gap in gaps:
-                gap.recovered_at = persisted.isoformat()
-                db.execute(
-                    "UPDATE coverage SET recovered_at=?, data=? WHERE id=?",
-                    (persisted.isoformat(), gap.model_dump_json(), gap.id),
-                )
-            return {"accepted": True}
-
-    @app.get("/api/coverage", response_model=CoverageReport)
-    def coverage(limit: Annotated[int, Query(ge=1, le=100)] = 100):
-        with store.transaction() as db:
-            health = get_health(db)
-            gaps = [
-                CoverageGap.model_validate_json(row[0])
-                for row in db.execute(
-                    "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=? "
-                    "ORDER BY detected_at DESC, id DESC LIMIT ?",
-                    (retention_cutoff(), limit),
-                )
-            ]
-            return CoverageReport(
-                gaps=gaps,
-                state="interrupted"
-                if any(
-                    not gap.entity_ids or set(gap.entity_ids) & set(store.selection(db).entity_ids)
-                    for gap in store.open_gaps(db)
-                )
-                else "collecting"
-                if health.status == "healthy"
-                else "unknown",
-                last_confirmed_at=store.last_confirmed(db),
-                retained_since=(now().astimezone(UTC) - timedelta(days=retention_days)).isoformat(),
-                continuous_coverage=False,
-                outside_recorded_windows="unknown",
-            )
-
-    @app.get("/api/usage", response_model=UsageReport)
+    @app.get("/api/usage", response_model=UsageReport, responses=needs_home_assistant)
     def usage(
         *,
         start: datetime,
         end: datetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
     ):
+        """On-time, switch-ons and brightness of selected devices in `[start, end)`, from
+        Home Assistant's history."""
         # A far-past offset can overflow the conversion to UTC.
         try:
             start = to_utc(start)
             end = to_utc(end)
+            # The row before `start` is the state at `start` and the predecessor of a change
+            # at exactly `start`.
+            history_start = start - BEFORE_START
         except (ValueError, OverflowError):
             raise HTTPException(422, "Invalid usage range") from None
         # Splitting by local day looks one day past `end`, which must stay a valid date.
         if start > end or end - start > timedelta(days=366) or end.year >= MAXYEAR:
             raise HTTPException(422, "Invalid usage range")
-        cutoff = retention_cutoff()
-        with store.transaction() as db:
-            # An expired heartbeat becomes a recorded gap before coverage is read.
-            get_health(db)
-        # A deferred read sees one consistent state. It only copies raw rows; parsing and
-        # computing happen after it closes. The store runs in WAL mode, so writers continue.
-        with store.transaction("DEFERRED") as db:
-            selected = store.selection(db).entity_ids
-            # Unselected IDs are left out rather than reported as missing.
-            devices = sorted(set(entity_id or selected) & set(selected))
-            stored_kinds: dict[str, DeviceKind | None] = {
-                device: Monitoring.device(db, device).kind for device in devices
-            }
-            scope = ",".join("?" * len(devices))
-            # Evidence inside the window, plus each device's latest evidence before it.
-            snapshot_rows: list[sqlite3.Row] = db.execute(
-                # Only placeholders are interpolated; values are bound parameters.
-                "SELECT entity_id, data FROM baselines WHERE persisted_at>=? "  # noqa: S608 -- placeholders only
-                "AND julianday(json_extract(data, '$.received_at')) <= julianday(?) "
-                f"AND entity_id IN ({scope})",
-                (max(cutoff, start.isoformat()), end.isoformat(), *devices),
-            ).fetchall()
-            event_rows: list[sqlite3.Row] = db.execute(
-                "SELECT entity_id, data FROM events WHERE persisted_at>=? AND event_time>=? "  # noqa: S608 -- placeholders only
-                f"AND event_time<=? AND entity_id IN ({scope})",
-                (cutoff, start.isoformat(), end.isoformat(), *devices),
-            ).fetchall()
-            current_rows: list[sqlite3.Row] = []
-            for device in devices:
-                # Snapshots are stored in receipt order, so the newest persisted is the latest read.
-                snapshot_rows += db.execute(
-                    "SELECT entity_id, data FROM baselines WHERE entity_id=? AND persisted_at>=? "
-                    "AND persisted_at<? ORDER BY persisted_at DESC, rowid DESC LIMIT 1",
-                    (device, cutoff, start.isoformat()),
-                ).fetchall()
-                event_rows += db.execute(
-                    "SELECT entity_id, data FROM events WHERE entity_id=? AND persisted_at>=? "
-                    "AND event_time<? ORDER BY event_time DESC, id DESC LIMIT 1",
-                    (device, cutoff, start.isoformat()),
-                ).fetchall()
-                # The cache keeps a steady device's state after its only snapshot expires.
-                current_rows += db.execute(
-                    "SELECT entity_id, data FROM current_state WHERE entity_id=?", (device,)
-                ).fetchall()
-            # Every retained gap: one that recovered before the window still leaves the light
-            # unknown until new evidence arrives. Gaps are few, bounded by retention.
-            # Also each scope's latest gap even when it has expired: cached state from before it
-            # must not come back as known once the gap leaves retention.
-            gap_rows: list[sqlite3.Row] = db.execute(
-                "SELECT data FROM coverage WHERE recovered_at IS NULL OR recovered_at>=? "
-                "OR recovered_at=(SELECT MAX(recovered_at) FROM coverage AS latest "
-                "WHERE latest.scope=coverage.scope)",
-                (cutoff,),
-            ).fetchall()
-        snapshots = [(row[0], current_reading.validate_json(row[1])) for row in snapshot_rows]
-        snapshots += [(row[0], current_reading.validate_json(row[1])) for row in current_rows]
-        changes = [(row[0], EventRecord.model_validate_json(row[1])) for row in event_rows]
-        readings: dict[str, list[CurrentReading]] = {device: [] for device in devices}
-        for entity, reading in snapshots:
-            if entity in readings:
-                readings[entity].append(reading)
-        events: dict[str, list[EventRecord]] = {device: [] for device in devices}
-        for entity, event in changes:
-            if entity in events:
-                events[entity].append(event)
+        current = now().astimezone(UTC)
+        stored_kinds = monitoring.kinds()
+        # Unselected IDs are left out rather than reported as missing.
+        devices = sorted(set(entity_id or stored_kinds) & set(stored_kinds))
+        # Home Assistant has no history after now.
+        history_end = min(end, current)
+        history = (
+            reader.history(devices, history_start, history_end)
+            if devices and history_start < history_end
+            else {}
+        )
 
         def kind_of(device: str) -> DeviceKind:
-            # A device no stored kind names is still known by the readings in the window.
+            # A device selected without a kind is still known by its rows.
             if stored := stored_kinds[device]:
                 return stored
-            evidence = [*readings[device], *events[device]]
-            return "switch" if any(value.device_kind == "switch" for value in evidence) else "light"
+            rows = history.get(device, [])
+            return "switch" if any(row.reading.device_kind == "switch" for row in rows) else "light"
 
-        gaps = [CoverageGap.model_validate_json(row[0]) for row in gap_rows]
-        retained_since = datetime.fromisoformat(cutoff)
         return UsageReport(
             start=start.isoformat(),
             end=end.isoformat(),
             timezone=timezone.key,
-            retained_since=cutoff,
             devices=[
                 device_usage(
                     device,
                     kind_of(device),
                     start=start,
                     end=end,
-                    now=now().astimezone(UTC),
+                    now=current,
                     timezone=timezone,
-                    retained_since=retained_since,
-                    readings=readings[device],
-                    events=events[device],
-                    gaps=gaps,
+                    rows=history.get(device, []),
                 )
                 for device in devices
             ],
@@ -600,15 +292,21 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthStatus)
     def health():
-        with store.transaction() as db:
-            return get_health(db)
+        checked_at = now().astimezone(UTC).isoformat()
+        try:
+            reader.health()
+        except ReaderUnavailable as error:
+            return HealthStatus(
+                source_id=source_id, status="unreachable", error=error.error, checked_at=checked_at
+            )
+        return HealthStatus(
+            source_id=source_id, status="healthy", error=None, checked_at=checked_at
+        )
 
+    # Readings omit unset light attributes; excluding unset fields keeps them absent.
     @app.get("/api/monitored", response_model=MonitoredEntities, response_model_exclude_unset=True)
     def monitored():
-        with store.transaction() as db:
-            # An expired heartbeat becomes a recorded gap before freshness is read.
-            health = get_health(db)
-        return monitoring.devices(collector_healthy=health.status not in ("failed", "stale"))
+        return monitoring.devices()
 
     @app.post("/internal/control", dependencies=[Depends(internal_auth)], include_in_schema=False)
     def ingest_control(payload: ControlHeartbeat):

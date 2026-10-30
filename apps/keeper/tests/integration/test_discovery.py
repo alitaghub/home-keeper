@@ -1,68 +1,81 @@
+"""The catalog comes live from the reader; the selection is Home Keeper's own record."""
+
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from support.api import AUTH, BROWSER, CATALOG, CATALOG_ENTITIES, app_for
+from support.api import BROWSER, CATALOG_ENTITIES, NOW, TOKEN, app_for, catalog_reader
+
+from home_keeper.api import create_app
+from home_keeper.models import Entity
 
 
-def test_discovery_requires_explicit_selection_and_selection_survives_restart(
+def test_catalog_is_the_readers_catalog_at_request_time(tmp_path: Path) -> None:
+    reader = catalog_reader()
+    with TestClient(app_for(tmp_path / "catalog.sqlite", reader=reader)) as client:
+        body = client.get("/api/catalog").json()
+        assert set(body) == {"source_id", "home_assistant_url", "entities"}
+        assert body["entities"] == [Entity.model_validate(e).model_dump() for e in CATALOG_ENTITIES]
+
+        reader.drop("bulb-b")
+        ids = [entry["id"] for entry in client.get("/api/catalog").json()["entities"]]
+        assert ids == ["bulb-a", "room", "plug"]
+
+
+def test_catalog_tells_the_dashboard_where_home_assistant_is(tmp_path: Path) -> None:
+    app = create_app(
+        tmp_path / "linked.sqlite",
+        TOKEN,
+        now=lambda: NOW,
+        reader=catalog_reader(),
+        source_id="home_assistant",
+        home_assistant_url="http://127.0.0.1:8123",
+    )
+    with TestClient(app) as client:
+        body = client.get("/api/catalog").json()
+        assert (body["source_id"], body["home_assistant_url"]) == (
+            "home_assistant",
+            "http://127.0.0.1:8123",
+        )
+
+
+def test_only_a_supported_catalog_entry_can_be_selected_and_the_selection_survives_restart(
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "home.sqlite"
     with TestClient(app_for(db)) as client:
-        response = client.post("/internal/catalog", json=CATALOG, headers=AUTH)
-        assert response.is_success, response.text
-        catalog = client.get("/api/catalog").json()["entities"]
-        assert {entry["id"] for entry in catalog} == {"bulb-a", "bulb-b", "room", "plug"}
-        room = next(entry for entry in catalog if entry["id"] == "room")
-        assert room["supported"] is False
-        assert room["reason"]
-        initial = client.get("/api/selection").json()
-        assert initial["entity_ids"] == []
-        assert client.get("/api/monitored").json()["entities"] == []
-        for entity in ("room", "plug", "unknown"):
-            assert client.put(
+        assert client.get("/api/selection").json() == {"entity_ids": []}
+        assert client.get("/api/monitored").json() == {"entities": []}
+        for entity, status in (("room", 422), ("plug", 422), ("unknown", 404)):
+            refused = client.put(
                 f"/api/selection/{entity}", json={"selected": True}, headers=BROWSER
-            ).is_client_error
-            assert client.get("/api/selection").json() == initial
+            )
+            assert refused.status_code == status, refused.text
+        assert client.get("/api/selection").json() == {"entity_ids": []}
+
         selected = client.put("/api/selection/bulb-a", json={"selected": True}, headers=BROWSER)
-        assert selected.is_success, selected.text
-        assert selected.json()["entity_ids"] == ["bulb-a"]
-        assert selected.json()["revision"] > initial["revision"]
-        assert (
-            client.put("/api/selection/bulb-a", json={"selected": True}, headers=BROWSER).json()
-            == selected.json()
-        )
-        assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
-        assert client.get("/api/selection").json() == selected.json()
-        assert (
-            client.get("/api/baselines", params={"entity_id": "bulb-b"}).json()["baselines"] == []
-        )
+        assert selected.status_code == 200, selected.text
+        assert selected.json() == {"entity_ids": ["bulb-a"]}
+        again = client.put("/api/selection/bulb-a", json={"selected": True}, headers=BROWSER)
+        assert again.json() == selected.json()
+
     with TestClient(app_for(db)) as restarted:
-        assert restarted.get("/api/selection").json() == selected.json()
-        monitored = restarted.get("/api/monitored").json()["entities"]
-        assert len(monitored) == 1
-        assert monitored[0]["id"] == "bulb-a"
-        assert monitored[0]["baseline"] is None
-        assert monitored[0]["freshness"] == "pending"
+        assert restarted.get("/api/selection").json() == {"entity_ids": ["bulb-a"]}
+        [monitored] = restarted.get("/api/monitored").json()["entities"]
+        assert monitored["id"] == "bulb-a"
 
 
-def test_refresh_does_not_silently_revoke_previously_approved_missing_entity(
+def test_a_rename_in_home_assistant_keeps_the_selection_and_shows_the_new_name(
     tmp_path: Path,
 ) -> None:
-    with TestClient(app_for(tmp_path / "refresh.sqlite")) as client:
-        assert client.post("/internal/catalog", json=CATALOG, headers=AUTH).is_success
-        selected = client.put(
-            "/api/selection/bulb-a", json={"selected": True}, headers=BROWSER
-        ).json()
-        missing = {
-            "source_id": "demo",
-            "entities": [entry for entry in CATALOG_ENTITIES if entry["id"] != "bulb-a"],
-        }
-        assert client.post("/internal/catalog", json=missing, headers=AUTH).is_success
-        assert client.get("/api/selection").json() == selected
-        monitored = client.get("/api/monitored").json()["entities"]
-        assert [entry["id"] for entry in monitored] == ["bulb-a"]
-        assert monitored[0]["freshness"] in ("pending", "stale")
-        removed = client.put("/api/selection/bulb-a", json={"selected": False}, headers=BROWSER)
-        assert removed.is_success, removed.text
-        assert removed.json()["entity_ids"] == []
+    reader = catalog_reader()
+    with TestClient(app_for(tmp_path / "rename.sqlite", reader=reader)) as client:
+        assert client.put(
+            "/api/selection/bulb-b", json={"selected": True}, headers=BROWSER
+        ).is_success
+        reader.entities = [
+            entity.model_copy(update={"name": "Renamed lamp"}) if entity.id == "bulb-b" else entity
+            for entity in reader.entities
+        ]
+        assert client.get("/api/selection").json() == {"entity_ids": ["bulb-b"]}
+        [monitored] = client.get("/api/monitored").json()["entities"]
+        assert monitored["name"] == "Renamed lamp"

@@ -24,8 +24,15 @@ DeviceKind = Literal["light", "switch"] | None
 
 class Reading(Wire):
     state: str
-    # Plugs and switches have no brightness.
+    # Plugs and switches have no brightness or color.
     brightness: int | None = None
+    color_mode: str | None = None
+    color_temp_kelvin: int | None = None
+    hs_color: tuple[float, float] | None = None
+    xy_color: tuple[float, float] | None = None
+    rgb_color: tuple[int, int, int] | None = None
+    rgbw_color: tuple[int, int, int, int] | None = None
+    rgbww_color: tuple[int, int, int, int, int] | None = None
 
 
 class MonitoredLight(Wire):
@@ -35,9 +42,10 @@ class MonitoredLight(Wire):
     device_kind: DeviceKind = None
     supported: bool
     reason: str | None = None
-    baseline: Reading | None
-    freshness: Literal["pending", "fresh", "stale"]
-    confirmed_at: str | None
+    # What Home Assistant reports now; None while it cannot be read or has no such entity.
+    state: Reading | None
+    # Home Assistant no longer has the entity.
+    missing: bool
 
 
 class Monitored(Wire):
@@ -47,7 +55,9 @@ class Monitored(Wire):
 class UnknownInterval(Wire):
     start: str
     end: str
-    reason: str
+    # no_history: Home Assistant has no history for the time. unavailable: it reported the
+    # device unavailable or unknown.
+    reason: Literal["no_history", "unavailable"]
 
 
 class DayUsage(Wire):
@@ -84,43 +94,26 @@ class Usage(Wire):
     start: str
     end: str
     timezone: str
-    retained_since: str
     devices: list[DeviceUsage]
 
 
 class Event(Wire):
     entity_id: str
-    event_time: str
-    old: Reading | None
-    new: Reading | None
+    # Home Assistant's time of the change.
+    time: str
+    old: Reading
+    new: Reading
 
 
 class EventsPage(Wire):
     events: list[Event]
     next_cursor: str | None
-    retained_since: str
-
-
-class Gap(Wire):
-    entity_ids: list[str]
-    last_confirmed_at: str | None
-    uncertain_start: bool
-    detected_at: str
-    recovered_at: str | None
-    reason: str
-
-
-class CoverageReport(Wire):
-    gaps: list[Gap]
-    state: str
-    last_confirmed_at: str | None
-    retained_since: str
 
 
 class Health(Wire):
-    status: Literal["pending", "healthy", "failed", "stale"]
+    status: Literal["healthy", "unreachable"]
     error: str | None = None
-    received_at: str | None = None
+    checked_at: str
 
 
 class Device(Wire):
@@ -133,17 +126,11 @@ class Device(Wire):
 
 
 class Catalog(Wire):
-    refreshed_at: str | None
-    freshness: Literal["pending", "fresh", "stale"]
     entities: list[Device]
 
 
 class Selection(Wire):
     entity_ids: list[str]
-
-
-class DiscoveryRefresh(Wire):
-    refresh_revision: int
 
 
 class Control(Wire):
@@ -192,6 +179,13 @@ class ErrorBody(Wire):
     detail: str | Conflict
 
 
+class Unreachable(Wire):
+    """The 503 body while Home Assistant cannot be read."""
+
+    error: str
+    message: str
+
+
 type Params = dict[str, str | int | list[str]]
 
 
@@ -234,6 +228,13 @@ class KeeperClient:
 
 def _failure(response: httpx.Response) -> str:
     message = f"HTTP {response.status_code}"
+    try:
+        unreachable = Unreachable.model_validate_json(response.content)
+    except ValidationError:
+        pass
+    else:
+        # A fixed message the keeper writes for each reason.
+        return f"{message}: {unreachable.message}"
     try:
         detail = ErrorBody.model_validate_json(response.content).detail
     except ValidationError:

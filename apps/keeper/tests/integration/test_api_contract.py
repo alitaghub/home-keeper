@@ -16,16 +16,11 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from support.api import (
-    AUTH,
     BROWSER,
-    CATALOG,
-    CATALOG_ENTITIES,
     NOW,
     TOKEN,
     Payload,
-    event,
-    observation,
-    select,
+    catalog_reader,
 )
 from support.control import (
     BROWSER_CHAT,
@@ -38,6 +33,7 @@ from support.control import (
     command,
     on,
 )
+from support.reader import FakeReader, history_row
 
 from home_keeper.api import create_app
 
@@ -66,26 +62,17 @@ def record(response: httpx.Response) -> Recorded:
     return {"status": response.status_code, "body": normalize(response.json())}
 
 
-def health(clock: datetime) -> Payload:
-    return {"source_id": "demo", "status": "healthy", "received_at": clock.isoformat()}
-
-
-def coverage(clock: datetime, status: str = "interrupted", **changes: object) -> Payload:
-    return {"source_id": "demo", "status": status, "received_at": clock.isoformat()} | changes
-
-
 def usage_range(start: datetime, end: datetime) -> dict[str, str]:
     return {"start": start.isoformat(), "end": end.isoformat()}
 
 
 def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
-    with TestClient(create_app(tmp_path / "empty.sqlite", TOKEN, now=lambda: NOW)) as client:
+    app = create_app(tmp_path / "empty.sqlite", TOKEN, now=lambda: NOW, reader=FakeReader())
+    with TestClient(app) as client:
         return {
             "empty_catalog": record(client.get("/api/catalog")),
             "empty_selection": record(client.get("/api/selection")),
-            "empty_baselines": record(client.get("/api/baselines?entity_id=bulb-a")),
             "empty_events": record(client.get("/api/events")),
-            "empty_coverage": record(client.get("/api/coverage")),
             "empty_health": record(client.get("/api/health")),
             "empty_monitored": record(client.get("/api/monitored")),
             "empty_usage": record(
@@ -97,59 +84,36 @@ def empty_responses(tmp_path: Path) -> dict[str, Recorded]:
 def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
     clock = [NOW]
     result: dict[str, Recorded] = {}
-    app = create_app(tmp_path / "seeded.sqlite", TOKEN, now=lambda: clock[0])
+    reader = catalog_reader()
+    app = create_app(tmp_path / "seeded.sqlite", TOKEN, now=lambda: clock[0], reader=reader)
     with TestClient(app) as client:
-        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
         result["put_selection"] = record(
             client.put("/api/selection/bulb-a", json={"selected": True}, headers=BROWSER)
         )
-        revision = select(client, "bulb-b")
-        client.post("/internal/health", json=health(clock[0]), headers=AUTH)
-        client.post("/internal/baselines", json=observation(revision), headers=AUTH)
-        for index, (old, new) in enumerate([("off", "on"), ("on", "off"), ("off", "on")], start=1):
+        selected = client.put("/api/selection/bulb-b", json={"selected": True}, headers=BROWSER)
+        assert selected.is_success, selected.text
+        # Home Assistant's recorder holds bulb-a unavailable, then off, then the three changes
+        # below. Its history starts 10 s after the usage window does.
+        reader.record(
+            "bulb-a", history_row(DESK, NOW - timedelta(seconds=50), {"state": "unavailable"})
+        )
+        reader.record("bulb-a", history_row(DESK, NOW - timedelta(seconds=40), {"state": "off"}))
+        for index, new in enumerate(["on", "off", "on"], start=1):
             at = NOW - timedelta(seconds=40 - 10 * index)
-            payload = event(
-                revision,
-                identity=f"change-{index}",
-                event_time=at.isoformat(),
-                received_at=(at + timedelta(seconds=3)).isoformat(),
-                old={"state": old},
-                new={"state": new, "brightness": 50 * index} if new == "on" else {"state": new},
+            state: Payload = (
+                {"state": new, "brightness": 50 * index} if new == "on" else {"state": new}
             )
-            assert client.post("/internal/events", json=payload, headers=AUTH).is_success
+            reader.record("bulb-a", history_row(DESK, at, state))
 
-        # A whole-home gap that recovers with a snapshot.
-        clock[0] = NOW + timedelta(seconds=5)
-        client.post("/internal/coverage", json=coverage(clock[0]), headers=AUTH)
-        clock[0] = NOW + timedelta(seconds=6)
-        snapshot = observation(revision, received_at=clock[0].isoformat(), state="off")
-        assert client.post("/internal/baselines", json=snapshot, headers=AUTH).is_success
-        recovered = coverage(clock[0], "recovered", selection_revision=revision)
-        assert client.post("/internal/coverage", json=recovered, headers=AUTH).is_success
-
-        # bulb-b stays selected but disappears from discovery.
+        # bulb-b stays selected but disappears from Home Assistant.
         clock[0] = NOW + timedelta(seconds=7)
-        catalog = CATALOG | {"entities": [e for e in CATALOG_ENTITIES if e["id"] != "bulb-b"]}
-        client.post("/internal/catalog", json=catalog, headers=AUTH)
-
-        # An entity-scoped gap that stays open.
-        clock[0] = NOW + timedelta(seconds=8)
-        open_gap = coverage(clock[0], reason="reconciliation", entity_id="bulb-a")
-        assert client.post("/internal/coverage", json=open_gap, headers=AUTH).is_success
-        client.post("/internal/health", json=health(clock[0]), headers=AUTH)
-        result["discovery_refresh"] = record(client.post("/api/discovery/refresh", headers=BROWSER))
+        reader.drop("bulb-b")
+        # Home Assistant reports bulb-a off now.
+        reader.set("bulb-a", DESK, {"state": "off"})
 
         clock[0] = NOW + timedelta(seconds=10)
         result["catalog"] = record(client.get("/api/catalog"))
         result["selection"] = record(client.get("/api/selection"))
-        result["baselines"] = record(client.get("/api/baselines?entity_id=bulb-a"))
-        first = client.get("/api/baselines?entity_id=bulb-a&limit=1")
-        result["baselines_page_1"] = record(first)
-        cursor = first.json()["next_cursor"]
-        assert cursor is not None
-        result["baselines_page_2"] = record(
-            client.get(f"/api/baselines?entity_id=bulb-a&limit=1&cursor={cursor}")
-        )
         first = client.get("/api/events?limit=2")
         result["events_page_1"] = record(first)
         cursor = first.json()["next_cursor"]
@@ -157,10 +121,10 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
         result["events_page_2"] = record(
             client.get("/api/events", params={"limit": 2, "cursor": cursor})
         )
-        result["coverage"] = record(client.get("/api/coverage"))
         result["health"] = record(client.get("/api/health"))
         result["monitored"] = record(client.get("/api/monitored"))
-        # Covers the events, the recovered whole-home gap and the open bulb-a gap above.
+        # bulb-a: no history, then unavailable, then the changes. bulb-b, gone from Home
+        # Assistant, has no history.
         usage = usage_range(NOW - timedelta(minutes=1), clock[0])
         result["usage"] = record(client.get("/api/usage", params=usage))
 
@@ -178,22 +142,52 @@ def seeded_responses(tmp_path: Path) -> dict[str, Recorded]:
     return result
 
 
+def unreachable_responses(tmp_path: Path) -> dict[str, Recorded]:
+    """What the dashboard and the agent get while Home Assistant cannot be reached."""
+    reader = catalog_reader()
+    app = create_app(tmp_path / "unreachable.sqlite", TOKEN, now=lambda: NOW, reader=reader)
+    with TestClient(app) as client:
+        for entity in ("bulb-a", "bulb-b"):
+            selected = client.put(
+                f"/api/selection/{entity}", json={"selected": True}, headers=BROWSER
+            )
+            assert selected.is_success, selected.text
+        reader.error = "connection"
+        return {
+            "health_unreachable": record(client.get("/api/health")),
+            "catalog_unreachable": record(client.get("/api/catalog")),
+            "monitored_unreachable": record(client.get("/api/monitored")),
+            "error_select_unreachable": record(
+                client.put("/api/selection/room", json={"selected": True}, headers=BROWSER)
+            ),
+            "events_unreachable": record(client.get("/api/events")),
+            "usage_unreachable": record(
+                client.get("/api/usage", params=usage_range(NOW - timedelta(hours=1), NOW))
+            ),
+            "deselect_unreachable": record(
+                client.put("/api/selection/bulb-b", json={"selected": False}, headers=BROWSER)
+            ),
+        }
+
+
 def control_responses(tmp_path: Path) -> dict[str, Recorded]:
     """Control status, each command outcome, the command audit and the refusals."""
     clock = [NOW]
     controller = FakeController(clock)
+    reader = catalog_reader()
     app = create_app(
         tmp_path / "control.sqlite",
         TOKEN,
         now=lambda: clock[0],
+        reader=reader,
         controller=controller,
-        command_wait_seconds=0.2,
+        command_wait_seconds=2,
         control_stale_seconds=15,
     )
     result: dict[str, Recorded] = {}
     with TestClient(app) as client:
-        client.post("/internal/catalog", json=CATALOG, headers=AUTH)
-        revision = select(client)
+        selected = client.put("/api/selection/bulb-a", json={"selected": True}, headers=BROWSER)
+        assert selected.is_success, selected.text
         result["control_off"] = record(client.get("/api/control"))
         result["error_control_off"] = record(command(client, ON))
         beat(client, clock[0])
@@ -201,38 +195,36 @@ def control_responses(tmp_path: Path) -> dict[str, Recorded]:
         result["error_command_unknown_entity"] = record(command(client, ON, entity="missing"))
         result["error_command_unsupported_entity"] = record(command(client, ON, entity="room"))
         result["error_not_monitored"] = record(command(client, ON, entity="bulb-b"))
+        # Home Assistant has no state for bulb-a.
         result["error_state_unknown"] = record(command(client, ON))
-        unavailable = observation(
-            revision, state="unavailable", availability="unavailable", source_entity_id=DESK
-        )
-        client.post("/internal/baselines", json=unavailable, headers=AUTH)
+        reader.set("bulb-a", DESK, {"state": "unavailable"})
         result["error_unavailable"] = record(command(client, ON))
         clock[0] += timedelta(seconds=1)
-        off = observation(revision, clock[0].isoformat(), state="off", source_entity_id=DESK)
-        client.post("/internal/baselines", json=off, headers=AUTH)
+        reader.set("bulb-a", DESK, {"state": "off"})
         result["error_already_in_state"] = record(command(client, OFF))
         result["error_invalid_command"] = record(command(client, {"action": "toggle"}))
 
-        def report(at: datetime) -> None:
-            payload = event(
-                revision,
-                "after-send",
-                source_entity_id=DESK,
-                event_time=at.isoformat(),
-                received_at=at.isoformat(),
-                old={"state": "off"},
-                new={"state": "on", "brightness": 77},
-            )
-            client.post("/internal/events", json=payload, headers=AUTH).raise_for_status()
+        # The light follows the command while the controller sends it.
+        def follow() -> None:
+            reader.set("bulb-a", DESK, {"state": "on", "brightness": 77})
 
-        controller.deliver = report
+        controller.on_send = follow
         result["command_observed"] = record(command(client, on(30), TELEGRAM))
-        controller.join()
-        controller.deliver = None
+        assert result["command_observed"]["body"]["outcome"] == "observed"
+        controller.on_send = None
         controller.reply = "refused"
         result["command_refused"] = record(command(client, OFF, BROWSER_CHAT))
         controller.reply = "ok"
+
+        # The light stays on. Each read moves the clock a second, so the wait ends.
+        def tick() -> None:
+            clock[0] += timedelta(seconds=1)
+
+        reader.on_read = tick
         result["command_not_observed"] = record(command(client, OFF))
+        assert result["command_not_observed"]["body"]["outcome"] == "not_observed"
+        reader.on_read = None
+        beat(client, clock[0])
         controller.unreachable = True
         result["command_unreachable"] = record(command(client, OFF))
 
@@ -257,7 +249,12 @@ SNAPSHOT_NAMES = sorted(path.stem for path in SNAPSHOTS.glob("*.json"))
 @pytest.fixture(scope="module")
 def responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Recorded]:
     path = tmp_path_factory.mktemp("contract")
-    return empty_responses(path) | seeded_responses(path) | control_responses(path)
+    return (
+        empty_responses(path)
+        | seeded_responses(path)
+        | unreachable_responses(path)
+        | control_responses(path)
+    )
 
 
 def snapshot_text(recorded: Recorded) -> str:
@@ -279,7 +276,7 @@ def test_public_response_matches_snapshot(responses: dict[str, Recorded], name: 
 
 
 def schema_app(tmp_path: Path) -> FastAPI:
-    return create_app(tmp_path / "schema.sqlite", TOKEN, now=lambda: NOW)
+    return create_app(tmp_path / "schema.sqlite", TOKEN, now=lambda: NOW, reader=FakeReader())
 
 
 def test_every_public_route_publishes_a_response_schema(tmp_path: Path) -> None:

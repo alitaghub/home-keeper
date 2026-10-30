@@ -6,8 +6,10 @@ const SCRIPT_ENTITY_ID = "light.hue_reading";
 const SCRIPT_NAME = "Reading light <script>alert('untrusted')</script>";
 const LAMP = "Reading lamp";
 
-// A collection pass runs every ~10 s, so the first baseline can take a few passes.
+// The demo reader answers at once; the margin covers a slow first start of the stack.
 const COLLECTION = { timeout: 45_000 };
+const RECORDER_DOC =
+  "https://github.com/alitaghub/home-keeper/blob/main/docs/home-assistant.md#history-retention";
 
 // A reused Compose volume can still hold the selection from an earlier run.
 test.beforeEach(async ({ request }) => {
@@ -53,9 +55,9 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await expect(card).toBeVisible();
   const state = card.locator(".tile-state");
   await expect(state).toHaveText(/^(On|Off|Unavailable|Unknown)/, COLLECTION);
-  // The evidence sits behind the card's Details.
+  // The card shows what the demo home reports now; it names no recorded evidence.
   await card.getByText("Details").click();
-  await expect(card.getByText(/^Source: demo · Evidence ID: /)).toBeVisible();
+  await expect(card.getByText(/Evidence ID/)).toHaveCount(0);
 
   // Control is on, so a light with a recorded on/off state offers a toggle. The demo
   // replay can change the light between the read and the click; the API then refuses
@@ -80,7 +82,7 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   }
   expect(now, "every command attempt met a replay change").toBeDefined();
   await expect(page.locator("#message")).toHaveText(`${LAMP} is now ${now}.`, COLLECTION);
-  // The toggle shows the recorded state, so the card flips only once the change is recorded.
+  // The toggle shows the reported state, so the card flips once Home Assistant reports it.
   await expect(state).toHaveText(new RegExp(`^${now === "on" ? "On" : "Off"}`), COLLECTION);
 
   // The card draws its last day from /api/usage; its usage history opens in a dialog.
@@ -93,10 +95,35 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await history.getByRole("button", { name: "Close" }).click();
   await expect(history).toHaveCount(0);
 
+  // The demo has a day of history from its first minute.
+  const anHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const older = await request.get("/api/events", {
+    params: { entity_id: SCRIPT_ENTITY_ID, end: anHourAgo },
+  });
+  expect(older.ok()).toBe(true);
+  const olderPage: components["schemas"]["EventsPage"] = await older.json();
+  expect(olderPage.events.length).toBeGreaterThan(0);
+
+  // History lists the lamp's changes in words at Home Assistant's time, including the command.
+  await page.getByRole("tab", { name: "History" }).click();
+  const rows = page.locator("#timeline article").filter({ hasText: LAMP });
+  await expect(rows.filter({ hasText: `turned ${now}` }).first()).toBeVisible(COLLECTION);
+  await expect(rows.first().locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
+  // The panel around the "Recorded changes" heading.
+  const changes = page.locator("#changes-heading").locator("..");
+  await expect(changes).not.toContainText(
+    /Evidence ID|Retained since|Retention cutoff|received|Stored/i,
+  );
+  await expect(changes.getByRole("link", { name: "recorder settings" })).toHaveAttribute(
+    "href",
+    RECORDER_DOC,
+  );
+
   // The name containing a script tag must never become markup.
   await expect(page.locator("body script")).toHaveCount(0);
   expect(dialogs).toEqual([]);
 
+  await page.getByRole("tab", { name: "Home" }).click();
   await card.getByRole("button", { name: `Stop monitoring ${LAMP}` }).click();
   await expect(card).toHaveCount(0);
   await page.getByRole("tab", { name: "Setup" }).click();

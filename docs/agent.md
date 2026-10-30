@@ -2,8 +2,9 @@
 
 The agent helps you look after your lights. It answers questions in plain
 words: how long a lamp was on, at which hours, how often it was switched on,
-and whether collection was healthy. It works only from the evidence Home Keeper
-recorded. With the `control` profile, it can also switch a monitored light
+and whether Home Assistant can be reached. It works only from Home Assistant's
+history and current states, as the Home Keeper API reports them, for the devices
+you monitor. With the `control` profile, it can also switch a monitored light
 after you approve the command. It is opt-in: without the `agent` profile,
 nothing below runs.
 
@@ -17,8 +18,8 @@ dashboard uses. It can:
 - report usage over a time range for lights, plugs and switches: on-time per
   day and per hour, switch-ons, and unknown time. Lights also get their average
   brightness; plugs and switches have none
-- show recorded changes, collection gaps and collector health
-- list discovered devices, with their kind, and refresh discovery
+- show the changes Home Assistant recorded, and whether Home Assistant can be reached
+- list the devices in Home Assistant, with their kind
 - start or stop monitoring a light, plug or switch (`monitor`, `stop_monitoring`),
   after you approve it in the chat. You can
   approve or reject the proposed change; a rejection changes nothing
@@ -41,14 +42,14 @@ only people on the control allowlist can switch lights, plugs and switches; see
 
 It cannot:
 
-- see power or energy. Home Keeper does not record it. The agent says so.
+- see power or energy. Home Keeper does not read it. The agent says so.
 - reach Home Assistant. It sends device commands to the Home Keeper API, which
   forwards them to the controller.
 - read the database. It sees only what the API returns.
 
 Usage numbers come from the API, not from the model's own arithmetic. Every
-total comes with the time that is unknown because collection stopped. Unknown
-time is never counted as "off".
+total comes with the time that is unknown: time Home Assistant has no history
+for, or reported the device unavailable. Unknown time is never counted as "off".
 
 ## Start
 
@@ -125,8 +126,8 @@ credential never leave. [security.md](security.md) has the full boundary.
 - How long was the desk lamp on this week, per day?
 - At which hours is the reading light usually on?
 - Which light was on longest in the last 7 days?
-- Were there any collection gaps yesterday?
-- Is collection healthy? When did Home Assistant last answer?
+- Was the desk lamp unavailable at any time yesterday?
+- Can you reach Home Assistant right now?
 - Start monitoring the hallway light.
 - Turn the desk lamp off.
 - Turn on the kettle plug.

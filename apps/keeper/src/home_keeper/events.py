@@ -1,11 +1,9 @@
-"""Minimal, attributed device changes shared by trusted collectors."""
+"""Parses a Home Assistant state into a light's or switch's state, keeping only the approved
+light attributes."""
 
-import hashlib
-import json
-from datetime import UTC, datetime
 from typing import Any, TypeIs
 
-from home_keeper.models import ChangeEvent, LightState, SwitchState, device_kind_of
+from home_keeper.models import LightState, SwitchState, device_kind_of
 
 COLOR_FIELDS = (
     "brightness",
@@ -42,46 +40,4 @@ def device_state(payload: object, source_entity_id: str) -> LightState | SwitchS
         return SwitchState.model_validate(state | {"device_kind": "switch"})
     return LightState.model_validate(
         state | {key: attributes[key] for key in COLOR_FIELDS if attributes.get(key) is not None}
-    )
-
-
-def change_event(
-    *,
-    source_id: str,
-    entity_id: str,
-    source_entity_id: str,
-    revision: int,
-    event_time: datetime,
-    old: LightState | SwitchState | None,
-    new: LightState | SwitchState | None,
-    received_at: datetime | None = None,
-) -> ChangeEvent:
-    identity_data: dict[str, object] = {
-        "source_id": source_id,
-        "entity_id": entity_id,
-        "source_entity_id": source_entity_id,
-        "event_time": event_time.isoformat(),
-        "old": evidence(old),
-        "new": evidence(new),
-    }
-    event_id = hashlib.sha256(
-        json.dumps(identity_data, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return ChangeEvent.model_validate(
-        {
-            "id": event_id,
-            "selection_revision": revision,
-            "received_at": received_at or datetime.now(UTC),
-            **identity_data,
-            "old": old,
-            "new": new,
-        }
-    )
-
-
-def evidence(state: LightState | SwitchState | None) -> dict[str, object] | None:
-    """A state as its event ID hashes it, without the device kind the source entity ID names,
-    so stored event IDs stay stable for duplicate detection."""
-    return (
-        state.model_dump(mode="json", exclude_none=True, exclude={"device_kind"}) if state else None
     )

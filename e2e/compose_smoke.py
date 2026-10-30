@@ -93,7 +93,7 @@ def main() -> None:
                 assert port.get("host_ip") == "127.0.0.1", f"Non-local published port on {name}"
                 published.append(name)
         assert published == ["api"], f"Unexpected published services: {published}"
-        assert not config["services"]["collector"].get("ports"), "Collector port published"
+        assert not config["services"]["reader"].get("ports"), "Reader port published"
         assert "controller" in config["services"], "Control profile adds no controller"
 
     def ready() -> bool:
@@ -105,7 +105,7 @@ def main() -> None:
             and get("/api/health")["status"] == "healthy"
         )
 
-    wait_until("five-entity catalog and healthy collector", ready)
+    wait_until("five-entity catalog and healthy reader", ready)
     page = request("/")
     assert "<html" in page.lower(), "Dashboard HTML not served"
     script = re.search(r'<script[^>]+src="(/assets/[^"]+\.js)"', page)
@@ -114,43 +114,34 @@ def main() -> None:
     entity = "light.hue_desk"
     initially_selected = entity in get("/api/selection")["entity_ids"]
     try:
-        # Require confirmation for this selection, rather than a cached fresh baseline.
         request(f"/api/selection/{entity}", {"selected": False})
         selection = json.loads(request(f"/api/selection/{entity}", {"selected": True}))
         assert entity in selection["entity_ids"]
 
-        def confirmed() -> Any:
+        def current() -> Any:
             for entry in get("/api/monitored")["entities"]:
-                if entry["id"] == entity and entry["freshness"] == "fresh" and entry["baseline"]:
-                    return entry["baseline"]
+                if entry["id"] == entity and entry["state"]:
+                    return entry
             return None
 
-        baseline = wait_until("selected fresh attributed baseline from collector", confirmed)
-        assert baseline["entity_id"] == entity
-        assert baseline["source_id"] == "demo"
-        assert baseline["state"] in ("on", "off", "unavailable")
-        assert baseline["availability"] == (
-            "unavailable" if baseline["state"] == "unavailable" else "available"
+        # The state the demo home reports now, read through the reader on this request.
+        monitored = wait_until("the selected light's current state", current)
+        assert monitored["missing"] is False
+        state = monitored["state"]
+        assert state["state"] in ("on", "off", "unavailable")
+        assert state["availability"] == (
+            "unavailable" if state["state"] == "unavailable" else "available"
         )
-        for field in ("received_at", "persisted_at", "last_changed"):
-            offset = datetime.fromisoformat(baseline[field]).utcoffset()
-            assert offset is not None
-            assert offset.total_seconds() == 0
-        assert baseline["received_at"] != baseline["last_changed"], (
-            "Receipt confused with source change"
-        )
+        offset = datetime.fromisoformat(state["last_changed"]).utcoffset()
+        assert offset is not None
+        assert offset.total_seconds() == 0
         json.loads(request(f"/api/selection/{entity}", {"selected": False}))
         assert entity not in {entry["id"] for entry in get("/api/monitored")["entities"]}
-        history = get(f"/api/baselines?entity_id={entity}")["baselines"]
-        events = get(f"/api/events?entity_id={entity}")["events"]
-        assert baseline["id"] in {record["id"] for record in history + events}, (
-            "Removed evidence lost"
-        )
     finally:
         request(f"/api/selection/{entity}", {"selected": initially_selected})
     print(
-        "Compose smoke passed: local bindings, healthy collector, five discoveries, "
-        "dashboard assets, selected fresh baseline, removal and retained history"
+        "Compose smoke passed: local bindings, healthy reader, five discoveries, "
+        "dashboard assets, the selected light's current state and its removal"
     )
 
 

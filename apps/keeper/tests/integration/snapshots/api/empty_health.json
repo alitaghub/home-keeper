@@ -1,7 +1,9 @@
 {
   "status": 200,
   "body": {
+    "checked_at": "2026-10-12T10:00:00+00:00",
+    "error": null,
     "source_id": "demo",
-    "status": "pending"
+    "status": "healthy"
   }
 }

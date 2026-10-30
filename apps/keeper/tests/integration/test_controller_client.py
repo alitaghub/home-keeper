@@ -130,3 +130,12 @@ def test_controller_answer_inside_its_own_deadline_is_never_unreachable() -> Non
     with controller(delay=5.5) as url:
         result = HttpController(url, SERVICE_TOKEN).send(light({"action": "on"}))
     assert result == "ok"
+
+
+def test_a_send_given_less_time_gives_up_as_unreachable_when_that_time_ends() -> None:
+    with controller(delay=1) as url:
+        started = time.monotonic()
+        with pytest.raises(ControllerUnreachable):
+            HttpController(url, SERVICE_TOKEN).send(light({"action": "on"}), 0.2)
+        waited = time.monotonic() - started
+    assert waited < 0.9, f"waited {waited:.1f} s, past the 0.2 s given"

@@ -6,12 +6,11 @@
     },
     "device_kind": "light",
     "entity_id": "bulb-a",
-    "event_id": null,
     "id": "<uuid-1>",
     "outcome": "unreachable",
     "sender": {
       "kind": "dashboard"
     },
-    "sent_at": "2026-10-12T10:00:04+00:00"
+    "sent_at": "2026-10-12T10:00:07+00:00"
   }
 }

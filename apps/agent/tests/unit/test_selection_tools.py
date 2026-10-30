@@ -6,7 +6,6 @@ from agent_support import HOME_KEEPER_URL, FakeKeeper, call, snapshot
 
 # One call per write tool: (args, method, path, JSON body or None).
 WRITES: dict[str, tuple[dict[str, object], str, str, object]] = {
-    "refresh_discovery": ({}, "POST", "/api/discovery/refresh", None),
     "monitor": ({"entity_id": "bulb-a"}, "PUT", "/api/selection/bulb-a", {"selected": True}),
     "stop_monitoring": (
         {"entity_id": "bulb-a"},
@@ -20,12 +19,7 @@ WRITES: dict[str, tuple[dict[str, object], str, str, object]] = {
 @pytest.mark.parametrize("name", sorted(WRITES))
 def test_write_tool_sends_one_marked_request_to_its_keeper_route(name: str) -> None:
     args, method, path, body = WRITES[name]
-    keeper = FakeKeeper(
-        {
-            "/api/discovery/refresh": snapshot("discovery_refresh"),
-            "/api/selection/bulb-a": snapshot("put_selection"),
-        }
-    )
+    keeper = FakeKeeper({"/api/selection/bulb-a": snapshot("put_selection")})
 
     result = call(keeper.tools(), name, args)
 

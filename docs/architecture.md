@@ -1,10 +1,11 @@
 # Architecture
 
-Home Keeper has three running parts: a collector that reads the home, an API
-that decides what to keep, and a dashboard that shows it. They run as two
-containers from one image. The default stack adds a bundled Home Assistant and
-a one-shot `ha-setup` container that onboards it and stores the collector's and
-the controller's tokens.
+Home Keeper has three running parts: a reader that reads Home Assistant when
+asked, an API that decides what to show, and a dashboard that shows it. Device
+history stays in Home Assistant's recorder; Home Keeper keeps no copy of it.
+They run as two containers from one image. The default stack adds a bundled Home
+Assistant and a one-shot `ha-setup` container that onboards it and stores the
+reader's and the controller's tokens.
 The optional `control` profile adds a controller, from its own image, that
 switches monitored lights, plugs and switches for the API; [control.md](control.md) covers it.
 The optional `agent` profile adds a chat agent, its chat page and a Postgres for
@@ -21,23 +22,22 @@ flowchart LR
     end
 
     setup["ha-setup<br/><i>runs once</i>"] -- "onboarding,<br/>two long-lived tokens" --> ha
-    setup -- "token volume<br/>(collector reads it)" --> collector
+    setup -- "token volume<br/>(reader reads it)" --> reader
     setup -- "control token volume<br/>(controller reads it)" --> controller
 
     subgraph keeper["Home Keeper (Docker Compose)"]
         direction LR
-        collector["Collector<br/><i>live or demo</i>"]
+        reader["Reader<br/><i>live or demo</i>"]
         api["API<br/><i>FastAPI</i>"]
         db[("SQLite")]
-        collector -- "catalog, snapshots,<br/>events, heartbeats" --> api
-        api -- "selection revision" --> collector
+        api -- "catalog, current state,<br/>history, reachability" --> reader
         api --> db
         controller["Controller<br/><i>profile control</i>"]
         api -- "fixed light and switch commands" --> controller
         controller -- "heartbeats" --> api
     end
 
-    ha -- "registry reads, state reads,<br/>state_changed events" --> collector
+    reader -- "registry, state<br/>and history reads" --> ha
     controller -- "light.turn_on, light.turn_off,<br/>switch.turn_on, switch.turn_off" --> ha
     browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> api
 
@@ -58,16 +58,16 @@ flowchart LR
 
 | Part      | Code                                   | Job                                                                                         |
 | --------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Collector | `live.py`, `home_assistant.py`         | Reads Home Assistant. Keeps only selected lights and approved fields. Sends typed records.   |
-| Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the collector's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
-| Demo      | `demo.py`                              | Replaces the live collector with a synthetic home. Same API calls, no hardware. Applies demo light commands. |
-| API       | `api.py`, `models.py`, `control.py`    | Validates every record and records collection gaps. Routes selection to Monitoring and commands to Commands. |
-| Monitoring | `monitoring.py`                       | Owns the selection and its revision, decides which readings may be recorded, and answers each monitored device's kind, current reading and freshness. |
-| Commands  | `commands.py`                          | Checks, forwards and records commands to monitored lights, plugs and switches, and waits for the reading that shows the outcome. |
-| Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo collector. Publishes no port. |
-| Recorder  | `recorder.py`                          | Admits baselines and events, stores them, and decides which one is a light's current state. |
-| Store     | `store.py`                             | SQLite schema, transactions, retention.                                                     |
-| Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, and collection gaps.              |
+| Reader    | `reader_service.py`, `home_assistant.py` | Holds the Home Assistant token. Answers the API's reads of the catalog, current state, history and reachability on request. Keeps no state; caches the catalog for up to 10 seconds. The API reaches it through `reader.py`. |
+| Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the reader's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
+| Demo      | `demo.py`, `reader_service.py`         | The reader's synthetic home. Same reader routes, no hardware, a day of synthetic history from the start. Applies demo light commands. |
+| API       | `api.py`, `models.py`, `control.py`    | Validates requests and answers them from the reader and the store. Routes selection to Monitoring and commands to Commands. |
+| History   | `changes.py`, `usage.py`               | Turns Home Assistant's history rows into the changes History lists and the usage numbers, with unknown time named. |
+| Monitoring | `monitoring.py`                       | Owns the selection, checks a new selection against Home Assistant's catalog, and answers each monitored device's current state from the reader. |
+| Commands  | `commands.py`                          | Checks, forwards and records commands to monitored lights, plugs and switches, then reads the device's state every 0.5 s for up to 5 s to confirm the outcome. |
+| Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo reader. Publishes no port. |
+| Store     | `store.py`                             | SQLite: the selection, the command log and a few metadata values. Replaces a database an earlier release wrote. Command retention. |
+| Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline and the command log.               |
 | Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
 | Chat      | `apps/chat`                            | Optional. Builds the unmodified Agent Chat UI. Your browser talks to the agent directly.    |
 | Telegram  | `apps/agent/src/home_keeper_agent/telegram.py` | Optional. Polls private messages from allowed users and forwards questions and approvals to the agent. Publishes no port. |
@@ -76,18 +76,25 @@ Python code lives in `apps/keeper/src/home_keeper`.
 
 ## Rules the layout enforces
 
-- **The API is the only writer.** The collector has no database mount. It posts
-  to internal endpoints that need a service credential the API creates at
-  startup.
+- **The API is the only writer.** Only the API mounts the database. The reader
+  and the controller answer internal requests that need a service credential the
+  API creates at startup.
+- **Home Keeper stores only what is its own.** The database holds the selection,
+  the command log and a few metadata values. Device state and history are read
+  from Home Assistant on each request, so the dashboard never shows a stale copy.
+  When Home Assistant cannot be reached, states show as unknown and every tab
+  shows a banner.
 - **Nothing is monitored until you select it.** Discovery lists devices. It does
-  not approve them. Each selection change bumps a server-owned revision. The API
-  rejects data from a collector that works from an older revision, so a slow
-  read cannot bring back a light you just removed.
-- **The collector is read-only toward the home.** The connector makes fixed
+  not approve them. Monitoring is the only filter: History, usage and the agent
+  cover the devices monitored now, with all the history Home Assistant has for
+  them.
+- **The reader is read-only toward the home.** The connector makes fixed
   registry reads, one state read for each new light or switch candidate at
-  discovery to detect groups, selected-state reads and one filtered event subscription. It
-  has no service calls and no device writes. The collector image contains no
-  controller code.
+  discovery to detect groups, state reads of the devices the API asks for,
+  `history/history_during_period` for their history, and `GET /api/` to check
+  reachability. It has no service calls, no event subscription, no device writes
+  and no database mount. The keeper image
+  contains no controller code. The API never joins the `home-assistant` network.
 - **Control is opt-in and narrow.** Only the controller calls Home Assistant
   services, and only `light.turn_on` (with an optional brightness percent) and
   `light.turn_off` on `light.*` entities, and `switch.turn_on` and
@@ -97,9 +104,9 @@ Python code lives in `apps/keeper/src/home_keeper`.
 - **Every command leaves evidence.** The API refuses a command for a light that
   is not monitored, has no known state, is unavailable or is already in that
   state. It records every command it forwards, with the outcome it observed.
-- **Evidence, not guesses.** When collection stops, the API records a gap. After
-  recovery it stores a fresh snapshot and marks the transition time as unknown.
-  It never invents the change that happened while it was blind.
+- **Unknown, not guessed.** Time Home Assistant has no history for, and time it
+  reported a device unavailable, counts as unknown. The API never invents a change
+  Home Assistant did not record.
 
 ## Selecting a light
 
@@ -108,38 +115,39 @@ sequenceDiagram
     actor You
     participant D as Dashboard
     participant A as API
-    participant C as Collector
+    participant R as Reader
     participant H as Home Assistant
 
     You->>D: Click Monitor
     D->>A: PUT /api/selection/{entity_id}
-    A-->>D: New selection revision
-    C->>A: Next pass reads the selection
-    C->>H: Read current state
-    C->>A: Baseline snapshot
-    C->>H: Subscribe to state_changed
-    H-->>C: Light turned on
-    C->>A: Event (filtered to approved fields)
+    A->>R: Catalog
+    R->>H: Registry reads
+    A-->>D: New selection
+    D->>A: GET /api/monitored
+    A->>R: Current state
+    R->>H: GET /api/states
+    A-->>D: The light's state now
     D->>A: GET /api/events
-    A-->>D: "off → on" with timestamps
+    A->>R: History of the monitored devices
+    R->>H: history/history_during_period
+    A-->>D: "off → on" with Home Assistant's time
 ```
 
-A collection pass runs every 10 seconds by default. Between passes, live mode
-streams events as Home Assistant sends them.
+The dashboard polls every 3 seconds, and each poll reaches Home Assistant through
+the reader.
 
 ## Words used in the code
 
 | Term        | Meaning                                                                                       |
 | ----------- | --------------------------------------------------------------------------------------------- |
 | Source      | Where data comes from: `demo` or `home_assistant`. One database holds one source.             |
-| Catalog     | The devices and entities the collector discovered, with whether each one can be monitored.   |
-| Device kind | What a recorded entity is, from its Home Assistant domain: `light` or `switch` (plugs too). Every stored row carries it; a one-time migration, with a backup, added it to older databases. Separate from a record's `kind` (baseline, event, ...). |
-| Selection   | The lights, plugs and switches you chose to monitor, plus a revision number the API owns.    |
-| Baseline    | A snapshot of a device's state. Taken at selection, during polling, and after recovery.      |
-| Event       | One observed change, with old and new values and three timestamps (fired, received, saved).  |
-| Recorder    | Admits a baseline or event, stores it once, and decides whether it becomes the device's current state. |
-| Gap         | A period when collection was interrupted. Open until a recovery snapshot closes it.          |
-| Freshness   | How recently Home Assistant answered. It says nothing about whether the bulb itself answered. |
+| Catalog     | The devices and entities the reader lists from Home Assistant, with whether each one can be monitored. |
+| Device kind | What a device is, from its Home Assistant domain: `light` or `switch` (plugs too).           |
+| Selection   | The lights, plugs and switches you chose to monitor. The only filter for history, usage and the agent. |
+| Reader      | The service that reads Home Assistant for the API: catalog, current state, history and reachability. |
+| History     | A device's past states as Home Assistant's recorder keeps them. Read on demand, never copied. |
+| Change      | Two consecutive history rows of a monitored device that differ in state, availability, brightness or color, at Home Assistant's time. |
+| Unknown time | Time Home Assistant has no history for (`no_history`) or reported a device unavailable (`unavailable`). |
 | Command     | A request to switch a monitored light, plug or switch, with its sender and the outcome the API observed. |
 
 ## The API contract
@@ -149,5 +157,5 @@ API's OpenAPI schema with `mise run gen:api`. A field rename that the UI does no
 follow fails the TypeScript build. Snapshot tests in `test_api_contract.py` pin
 the response shapes.
 
-[collection.md](collection.md) covers collection, gaps and retention in detail.
+[collection.md](collection.md) covers history, usage and retention in detail.
 [security.md](security.md) covers the trust boundaries.

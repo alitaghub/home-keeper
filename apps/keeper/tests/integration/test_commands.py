@@ -1,50 +1,43 @@
-"""Device commands through `Commands`, with a real store and a scripted controller whose
-steps run inside the send, so readings arrive during it without a delivery thread."""
+"""Device commands through `Commands`, with a real store, a fake reader and a scripted
+controller. `now` is a test clock that `sleep` moves, so no test waits in real time."""
 
-import sqlite3
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Literal
 
 import anyio
 import anyio.to_thread
 import pytest
-from pydantic import TypeAdapter
+from support.reader import FakeReader, Payload
 
 from home_keeper.commands import Commands, Refusal
 from home_keeper.control import ControllerUnreachable
 from home_keeper.models import (
-    ChangeEvent,
     CommandRefusalCode,
     CommandRequest,
     CommandsPage,
     DeviceKind,
-    DeviceObservation,
     Entity,
     LightCommandRecord,
     SwitchCommandRecord,
 )
-from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
-from home_keeper.recorder import Recorder, Rejected
+from home_keeper.monitoring import UnknownEntity, UnsupportedEntity
 from home_keeper.store import Store
 from home_keeper_light_command import ForwardedCommand
 
 pytestmark = pytest.mark.anyio
 
-type Payload = dict[str, object]
 type Recorded = LightCommandRecord | SwitchCommandRecord
 type Result = Recorded | Refusal | UnknownEntity | UnsupportedEntity
 
 NOW = datetime(2026, 10, 12, 10, tzinfo=UTC)
 STALE_SECONDS = 15
-# Long enough that a command never gives up on a reading the controller already delivered.
-OBSERVE_WAIT = 5.0
-# Short, for commands whose outcome is decided only when the wait runs out.
-GIVE_UP_WAIT = 0.2
+WAIT_SECONDS = 5.0
+POLL_SECONDS = 0.5
 
 ON: Payload = {"action": "on"}
 OFF: Payload = {"action": "off"}
@@ -56,8 +49,6 @@ IS_OFF: Payload = {"state": "off"}
 IS_ON: Payload = {"state": "on"}
 IS_UNKNOWN: Payload = {"state": "unknown"}
 IS_UNAVAILABLE: Payload = {"state": "unavailable"}
-
-observation_of: TypeAdapter[DeviceObservation] = TypeAdapter(DeviceObservation)
 
 
 def on(brightness_pct: int) -> Payload:
@@ -96,28 +87,31 @@ CATALOG = [
 class Clock:
     def __init__(self) -> None:
         self.now = NOW
+        # Every sleep the command asked for, in seconds.
+        self.sleeps: list[float] = []
 
     def __call__(self) -> datetime:
         return self.now
 
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += timedelta(seconds=seconds)
+
 
 @dataclass
 class ScriptedController:
-    """Records each forwarded command and runs `steps` inside the send.
+    """Records each forwarded command and runs `steps` inside the send. The clock stays put."""
 
-    A send moves the clock one second on before its steps run, so a reading a step records
-    counts as received after the send.
-    """
-
-    clock: Clock
     sent: list[ForwardedCommand] = field(default_factory=list[ForwardedCommand])
+    # The time limit of each send, in seconds.
+    timeouts: list[float] = field(default_factory=list[float])
     steps: list[Callable[[], object]] = field(default_factory=list[Callable[[], object]])
     reply: Literal["ok", "refused"] = "ok"
     unreachable: bool = False
 
-    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+    def send(self, forwarded: ForwardedCommand, timeout_seconds: float) -> Literal["ok", "refused"]:
         self.sent.append(forwarded)
-        self.clock.now += timedelta(seconds=1)
+        self.timeouts.append(timeout_seconds)
         for step in self.steps:
             step()
         if self.unreachable:
@@ -132,80 +126,57 @@ def kind_of(device: Device) -> Payload:
     return {"device_kind": "switch"} if device.kind == "switch" else {}
 
 
-def bump_revision(db: sqlite3.Connection) -> None:
-    db.execute("UPDATE metadata SET value=CAST(value AS INTEGER) + 1 WHERE key='revision'")
-
-
 @dataclass
 class Home:
     store: Store
     clock: Clock
     controller: ScriptedController
-    recorder: Recorder
+    reader: FakeReader
     commands: Commands
+    # The clock when the controller was called; None before the first send.
+    sent_at: datetime | None = None
+    # Seconds after the send at which each later state read started.
+    confirmation_reads: list[float] = field(default_factory=list[float])
+    # Run at each state read after the send, before the reader answers.
+    after_send: list[Callable[[], object]] = field(default_factory=list[Callable[[], object]])
 
-    def revision(self) -> int:
-        with self.store.transaction("DEFERRED") as db:
-            return Store.selection(db).revision
+    def __post_init__(self) -> None:
+        def mark_send() -> None:
+            self.sent_at = self.clock.now
+
+        def on_read() -> None:
+            if self.sent_at is None:
+                return
+            self.confirmation_reads.append((self.clock.now - self.sent_at).total_seconds())
+            for step in self.after_send:
+                step()
+
+        self.controller.steps.insert(0, mark_send)
+        self.reader.on_read = on_read
 
     def select(self, device: Device, *, selected: bool = True) -> None:
-        monitoring = Monitoring(self.store, now=self.clock, reconciliation_seconds=60)
-        result = monitoring.select(device.entity_id, selected=selected)
-        assert not isinstance(result, UnknownEntity | UnsupportedEntity), result
+        with self.store.transaction() as db:
+            if selected:
+                db.execute(
+                    "INSERT OR IGNORE INTO selection(id, device_kind) VALUES(?, ?)",
+                    (device.entity_id, device.kind),
+                )
+            else:
+                db.execute("DELETE FROM selection WHERE id=?", (device.entity_id,))
 
-    def snapshot(
-        self,
-        device: Device,
-        state: Payload,
-        *,
-        at: datetime | None = None,
-        source: str | None = None,
-    ) -> None:
-        """Record a snapshot as the collector would, received at `at` (default: now)."""
-        payload = observation_of.validate_python(
-            {
-                "entity_id": device.entity_id,
-                "source_entity_id": source or device.source,
-                "selection_revision": self.revision(),
-                "source_id": "demo",
-                "received_at": at or self.clock.now,
-                # Source times before every test reading, so a later event always wins.
-                "last_changed": "2020-01-01T00:00:00Z",
-                "last_updated": "2020-01-01T00:00:00Z",
-                "availability": "available" if state["state"] in ("on", "off") else state["state"],
-            }
-            | kind_of(device)
-            | state
-        )
-        result = self.recorder.observe(payload)
-        assert not isinstance(result, Rejected), result
+    def report(self, device: Device, state: Payload, *, source: str | None = None) -> None:
+        """Home Assistant now reports `state` for the device."""
+        self.reader.set(device.entity_id, source or device.source, state | kind_of(device))
 
-    def report(
-        self,
-        device: Device,
-        identity: str,
-        new: Payload,
-        *,
-        old: Payload,
-        at: datetime | None = None,
-        source: str | None = None,
-    ) -> None:
-        """Record a change event as the collector would, received at `at` (default: now)."""
-        received = at or self.clock.now
-        payload = ChangeEvent.model_validate(
-            {
-                "id": identity,
-                "entity_id": device.entity_id,
-                "source_entity_id": source or device.source,
-                "source_id": "demo",
-                "selection_revision": self.revision(),
-                "event_time": received,
-                "received_at": received,
-                "old": old | kind_of(device),
-                "new": new | kind_of(device),
-            }
-        )
-        assert self.recorder.record(payload) == "recorded"
+    def report_from(self, seconds: float, device: Device, state: Payload) -> None:
+        """Home Assistant reports `state` from `seconds` after the send on."""
+
+        def change() -> None:
+            sent_at = self.sent_at
+            if sent_at is not None and self.clock.now >= sent_at + timedelta(seconds=seconds):
+                self.report(device, state)
+
+        self.after_send.append(change)
 
     def page(
         self,
@@ -223,42 +194,57 @@ class Home:
         return self.page().commands
 
 
+def make_commands(
+    store: Store,
+    controller: ScriptedController | None,
+    reader: FakeReader,
+    clock: Clock,
+    *,
+    queue: float = 3.0,
+    slots: int = 4,
+    retention_days: int = 30,
+) -> Commands:
+    return Commands(
+        store,
+        controller,
+        reader,
+        now=clock,
+        retention_days=retention_days,
+        wait_seconds=WAIT_SECONDS,
+        stale_seconds=STALE_SECONDS,
+        poll_seconds=POLL_SECONDS,
+        sleep=clock.sleep,
+        queue_seconds=queue,
+        slots=slots,
+    )
+
+
 def home(
     tmp_path: Path,
     *,
     controller: bool = True,
-    wait: float = GIVE_UP_WAIT,
     queue: float = 3.0,
     slots: int = 4,
     retention_days: int = 30,
 ) -> Home:
-    """The test catalog with bulb-a and plug-a monitored, no readings and no heartbeat."""
+    """bulb-a and plug-a monitored, Home Assistant reporting no state, no heartbeat."""
     clock = Clock()
     store = Store(tmp_path / "commands.sqlite")
-    with store.transaction() as db:
-        # Written by `create_app` at startup; the selection read needs it.
-        db.execute("INSERT INTO metadata VALUES('refresh_revision', '0')")
-        db.executemany(
-            "INSERT INTO catalog VALUES(?, ?)",
-            [(entity.id, entity.model_dump_json()) for entity in CATALOG],
-        )
-        db.executemany(
-            "INSERT INTO selection(id, device_kind) VALUES(?, ?)",
-            [(device.entity_id, device.kind) for device in (LIGHT, PLUG)],
-        )
-        bump_revision(db)
-    scripted = ScriptedController(clock)
-    commands = Commands(
+    scripted = ScriptedController()
+    reader = FakeReader(CATALOG)
+    commands = make_commands(
         store,
         scripted if controller else None,
-        now=clock,
-        retention_days=retention_days,
-        wait_seconds=wait,
-        queue_seconds=queue,
+        reader,
+        clock,
+        queue=queue,
         slots=slots,
-        stale_seconds=STALE_SECONDS,
+        retention_days=retention_days,
     )
-    return Home(store, clock, scripted, Recorder(store, "demo", clock), commands)
+    house = Home(store, clock, scripted, reader, commands)
+    house.select(LIGHT)
+    house.select(PLUG)
+    return house
 
 
 def ready(
@@ -266,14 +252,13 @@ def ready(
     device: Device,
     state: Payload = IS_OFF,
     *,
-    wait: float = GIVE_UP_WAIT,
     queue: float = 3.0,
     slots: int = 4,
     retention_days: int = 30,
 ) -> Home:
-    """A home with control on and `device` last read in `state`."""
-    house = home(tmp_path, wait=wait, queue=queue, slots=slots, retention_days=retention_days)
-    house.snapshot(device, state)
+    """A home with control on and Home Assistant reporting `device` in `state`."""
+    house = home(tmp_path, queue=queue, slots=slots, retention_days=retention_days)
+    house.report(device, state)
     assert house.commands.heartbeat(NOW)
     return house
 
@@ -324,7 +309,7 @@ def anyio_backend() -> str:
 
 async def test_control_is_on_only_while_the_controller_heartbeat_is_fresh(tmp_path: Path) -> None:
     house = home(tmp_path)
-    house.snapshot(LIGHT, IS_OFF)
+    house.report(LIGHT, IS_OFF)
     assert house.commands.status().model_dump() == {"state": "off", "heartbeat_at": None}
     assert await switch(house, LIGHT, ON) == refused("control_off")
 
@@ -361,7 +346,7 @@ async def test_without_a_controller_control_is_off_and_commands_are_refused(
     tmp_path: Path,
 ) -> None:
     house = home(tmp_path, controller=False)
-    house.snapshot(LIGHT, IS_OFF)
+    house.report(LIGHT, IS_OFF)
     # Whether or not the heartbeat is stored, no controller means no control.
     house.commands.heartbeat(NOW)
     assert house.commands.status().state == "off"
@@ -390,20 +375,21 @@ async def test_unknown_or_unsupported_entity_is_reported_before_control_is_check
 ) -> None:
     # Control is off, so any other answer means the catalog checks did not come first.
     house = home(tmp_path)
-    house.snapshot(LIGHT, IS_OFF)
+    house.report(LIGHT, IS_OFF)
     assert isinstance(await switch(house, entity, ON), expected)
     assert house.controller.sent == []
     assert house.audit() == []
 
 
 def refusal_cases() -> list[object]:
-    """(device, action, last reading, monitored, heartbeat, refusal code), in check order."""
+    """(device, action, reported state, monitored, heartbeat, refusal code), in check order."""
     shared: list[tuple[str, Payload, Payload | None, bool, bool, CommandRefusalCode]] = [
         ("control off", ON, IS_OFF, True, False, "control_off"),
         # Control is checked before monitoring.
         ("control off and not monitored", ON, None, False, False, "control_off"),
         ("not monitored", ON, None, False, True, "not_monitored"),
-        ("never read", ON, None, True, True, "state_unknown"),
+        # Home Assistant has no state for the device.
+        ("no state", ON, None, True, True, "state_unknown"),
         ("unknown state", ON, IS_UNKNOWN, True, True, "state_unknown"),
         ("unavailable, on", ON, IS_UNAVAILABLE, True, True, "unavailable"),
         ("unavailable, off", OFF, IS_UNAVAILABLE, True, True, "unavailable"),
@@ -452,21 +438,21 @@ def refusal_cases() -> list[object]:
 
 
 @pytest.mark.parametrize(
-    ("device", "action", "reading", "monitored", "heartbeat", "code"), refusal_cases()
+    ("device", "action", "state", "monitored", "heartbeat", "code"), refusal_cases()
 )
 async def test_refusals_come_in_a_fixed_order_and_nothing_is_sent_or_stored(
     tmp_path: Path,
     *,
     device: Device,
     action: Payload,
-    reading: Payload | None,
+    state: Payload | None,
     monitored: bool,
     heartbeat: bool,
     code: CommandRefusalCode,
 ) -> None:
     house = home(tmp_path)
-    if reading is not None:
-        house.snapshot(device, reading)
+    if state is not None:
+        house.report(device, state)
     if not monitored:
         house.select(device, selected=False)
     if heartbeat:
@@ -476,33 +462,34 @@ async def test_refusals_come_in_a_fixed_order_and_nothing_is_sent_or_stored(
     assert house.audit() == []
 
 
-async def test_a_reselected_device_refuses_commands_until_a_new_reading_arrives(
-    tmp_path: Path,
+@pytest.mark.parametrize("device", DEVICES)
+async def test_unreachable_home_assistant_makes_the_state_unknown_and_nothing_is_sent(
+    tmp_path: Path, device: Device
 ) -> None:
-    house = ready(tmp_path, LIGHT, IS_OFF)
-    house.select(LIGHT, selected=False)
-    house.select(LIGHT)
-    assert await switch(house, LIGHT, ON) == refused("state_unknown")
+    house = ready(tmp_path, device)
+    house.reader.error = "connection"
+    assert await switch(house, device, ON) == refused("state_unknown", device)
     assert house.controller.sent == []
+    assert house.audit() == []
 
 
-async def test_brightness_is_refused_for_a_switch_reading_even_when_discovery_says_light(
+async def test_brightness_is_refused_for_a_switch_reading_even_when_the_catalog_says_light(
     tmp_path: Path,
 ) -> None:
     house = home(tmp_path)
-    # Discovery lists bulb-a as a light; Home Assistant now reports it as a switch.
-    house.snapshot(Device("bulb-a", "switch.desk", "switch", "device"), IS_OFF)
+    # The catalog lists bulb-a as a light; Home Assistant now reports it as a switch.
+    house.report(Device("bulb-a", "switch.desk", "switch", "device"), IS_OFF)
     assert house.commands.heartbeat(NOW)
     assert await switch(house, LIGHT, on(30)) == refused("not_supported")
     assert house.controller.sent == []
 
 
-async def test_reading_from_outside_the_device_domain_makes_the_entity_unsupported(
+async def test_state_from_outside_the_device_domain_makes_the_entity_unsupported(
     tmp_path: Path,
 ) -> None:
     # The controller only takes a light's own `light.*` entity ID.
     house = home(tmp_path)
-    house.snapshot(LIGHT, IS_OFF, source="switch.desk")
+    house.report(LIGHT, IS_OFF, source="switch.desk")
     assert house.commands.heartbeat(NOW)
     assert isinstance(await switch(house, LIGHT, ON), UnsupportedEntity)
     assert house.controller.sent == []
@@ -513,7 +500,7 @@ async def test_reading_from_outside_the_device_domain_makes_the_entity_unsupport
 
 
 @pytest.mark.parametrize(
-    ("device", "reading", "action"),
+    ("device", "state", "action"),
     [
         pytest.param(LIGHT, IS_OFF, ON, id="light on"),
         pytest.param(LIGHT, IS_OFF, on(30), id="light on at 30 %"),
@@ -521,34 +508,34 @@ async def test_reading_from_outside_the_device_domain_makes_the_entity_unsupport
         # A different brightness is a change: 74 is three steps from 77.
         pytest.param(LIGHT, {"state": "on", "brightness": 74}, on(30), id="light dim to 30 %"),
         pytest.param(LIGHT, {"state": "on", "brightness": 100}, on(30), id="light from full"),
-        # A light with no recorded brightness cannot already be at 30 %.
+        # A light with no brightness cannot already be at 30 %.
         pytest.param(LIGHT, {"state": "on", "color_mode": "onoff"}, on(30), id="light no level"),
         pytest.param(PLUG, IS_OFF, ON, id="plug on"),
         pytest.param(PLUG, IS_ON, OFF, id="plug off"),
     ],
 )
-async def test_change_is_forwarded_to_the_source_entity_of_the_current_reading(
-    tmp_path: Path, device: Device, reading: Payload, action: Payload
+async def test_change_is_forwarded_to_the_source_entity_home_assistant_reports(
+    tmp_path: Path, device: Device, state: Payload, action: Payload
 ) -> None:
-    house = ready(tmp_path, device, reading)
+    house = ready(tmp_path, device, state)
     record = recorded(await switch(house, device, action))
     assert house.controller.bodies() == [forwarded(device, action)]
     assert record.device_kind == device.kind
 
 
 @pytest.mark.parametrize("device", DEVICES)
-async def test_forwarding_follows_the_source_entity_id_of_the_newest_reading(
+async def test_forwarding_follows_a_renamed_home_assistant_entity(
     tmp_path: Path, device: Device
 ) -> None:
     house = ready(tmp_path, device)
-    # The latest event attributes the device to a renamed Home Assistant entity.
+    # Home Assistant now attributes the device to a renamed entity.
     renamed = f"{device.source}_2"
-    house.report(device, "renamed", IS_OFF, old=IS_ON, source=renamed)
+    house.report(device, IS_OFF, source=renamed)
     recorded(await switch(house, device, ON))
     assert house.controller.bodies() == [forwarded(device, ON, renamed)]
 
 
-# Observing the result
+# Confirming the result by reading the device's state after the send
 
 
 @pytest.mark.parametrize(
@@ -558,18 +545,17 @@ async def test_forwarding_follows_the_source_entity_id_of_the_newest_reading(
         pytest.param(PLUG, ON, IS_ON, id="plug"),
     ],
 )
-async def test_command_is_observed_from_a_matching_event_received_after_the_send(
+async def test_command_is_observed_when_home_assistant_shows_the_commanded_state(
     tmp_path: Path, device: Device, action: Payload, shown: Payload
 ) -> None:
-    house = ready(tmp_path, device, wait=OBSERVE_WAIT)
-    house.controller.steps.append(lambda: house.report(device, "after-send", shown, old=IS_OFF))
+    house = ready(tmp_path, device)
+    house.controller.steps.append(lambda: house.report(device, shown))
     record = recorded(await switch(house, device, action, TELEGRAM))
     assert record.model_dump(mode="json", exclude={"id", "sent_at", "command"}) == {
         "entity_id": device.entity_id,
         "device_kind": device.kind,
         "sender": TELEGRAM,
         "outcome": "observed",
-        "event_id": "after-send",
     }
     assert record.command.model_dump(exclude_none=True) == action
     # The send time is taken before the controller is called.
@@ -579,44 +565,84 @@ async def test_command_is_observed_from_a_matching_event_received_after_the_send
 
 
 @pytest.mark.parametrize("device", DEVICES)
-async def test_off_command_is_observed_from_an_off_event(tmp_path: Path, device: Device) -> None:
-    house = ready(tmp_path, device, IS_ON, wait=OBSERVE_WAIT)
-    house.controller.steps.append(lambda: house.report(device, "went-off", IS_OFF, old=IS_ON))
-    record = recorded(await switch(house, device, OFF, BROWSER_CHAT))
-    assert (record.outcome, record.event_id) == ("observed", "went-off")
+async def test_off_command_is_observed_from_an_off_state(tmp_path: Path, device: Device) -> None:
+    house = ready(tmp_path, device, IS_ON)
+    house.controller.steps.append(lambda: house.report(device, IS_OFF))
+    assert recorded(await switch(house, device, OFF, BROWSER_CHAT)).outcome == "observed"
 
 
-@pytest.mark.parametrize("device", DEVICES)
-async def test_command_is_observed_from_a_snapshot_received_after_the_send(
-    tmp_path: Path, device: Device
-) -> None:
-    house = ready(tmp_path, device, wait=OBSERVE_WAIT)
-    house.controller.steps.append(lambda: house.snapshot(device, IS_ON))
-    record = recorded(await switch(house, device, ON))
-    # A snapshot is evidence but not an event.
-    assert (record.outcome, record.event_id) == ("observed", None)
-
-
-async def test_matching_reading_that_arrives_after_the_send_returns_is_observed(
+async def test_reads_every_half_second_and_stops_at_the_five_second_deadline(
     tmp_path: Path,
 ) -> None:
-    house = ready(tmp_path, LIGHT, wait=OBSERVE_WAIT)
-    sent = threading.Event()
-    house.controller.steps.append(sent.set)
-    results: list[Result] = []
+    house = ready(tmp_path, LIGHT)
+    record = recorded(await switch(house, LIGHT, ON))
+    assert record.outcome == "not_observed"
 
-    async def command() -> None:
-        results.append(await switch(house, LIGHT, ON))
+    reads = house.confirmation_reads
+    assert reads, "no state was read after the send"
+    assert reads[0] <= POLL_SECONDS
+    gaps = [round(later - earlier, 6) for earlier, later in pairwise(reads)]
+    assert gaps == [POLL_SECONDS] * (len(reads) - 1)
+    assert WAIT_SECONDS - POLL_SECONDS <= reads[-1] <= WAIT_SECONDS
+    assert all(seconds <= POLL_SECONDS for seconds in house.clock.sleeps)
+    # Nothing waits past the deadline.
+    assert house.sent_at is not None
+    assert house.clock.now - house.sent_at <= timedelta(seconds=WAIT_SECONDS)
+    assert house.audit() == [record]
 
-    async with anyio.create_task_group() as group:
-        group.start_soon(command)
-        await anyio.to_thread.run_sync(sent.wait, 5)
-        # The command now waits for its result; the light reports a moment later.
-        await anyio.sleep(0.3)
-        house.report(LIGHT, "later", IS_ON, old=IS_OFF)
-    [result] = results
-    record = recorded(result)
-    assert (record.outcome, record.event_id) == ("observed", "later")
+
+async def test_reading_stops_at_the_first_state_that_shows_the_command(tmp_path: Path) -> None:
+    house = ready(tmp_path, LIGHT)
+    house.report_from(2.0, LIGHT, IS_ON)
+    record = recorded(await switch(house, LIGHT, ON))
+    assert record.outcome == "observed"
+    assert house.confirmation_reads[-1] == 2.0
+    assert house.sent_at is not None
+    assert house.clock.now - house.sent_at == timedelta(seconds=2)
+
+
+async def test_reading_continues_past_a_state_that_does_not_show_the_command(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    # The light ramps up: on, but not yet at the requested level.
+    house.controller.steps.append(lambda: house.report(LIGHT, {"state": "on", "brightness": 20}))
+    house.report_from(1.5, LIGHT, {"state": "on", "brightness": 77})
+    record = recorded(await switch(house, LIGHT, on(30)))
+    assert record.outcome == "observed"
+    assert house.confirmation_reads[-1] == 1.5
+
+
+@pytest.mark.parametrize("error", ["connection", "reader_unreachable", "timeout"])
+async def test_failing_reads_after_the_send_end_as_not_observed_by_the_deadline(
+    tmp_path: Path, error: Literal["connection", "reader_unreachable", "timeout"]
+) -> None:
+    house = ready(tmp_path, LIGHT)
+
+    def lose_home_assistant() -> None:
+        house.reader.error = error
+
+    house.controller.steps.append(lose_home_assistant)
+    record = recorded(await switch(house, LIGHT, ON))
+    assert record.outcome == "not_observed"
+    assert house.audit() == [record]
+    assert house.sent_at is not None
+    assert house.clock.now - house.sent_at <= timedelta(seconds=WAIT_SECONDS)
+
+
+async def test_slow_reads_end_as_not_observed_and_never_stay_pending(tmp_path: Path) -> None:
+    house = ready(tmp_path, LIGHT)
+
+    def slow_read() -> None:
+        # Each read takes three seconds of the clock.
+        house.clock.now += timedelta(seconds=3)
+
+    house.after_send.append(slow_read)
+    record = recorded(await switch(house, LIGHT, ON))
+    assert record.outcome == "not_observed"
+    assert [stored.outcome for stored in house.audit()] == ["not_observed"]
+    # Reads at 0 and 3 s of the send fit the deadline; none starts after it.
+    assert all(seconds <= WAIT_SECONDS for seconds in house.confirmation_reads)
 
 
 @pytest.mark.parametrize(
@@ -628,120 +654,39 @@ async def test_brightness_within_two_steps_of_the_requested_percent_counts_as_ob
 ) -> None:
     house = ready(tmp_path, LIGHT)
     shown: Payload = {"state": "on", "brightness": brightness}
-    house.controller.steps.append(lambda: house.report(LIGHT, "dimmed", shown, old=IS_OFF))
-    record = recorded(await switch(house, LIGHT, on(30)))
-    assert record.outcome == outcome
-    assert record.event_id == ("dimmed" if outcome == "observed" else None)
+    house.controller.steps.append(lambda: house.report(LIGHT, shown))
+    assert recorded(await switch(house, LIGHT, on(30))).outcome == outcome
 
 
-async def test_waiting_continues_past_a_non_matching_reading(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT, wait=OBSERVE_WAIT)
-    ramping: Payload = {"state": "on", "brightness": 20}
-
-    def settle() -> None:
-        house.report(LIGHT, "ramping", ramping, old=IS_OFF)
-        house.report(LIGHT, "settled", {"state": "on", "brightness": 77}, old=ramping)
-
-    house.controller.steps.append(settle)
-    record = recorded(await switch(house, LIGHT, on(30)))
-    assert (record.outcome, record.event_id) == ("observed", "settled")
-
-
-@pytest.mark.parametrize("reading", ["event", "snapshot"])
-async def test_reading_received_before_the_send_never_counts(tmp_path: Path, reading: str) -> None:
-    house = home(tmp_path)
-    house.snapshot(LIGHT, IS_OFF, at=NOW - timedelta(seconds=10))
-    assert house.commands.heartbeat(NOW)
-    before_send = NOW - timedelta(seconds=1)
-
-    def late_delivery() -> None:
-        # The collector received this change before the send but stores it during it.
-        if reading == "event":
-            house.report(LIGHT, "late-delivery", IS_ON, old=IS_OFF, at=before_send)
-        else:
-            house.snapshot(LIGHT, IS_ON, at=before_send)
-
-    house.controller.steps.append(late_delivery)
-    record = recorded(await switch(house, LIGHT, ON))
-    assert (record.outcome, record.event_id) == ("not_observed", None)
-
-
-async def test_matching_reading_of_another_light_does_not_count(tmp_path: Path) -> None:
+async def test_another_devices_change_does_not_count(tmp_path: Path) -> None:
     house = ready(tmp_path, LIGHT)
     house.select(OTHER_LIGHT)
-    house.snapshot(OTHER_LIGHT, IS_OFF)
-    house.controller.steps.append(
-        lambda: house.report(OTHER_LIGHT, "other-light", IS_ON, old=IS_OFF)
-    )
-    record = recorded(await switch(house, LIGHT, ON))
-    assert record.outcome == "not_observed"
+    house.report(OTHER_LIGHT, IS_OFF)
+    house.controller.steps.append(lambda: house.report(OTHER_LIGHT, IS_ON))
+    assert recorded(await switch(house, LIGHT, ON)).outcome == "not_observed"
 
 
 @pytest.mark.parametrize("device", DEVICES)
-async def test_device_that_reports_no_change_is_not_observed(
-    tmp_path: Path, device: Device
-) -> None:
+async def test_device_that_keeps_its_state_is_not_observed(tmp_path: Path, device: Device) -> None:
+    # Home Assistant took the call, but the device still reports the old state.
     house = ready(tmp_path, device)
-    # Home Assistant took the call, but the device reports the same state again.
-    house.controller.steps.append(lambda: house.snapshot(device, IS_OFF))
     record = recorded(await switch(house, device, ON))
-    assert (record.outcome, record.event_id) == ("not_observed", None)
-    assert house.audit() == [record]
-
-
-@pytest.mark.parametrize("reading", ["event", "snapshot"])
-@pytest.mark.parametrize("cleanup", [False, True], ids=["kept", "cleaned"])
-async def test_matching_reading_recorded_after_retention_cleanup_is_observed(
-    tmp_path: Path, reading: str, *, cleanup: bool
-) -> None:
-    house = home(tmp_path, retention_days=1, wait=OBSERVE_WAIT)
-    # The light's only stored history sits exactly at the retention boundary at the send.
-    house.snapshot(LIGHT, IS_OFF)
-    if reading == "event":
-        house.report(LIGHT, "old-off", IS_OFF, old=IS_ON)
-    house.clock.now = NOW + timedelta(days=1)
-    assert house.commands.heartbeat(house.clock.now)
-
-    def expire_then_deliver() -> None:
-        # Runs during the send, after the clock moved on: the old history expires.
-        if cleanup:
-            with house.store.transaction() as db:
-                Store.cleanup(db, (house.clock.now - timedelta(days=1)).isoformat())
-        if reading == "event":
-            house.report(LIGHT, "new-on", IS_ON, old=IS_OFF)
-        else:
-            house.snapshot(LIGHT, IS_ON)
-
-    house.controller.steps.append(expire_then_deliver)
-    record = recorded(await switch(house, LIGHT, ON))
-    assert (record.outcome, record.event_id) == (
-        "observed",
-        "new-on" if reading == "event" else None,
-    )
-    assert house.audit() == [record]
-
-
-async def test_no_matching_reading_within_the_wait_is_not_observed(tmp_path: Path) -> None:
-    house = ready(tmp_path, LIGHT, wait=0.4)
-    started = time.monotonic()
-    record = recorded(await switch(house, LIGHT, ON))
-    assert time.monotonic() - started >= 0.4
-    assert (record.outcome, record.event_id) == ("not_observed", None)
+    assert record.outcome == "not_observed"
     assert house.audit() == [record]
 
 
 @pytest.mark.parametrize("outcome", ["refused", "unreachable"])
 @pytest.mark.parametrize("device", DEVICES)
-async def test_controller_that_refuses_or_fails_is_audited_without_waiting(
+async def test_controller_that_refuses_or_fails_is_audited_without_reading(
     tmp_path: Path, device: Device, outcome: str
 ) -> None:
-    house = ready(tmp_path, device, wait=OBSERVE_WAIT)
+    house = ready(tmp_path, device)
     house.controller.reply = "refused"
     house.controller.unreachable = outcome == "unreachable"
-    started = time.monotonic()
     record = recorded(await switch(house, device, ON))
-    assert time.monotonic() - started < OBSERVE_WAIT - 1
-    assert (record.outcome, record.event_id) == (outcome, None)
+    assert record.outcome == outcome
+    assert house.confirmation_reads == []
+    assert house.clock.sleeps == []
     assert house.controller.bodies() == [forwarded(device, ON)]
     assert house.audit() == [record]
 
@@ -754,7 +699,7 @@ async def test_command_is_stored_as_pending_while_the_controller_works(tmp_path:
     during_send: list[list[Recorded]] = []
     house.controller.steps.append(lambda: during_send.append(house.audit()))
     record = recorded(await switch(house, LIGHT, on(30), TELEGRAM))
-    assert during_send == [[record.model_copy(update={"outcome": "pending", "event_id": None})]]
+    assert during_send == [[record.model_copy(update={"outcome": "pending"})]]
     assert record.outcome == "not_observed"
     assert house.audit() == [record]
 
@@ -780,14 +725,7 @@ async def test_command_left_pending_by_a_crash_is_interrupted_after_restart(
     assert left.sender.model_dump() == TELEGRAM
     assert datetime.fromisoformat(left.sent_at) == NOW
 
-    restarted = Commands(
-        house.store,
-        ScriptedController(house.clock),
-        now=house.clock,
-        retention_days=30,
-        wait_seconds=5.0,
-        stale_seconds=STALE_SECONDS,
-    )
+    restarted = make_commands(house.store, ScriptedController(), house.reader, house.clock)
     restarted.interrupt_pending()
     page = restarted.history(start=None, end=None, limit=500, cursor=None)
     assert page is not None
@@ -857,6 +795,144 @@ async def test_queued_command_is_not_sent_after_its_device_stops_being_monitored
     assert house.audit() == [recorded(first[0])]
 
 
+async def test_device_that_stops_being_monitored_during_the_last_state_read_is_not_sent(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    reads = 0
+
+    def stop_monitoring_during_the_second_check() -> None:
+        # The second check runs with the send slot held and is the last before the send.
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            house.select(LIGHT, selected=False)
+
+    house.reader.on_read = stop_monitoring_during_the_second_check
+    assert await switch(house, LIGHT, ON) == refused("not_monitored")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+# The command deadline
+
+# Below the agent's 10-second request timeout.
+DEADLINE_SECONDS = 8.0
+
+
+def slow_catalog(house: Home, *seconds: float) -> None:
+    """Each catalog read takes the next of `seconds` on the test clock."""
+    delays = list(seconds)
+    catalog = house.reader.catalog
+
+    def slow() -> list[Entity]:
+        house.clock.now += timedelta(seconds=delays.pop(0) if delays else 0)
+        return catalog()
+
+    house.reader.catalog = slow  # pyright: ignore[reportAttributeAccessIssue] -- a slow Home Assistant
+
+
+@pytest.mark.parametrize(
+    "seconds",
+    [
+        pytest.param((DEADLINE_SECONDS + 1,), id="first check"),
+        # Each read is well inside the reader's timeout; together they pass the deadline.
+        pytest.param((DEADLINE_SECONDS / 2 + 1, DEADLINE_SECONDS / 2 + 1), id="second check"),
+    ],
+)
+async def test_command_whose_checks_outlast_the_deadline_is_refused_as_busy(
+    tmp_path: Path, seconds: tuple[float, ...]
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    slow_catalog(house, *seconds)
+    assert await switch(house, LIGHT, ON) == refused("busy")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+async def test_waiting_for_a_send_slot_ends_at_the_deadline(tmp_path: Path) -> None:
+    house = ready(tmp_path, LIGHT, slots=1, queue=5)
+    entered, release = hold_the_only_slot(house)
+    # The queued command's answer and the real seconds it waited for it.
+    queued: list[tuple[Result, float]] = []
+
+    async def command() -> None:
+        await switch(house, LIGHT, ON)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(command)
+        await anyio.to_thread.run_sync(entered.wait, 5)
+        # The queued command's first check leaves it a quarter second before the deadline.
+        slow_catalog(house, DEADLINE_SECONDS - 0.25)
+        started = anyio.current_time()
+        try:
+            result = await switch(house, LIGHT, ON)
+            queued.append((result, anyio.current_time() - started))
+        finally:
+            release.set()
+    [(result, waited)] = queued
+    assert result == refused("busy")
+    assert waited < 2, f"waited {waited:.1f} s for the slot, past the deadline"
+    assert len(house.controller.sent) == 1
+
+
+def slow_send(house: Home, seconds: float) -> None:
+    """The controller takes `seconds` on the test clock, or gives up at its time limit."""
+
+    def take() -> None:
+        limit = house.controller.timeouts[-1]
+        house.clock.now += timedelta(seconds=min(seconds, limit))
+        if seconds > limit:
+            raise ControllerUnreachable
+
+    house.controller.steps.append(take)
+
+
+async def test_the_send_gets_only_the_time_left_before_the_deadline(tmp_path: Path) -> None:
+    house = ready(tmp_path, LIGHT)
+    slow_catalog(house, 3, 3)
+    house.controller.steps.append(lambda: house.report(LIGHT, IS_ON))
+    assert recorded(await switch(house, LIGHT, ON)).outcome == "observed"
+    assert house.controller.timeouts == [DEADLINE_SECONDS - 6]
+
+
+async def test_a_send_slower_than_the_time_left_ends_unreachable_by_the_deadline(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    slow_catalog(house, 3, 3)
+    # Within the controller's own 6-second limit, but past the command's deadline.
+    slow_send(house, 3)
+    assert recorded(await switch(house, LIGHT, ON)).outcome == "unreachable"
+    assert house.clock.now <= NOW + timedelta(seconds=DEADLINE_SECONDS)
+
+
+async def test_a_command_with_too_little_time_left_to_send_is_refused_as_busy(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+    # 0.4 s left: under the half second a send needs at least.
+    slow_catalog(house, DEADLINE_SECONDS - 0.4)
+    assert await switch(house, LIGHT, ON) == refused("busy")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+async def test_a_state_read_that_returns_after_the_observation_window_does_not_count(
+    tmp_path: Path,
+) -> None:
+    house = ready(tmp_path, LIGHT)
+
+    def slow_first_read() -> None:
+        if len(house.confirmation_reads) == 1:
+            # The read answers a second after the window ends, with the commanded state.
+            house.clock.now += timedelta(seconds=WAIT_SECONDS + 1)
+            house.report(LIGHT, IS_ON)
+
+    house.after_send.append(slow_first_read)
+    assert recorded(await switch(house, LIGHT, ON)).outcome == "not_observed"
+
+
 # The command audit
 
 
@@ -875,7 +951,8 @@ async def test_the_audit_lists_light_and_switch_commands_with_their_device_kind(
     tmp_path: Path,
 ) -> None:
     house = ready(tmp_path, LIGHT)
-    house.snapshot(PLUG, IS_OFF)
+    house.report(PLUG, IS_OFF)
+    house.controller.reply = "refused"
     recorded(await switch(house, LIGHT, on(40), TELEGRAM))
     recorded(await switch(house, PLUG, ON, DASHBOARD))
     audit = {
@@ -902,7 +979,7 @@ async def test_history_is_newest_first_in_pages_and_filters_by_send_time(tmp_pat
         # The commands span longer than the stale limit, so keep the heartbeat fresh.
         assert house.commands.heartbeat(house.clock.now)
         sent.append(recorded(await switch(house, LIGHT, ON)))
-        house.clock.now += timedelta(seconds=9)
+        house.clock.now += timedelta(seconds=10)
     times = [datetime.fromisoformat(record.sent_at) for record in sent]
     assert times == [NOW, NOW + timedelta(seconds=10), NOW + timedelta(seconds=20)]
 

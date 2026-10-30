@@ -6,7 +6,6 @@
     },
     "device_kind": "light",
     "entity_id": "bulb-a",
-    "event_id": null,
     "id": "<uuid-1>",
     "outcome": "refused",
     "sender": {

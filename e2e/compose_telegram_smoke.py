@@ -136,8 +136,8 @@ def post_text(
 
 def light_state(keeper: httpx.Client) -> str | None:
     for entry in keeper.get("/api/monitored").raise_for_status().json()["entities"]:
-        if entry["id"] == LIGHT and entry["baseline"]:
-            return entry["baseline"]["state"]
+        if entry["id"] == LIGHT and entry["state"]:
+            return entry["state"]["state"]
     return None
 
 
@@ -148,7 +148,7 @@ def approve_light_command(client: httpx.Client, keeper: httpx.Client, first_upda
     refused ask is retried instead of failing the proof.
     """
     wait_until("control on", lambda: keeper.get("/api/control").json()["state"] == "on")
-    wait_until("a baseline for the light", lambda: light_state(keeper) in ("on", "off"))
+    wait_until("a state for the light", lambda: light_state(keeper) in ("on", "off"))
     for update_id in range(first_update, first_update + 40, 2):
         verb = "turn_off" if light_state(keeper) == "on" else "turn_on"
         known = len(sent(client))

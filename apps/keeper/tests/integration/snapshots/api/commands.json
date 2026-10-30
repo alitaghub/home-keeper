@@ -8,13 +8,12 @@
         },
         "device_kind": "light",
         "entity_id": "bulb-a",
-        "event_id": null,
         "id": "<uuid-1>",
         "outcome": "unreachable",
         "sender": {
           "kind": "dashboard"
         },
-        "sent_at": "2026-10-12T10:00:04+00:00"
+        "sent_at": "2026-10-12T10:00:07+00:00"
       },
       {
         "command": {
@@ -22,13 +21,12 @@
         },
         "device_kind": "light",
         "entity_id": "bulb-a",
-        "event_id": null,
         "id": "<uuid-2>",
         "outcome": "not_observed",
         "sender": {
           "kind": "dashboard"
         },
-        "sent_at": "2026-10-12T10:00:03+00:00"
+        "sent_at": "2026-10-12T10:00:05+00:00"
       },
       {
         "command": {
@@ -36,7 +34,6 @@
         },
         "device_kind": "light",
         "entity_id": "bulb-a",
-        "event_id": null,
         "id": "<uuid-3>",
         "outcome": "refused",
         "sender": {
@@ -51,7 +48,6 @@
         },
         "device_kind": "light",
         "entity_id": "bulb-a",
-        "event_id": "after-send",
         "id": "<uuid-4>",
         "outcome": "observed",
         "sender": {
@@ -63,6 +59,6 @@
       }
     ],
     "next_cursor": null,
-    "retained_since": "2026-09-12T10:00:05+00:00"
+    "retained_since": "2026-09-12T10:00:08+00:00"
   }
 }

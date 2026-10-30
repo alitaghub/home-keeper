@@ -67,9 +67,6 @@ export function Commands({
               {time(command.sent_at)}
             </time>
           </div>
-          {command.event_id !== null && (
-            <small className="row-sub command-evidence">{`Evidence ID: ${command.event_id}`}</small>
-          )}
         </article>
       ))}
       {hasMore && (

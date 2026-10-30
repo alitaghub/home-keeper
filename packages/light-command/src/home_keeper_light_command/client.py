@@ -13,6 +13,7 @@ class CommandClient:
     """Sends one command with the service credential; any failure is ControllerUnreachable."""
 
     def __init__(self, url: str, service_token: str, timeout_seconds: float) -> None:
+        self._timeout_seconds = timeout_seconds
         self._client = httpx.Client(
             base_url=url,
             headers={"Authorization": f"Bearer {service_token}"},
@@ -21,10 +22,18 @@ class CommandClient:
             follow_redirects=False,
         )
 
-    def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
+    def send(
+        self, forwarded: ForwardedCommand, timeout_seconds: float | None = None
+    ) -> Literal["ok", "refused"]:
+        """`timeout_seconds` shortens the client's own limit for this one send."""
+        limit = self._timeout_seconds
+        if timeout_seconds is not None:
+            limit = min(limit, timeout_seconds)
         try:
             response = self._client.post(
-                "/internal/command", json=forwarded.model_dump(mode="json", exclude_none=True)
+                "/internal/command",
+                json=forwarded.model_dump(mode="json", exclude_none=True),
+                timeout=limit,
             )
             if response.status_code != HTTPStatus.OK:
                 raise ControllerUnreachable
