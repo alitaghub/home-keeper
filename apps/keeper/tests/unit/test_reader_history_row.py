@@ -16,6 +16,7 @@ def row(last_changed: str, last_updated: str) -> dict[str, object]:
         "reading": {
             "device_kind": "light",
             "state": "on",
+            "label": "On",
             "availability": "available",
             "last_changed": last_changed,
             "last_updated": last_updated,

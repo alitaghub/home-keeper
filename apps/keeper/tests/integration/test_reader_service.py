@@ -18,6 +18,7 @@ from support.home_assistant import (
     FakeSocket,
     Frame,
     StateServer,
+    entity_state,
     history_row,
     hue_room,
     light_state,
@@ -35,12 +36,14 @@ from home_keeper.reader_service import HomeAssistantBackend, create_reader_app
 SERVICE_TOKEN = "reader-service-credential-sentinel"
 HA_TOKEN = "ha-owner-token-sentinel"
 AUTH = {"Authorization": f"Bearer {SERVICE_TOKEN}"}
-# Every websocket frame type the reader may send: authentication, the two registry reads and
-# the history read.
+# Every websocket frame type the reader may send: authentication, the two registry reads, the
+# language and translation reads, and the history read.
 ALLOWED_FRAMES = {
     "auth",
     "config/entity_registry/list",
     "config/device_registry/list",
+    "get_config",
+    "frontend/get_translations",
     "history/history_during_period",
 }
 NO_TRANSLATION = {"platform": "zha", "translation_key": None}
@@ -111,6 +114,7 @@ class Home:
     devices: list[Frame]
     server: StateServer
     history: dict[str, list[Frame]] = field(default_factory=dict[str, list[Frame]])
+    translations: dict[str, str] = field(default_factory=dict[str, str])
     sockets: list[FakeSocket] = field(default_factory=list[FakeSocket])
     # When set, the websocket connect is refused, as when Home Assistant is down.
     down: bool = False
@@ -118,7 +122,9 @@ class Home:
     def connect(self, *_args: object, **_kwargs: object) -> FakeSocket:
         if self.down:
             raise ConnectionRefusedError
-        socket = FakeSocket(self.entities, self.devices, self.history)
+        socket = FakeSocket(
+            self.entities, self.devices, self.history, translations=self.translations
+        )
         self.sockets.append(socket)
         return socket
 
@@ -163,7 +169,8 @@ def test_catalog_projects_the_registry_by_todays_support_rules(reader: TestClien
         "ha:disabled": (False, "Disabled in Home Assistant"),
         "ha:plug": (True, None),
         "ha:loose": (False, "Switches without a device are not recorded"),
-        "ha:sensor": (False, "Only lights, plugs and switches are supported"),
+        # A sensor on a device is a generic state device.
+        "ha:sensor": (True, None),
     }
     hue = next(entity for entity in entities if entity["id"] == "ha:hue")
     assert hue == {
@@ -219,7 +226,7 @@ def test_a_5000_entity_catalog_passes_through_the_reader_service_and_http_reader
     monkeypatch.setattr(reader_module.httpx, "Client", partial(httpx.Client, transport=transport))
     entities = HttpReader("http://reader.internal", SERVICE_TOKEN).catalog()
     assert len(entities) == 5000
-    assert sum(entity.supported for entity in entities) == 4500
+    assert sum(entity.supported for entity in entities) == 5000
     assert ("GET", "/api/states") in home.server.requests
     assert all(path in ("/api/", "/api/states") for _, path in home.server.requests)
 
@@ -417,6 +424,7 @@ def test_history_parses_home_assistants_compressed_rows_into_readings(
         {
             "device_kind": "light",
             "state": "on",
+            "label": "on",
             "availability": "available",
             "brightness": 120,
             "color_mode": "brightness",
@@ -424,12 +432,18 @@ def test_history_parses_home_assistants_compressed_rows_into_readings(
         {
             "device_kind": "light",
             "state": "on",
+            "label": "on",
             "availability": "available",
             "brightness": 200,
             "color_mode": "xy",
             "xy_color": [0.4, 0.3],
         },
-        {"device_kind": "light", "state": "unavailable", "availability": "unavailable"},
+        {
+            "device_kind": "light",
+            "state": "unavailable",
+            "label": "unavailable",
+            "availability": "unavailable",
+        },
     ]
     assert "PRIVATE" not in response.text
     expected_times = [(0.25, 0.25), (0.25, 60.5), (120, 120)]
@@ -443,8 +457,8 @@ def test_history_parses_home_assistants_compressed_rows_into_readings(
     # A switch keeps its state and availability only, even when Home Assistant sends more.
     plug = [row["reading"] for row in history["ha:plug"]]
     assert [without_times(reading) for reading in plug] == [
-        {"device_kind": "switch", "state": "off", "availability": "available"},
-        {"device_kind": "switch", "state": "on", "availability": "available"},
+        {"device_kind": "switch", "state": "off", "label": "off", "availability": "available"},
+        {"device_kind": "switch", "state": "on", "label": "on", "availability": "available"},
     ]
     assert [time_of(reading, "last_updated") for reading in plug] == [
         datetime.fromtimestamp(at(0), UTC),
@@ -480,3 +494,88 @@ def test_history_keeps_working_after_other_websocket_requests(
         assert len(response.json()["history"]["ha:hue"]) == 3
     # Home Assistant refused no request for reusing an ID.
     assert len(history_frames(home)) == 3
+
+
+CLIMATE = registry_entry("climate", "climate.hall", platform="demo", translation_key=None)
+ATTIC = registry_entry("attic", "climate.attic", platform="demo", translation_key=None)
+CLIMATE_TRANSLATIONS = {
+    "component.climate.entity_component._.state.heat": "Heat",
+    "component.climate.entity_component._.state.off": "Off",
+}
+
+
+@pytest.fixture
+def state_home(home: Home) -> Home:
+    """The home plus two thermostats on a device: one with translated states, one without."""
+    home.entities = [*ENTITIES, CLIMATE, ATTIC]
+    home.translations = CLIMATE_TRANSLATIONS
+    home.server.states["climate.hall"] = entity_state(
+        "climate.hall", "heat", temperature=21, secret="PRIVATE_SENTINEL"
+    )
+    home.server.states["climate.attic"] = entity_state("climate.attic", "frost_guard")
+    return home
+
+
+def test_catalog_lists_a_device_backed_climate_entity_as_a_supported_state_device(
+    reader: TestClient, state_home: Home
+) -> None:
+    entities = reader.get("/internal/catalog", headers=AUTH).json()["entities"]
+
+    climate = next(entity for entity in entities if entity["id"] == "ha:climate")
+    assert (climate["supported"], climate["reason"], climate["device_kind"]) == (
+        True,
+        None,
+        "state",
+    )
+
+
+def test_states_returns_a_state_reading_with_its_translated_label_and_no_attributes(
+    reader: TestClient, state_home: Home
+) -> None:
+    response = reader.get(
+        "/internal/states",
+        params=[("entity_id", "ha:climate"), ("entity_id", "ha:attic"), ("entity_id", "ha:plug")],
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    states = response.json()["states"]
+
+    climate = states["ha:climate"]
+    assert climate["source_entity_id"] == "climate.hall"
+    assert without_times(climate["reading"]) == {
+        "device_kind": "state",
+        "state": "heat",
+        "availability": "available",
+        "label": "Heat",
+    }
+    # Home Assistant has no translation for this state, so the label is the state itself.
+    assert states["ha:attic"]["reading"]["label"] == "frost_guard"
+    # Lights and switches carry a label too; this plug's `off` has no translation either.
+    assert states["ha:plug"]["reading"]["label"] == "off"
+    assert "PRIVATE" not in response.text
+    assert "temperature" not in response.text
+
+
+def test_history_of_a_state_device_carries_labels_and_is_read_without_attributes(
+    reader: TestClient, state_home: Home
+) -> None:
+    state_home.history = {
+        "climate.hall": [
+            {"s": "heat", "a": {"temperature": 21}, "lu": at(0)},
+            {"s": "off", "a": {"temperature": 18}, "lu": at(30)},
+        ]
+    }
+    response = reader.get(
+        "/internal/history", params={"entity_id": "ha:climate", **WINDOW}, headers=AUTH
+    )
+    assert response.status_code == 200, response.text
+
+    readings = [row["reading"] for row in response.json()["history"]["ha:climate"]]
+    assert [without_times(reading) for reading in readings] == [
+        {"device_kind": "state", "state": "heat", "availability": "available", "label": "Heat"},
+        {"device_kind": "state", "state": "off", "availability": "available", "label": "Off"},
+    ]
+    assert "temperature" not in response.text
+    [frame] = history_frames(state_home)
+    assert frame["entity_ids"] == ["climate.hall"]
+    assert frame["no_attributes"] is True

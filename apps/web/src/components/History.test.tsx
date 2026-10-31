@@ -1,7 +1,9 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { Schemas } from "../api/client";
+import * as fixtures from "../test/fixtures";
 import { UsageStrip } from "./History";
+import { Timeline } from "./Timeline";
 
 type LightUsage = Schemas["LightUsage"];
 
@@ -80,5 +82,34 @@ describe("usage strip", () => {
     expect(bars.length).toBeLessThanOrEqual(1001);
     // Any on time within a joined bar shows it as on.
     expect(container.querySelectorAll('[data-segment="off"]')).toHaveLength(0);
+  });
+});
+
+describe("changes of a generic device", () => {
+  const names = new Map([[fixtures.thermostat.id, "Hall thermostat"]]);
+
+  it("lists each change from the old label to the new one", () => {
+    const change = fixtures.stateChange(
+      { state: "heat", label: "Heat" },
+      { state: "off", label: "Off" },
+    );
+    render(<Timeline events={[change]} names={names} />);
+
+    expect(screen.getByText("Hall thermostat")).toBeInTheDocument();
+    expect(screen.getByText(/Heat → Off/)).toBeInTheDocument();
+  });
+
+  it("shows a state and label shaped like markup as literal text", () => {
+    const markup = "<img src=x onerror=alert(1)>";
+    const change = fixtures.stateChange(
+      { state: "<script>alert(1)</script>", label: "<b>Heat</b>" },
+      { state: "<i>off</i>", label: markup },
+    );
+    const { container } = render(<Timeline events={[change]} names={names} />);
+
+    expect(container.querySelector("img, b, i, script")).toBeNull();
+    expect(
+      screen.getByText((text) => text.includes(`<b>Heat</b> → ${markup}`)),
+    ).toBeInTheDocument();
   });
 });

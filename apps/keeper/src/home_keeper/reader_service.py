@@ -21,11 +21,10 @@ from home_keeper.demo import ENTITIES, DemoReplay
 from home_keeper.home_assistant import VISIBLE_ASCII, ConnectorError, HomeAssistantConnector
 from home_keeper.models import (
     CollectorError,
+    DeviceState,
     Entity,
     Identity,
-    LightState,
     Reading,
-    SwitchState,
 )
 from home_keeper.reader import (
     HistoryRow,
@@ -63,16 +62,19 @@ _reading: TypeAdapter[Reading] = TypeAdapter(Reading)
 _collector_error: TypeAdapter[CollectorError] = TypeAdapter(CollectorError)
 
 
-def _reading_of(state: LightState | SwitchState) -> Reading:
-    # Unset light attributes stay unset, so the routes leave them out.
-    return _reading.validate_python(state.model_dump(mode="json", exclude_none=True))
+def _reading_of(state: DeviceState) -> Reading:
+    # Unset light attributes stay unset, so the routes leave them out. A state the connector
+    # did not label is its own word.
+    return _reading.validate_python(
+        state.model_dump(mode="json", exclude_none=True) | {"label": state.label or state.state}
+    )
 
 
-def live_state(source_entity_id: str, state: LightState | SwitchState) -> LiveState:
+def live_state(source_entity_id: str, state: DeviceState) -> LiveState:
     return LiveState(source_entity_id=source_entity_id, reading=_reading_of(state))
 
 
-def history_row(source_entity_id: str, state: LightState | SwitchState) -> HistoryRow:
+def history_row(source_entity_id: str, state: DeviceState) -> HistoryRow:
     return HistoryRow(source_entity_id=source_entity_id, reading=_reading_of(state))
 
 
@@ -136,13 +138,13 @@ class HomeAssistantBackend:
     def states(self, entity_ids: Sequence[Identity]) -> dict[Identity, LiveState | None]:
         entities, sources = self._discover()
         devices = {entity.id for entity in entities if entity.device_kind is not None}
-        # Home Assistant no longer has the others, or they are no light or switch.
+        # Home Assistant no longer has the others, or they are no device.
         requested = {
             entity_id: source
             for entity_id in entity_ids
             if entity_id in devices and (source := sources.get(entity_id)) is not None
         }
-        states: dict[str, LightState | SwitchState | None] = {}
+        states: dict[str, DeviceState | None] = {}
         if requested:
             try:
                 states = self._connection().read_states(sorted(set(requested.values())))
@@ -161,7 +163,7 @@ class HomeAssistantBackend:
     ) -> dict[Identity, list[HistoryRow]]:
         entities, sources = self._discover()
         devices = {entity.id for entity in entities if entity.device_kind is not None}
-        # Only lights and switches Home Assistant still has; every other ID has no history.
+        # Only devices Home Assistant still has; every other ID has no history.
         requested = {
             entity_id: sources[entity_id]
             for entity_id in entity_ids
@@ -198,7 +200,7 @@ class DemoBackend:
                 for entity_id, state in self.replay.states.items()
             }
             # Each device's states, oldest first.
-            self.recorded: dict[str, list[LightState | SwitchState]] = {
+            self.recorded: dict[str, list[DeviceState]] = {
                 entity_id: [state] for entity_id, state in self.replay.states.items()
             }
             while (moment := moment + DEMO_HISTORY_STEP) <= end:
@@ -263,7 +265,7 @@ class DemoBackend:
             if state != previous.get(entity_id):
                 self._record(entity_id, state)
 
-    def _record(self, entity_id: str, state: LightState | SwitchState) -> None:
+    def _record(self, entity_id: str, state: DeviceState) -> None:
         """Append a state and forget what is older than DEMO_HISTORY_KEPT, keeping the
         newest older state as the one in force at the cutoff. The caller holds the lock."""
         states = self.recorded.setdefault(entity_id, [])
@@ -275,7 +277,7 @@ class DemoBackend:
         del states[:drop]
 
 
-def _updated(state: LightState | SwitchState) -> datetime:
+def _updated(state: DeviceState) -> datetime:
     # Every synthetic state carries its times; one without would sort first.
     return state.last_updated or datetime.min.replace(tzinfo=UTC)
 

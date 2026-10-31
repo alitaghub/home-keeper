@@ -8,7 +8,8 @@ import logging
 import re
 import ssl
 import time
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
@@ -22,10 +23,10 @@ from websockets.sync.client import connect
 from home_keeper.events import device_state, is_json_object
 from home_keeper.models import (
     MAX_CATALOG_ENTITIES,
+    PRESENCE_DOMAINS,
     Catalog,
+    DeviceState,
     Entity,
-    LightState,
-    SwitchState,
     device_kind_of,
 )
 
@@ -38,12 +39,21 @@ HISTORY_MAX_PAYLOAD = 16 * 1024 * 1024
 STATES_MAX_PAYLOAD = 16 * 1024 * 1024
 MAX_REGISTRY_ROWS = MAX_CATALOG_ENTITIES
 MAX_SOURCE_ENTITY_ID_LENGTH = 128
+# Home Assistant's own cap on a state; a translated word is held to it too.
+MAX_STATE_LENGTH = 255
 MAX_TOKEN_LENGTH = 4096
 MAX_TIMEOUT_SECONDS = 30
 # Visible ASCII only: no spaces, control characters or non-ASCII in origins and credentials.
 VISIBLE_ASCII = range(33, 127)
 _REGISTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,120}$")
-_DEVICE_ID = re.compile(r"^(light|switch)\.[a-z0-9_]{1,120}$")
+# Any `<domain>.<object_id>`, at most MAX_SOURCE_ENTITY_ID_LENGTH long.
+_DEVICE_ID = re.compile(r"^(?=.{1,128}$)[a-z0-9_]+\.[a-z0-9_]{1,120}$")
+# Home Assistant's language code, such as `en` or `pt-BR`.
+_LANGUAGE = re.compile(r"^[A-Za-z0-9_-]{1,35}$")
+# A translated state word: `component.<domain>.entity_component.<device class or _>.state.<state>`.
+_STATE_WORD = re.compile(r"^component\.([a-z0-9_]+)\.entity_component\.([a-z0-9_]+)\.state\.(.+)$")
+# The longest device class kept for a translation lookup.
+MAX_DEVICE_CLASS_LENGTH = 64
 # Integrations flag their group entities with attributes such as is_hue_group or is_deconz_group.
 _GROUP_FLAG = re.compile(r"^is_[a-z0-9_]+_group$")
 # The only WebSocket requests the adapter sends: reads, never service calls or writes.
@@ -52,11 +62,18 @@ _READ_COMMANDS = frozenset(
         "config/entity_registry/list",
         "config/device_registry/list",
         "history/history_during_period",
+        "get_config",
+        "frontend/get_translations",
     }
 )
 GROUP_REASON = "Groups and rooms are not recorded"
 DISABLED_REASON = "Disabled in Home Assistant"
-NOT_A_DEVICE_REASON = "Only lights, plugs and switches are supported"
+PRESENCE_REASON = "Presence is not recorded"
+CATEGORY_REASON = "Settings and diagnostic entities are not recorded"
+HIDDEN_REASON = "Hidden in Home Assistant"
+NO_DEVICE_REASON = "Only entities of a device are recorded"
+# Home Assistant's own entity IDs always match _DEVICE_ID; this is for one that does not.
+ENTITY_ID_REASON = "Entity ID is not supported"
 SWITCH_CATEGORY_REASON = "Settings and diagnostic switches are not recorded"
 SWITCH_DEVICE_REASON = "Switches without a device are not recorded"
 _WS_LOGGER = logging.getLogger("home_keeper.transport.private")
@@ -70,6 +87,26 @@ class WebSocket(Protocol):
 
     def send(self, message: str, /) -> None: ...
     def recv(self, timeout: float | None = None) -> str | bytes: ...
+
+
+@dataclass(frozen=True)
+class Labels:
+    """Home Assistant's translated state words, in its language, from discovery."""
+
+    # Each `(domain, device class or "_", state)` with its word.
+    words: Mapping[tuple[str, str, str], str]
+    # Each device's device class, by Home Assistant entity ID, where it has one.
+    device_classes: Mapping[str, str]
+
+    def of(self, source_entity_id: str, state: str) -> str:
+        """The word for a state: by the device's class first, then the domain's own; else the
+        state itself."""
+        domain = source_entity_id.partition(".")[0]
+        device_class = self.device_classes.get(source_entity_id)
+        for key in (device_class, "_"):
+            if key is not None and (word := self.words.get((domain, key, state))):
+                return word
+        return state
 
 
 class ConnectorError(Exception):
@@ -136,50 +173,67 @@ class HomeAssistantConnector:
             follow_redirects=False,
         )
         self._entities: dict[str, str] = {}
+        self._labels = Labels({}, {})
+        # Device classes from the latest state read of a discovery.
+        self._device_classes: dict[str, str] = {}
 
     def close(self) -> None:
         self._http.close()
 
     def discover(self) -> Catalog:
+        self._device_classes = {}
         with self._session() as session:
             entities = _rows(session.request("config/entity_registry/list", failure="discovery"))
             devices = _rows(session.request("config/device_registry/list", failure="discovery"))
             catalog, mapping = self._project(entities, devices)
+            words = _state_words(session)
         self._entities = mapping
+        self._labels = Labels(words, self._device_classes)
         return catalog
 
     def history(
         self, source_entity_ids: Sequence[str], start: datetime, end: datetime
-    ) -> dict[str, list[LightState | SwitchState]]:
-        """Each light's or switch's recorded states from `start` to `end`, oldest first, in one
-        request. The first is its state at `start`; an entity with no history has []."""
+    ) -> dict[str, list[DeviceState]]:
+        """Each device's recorded states from `start` to `end`, oldest first. The first is its
+        state at `start`; an entity with no history has []."""
         if any(not _DEVICE_ID.fullmatch(entity_id) for entity_id in source_entity_ids):
             raise ConnectorError("configuration")
         if not source_entity_ids:
             return {}
+        # Home Assistant takes one `no_attributes` per request: lights need their attributes,
+        # and every other device's are never kept, so those are read without them.
+        attributed = ("light", "switch")
+        with_attributes = [i for i in source_entity_ids if device_kind_of(i) in attributed]
+        without = [i for i in source_entity_ids if device_kind_of(i) not in attributed]
+        history: dict[str, list[DeviceState]] = {}
         with self._session(HISTORY_MAX_PAYLOAD) as session:
-            result = session.request(
-                "history/history_during_period",
-                # Home Assistant answers a malformed history request with an error result.
-                failure="invalid_data",
-                start_time=start.isoformat(),
-                end_time=end.isoformat(),
-                entity_ids=list(source_entity_ids),
-                include_start_time_state=True,
-                # Lights are not in Home Assistant's significant domains: without this, it
-                # leaves out their brightness and color changes.
-                significant_changes_only=False,
-                minimal_response=False,
-                no_attributes=False,
-            )
-            if not is_json_object(result):
-                raise ConnectorError("invalid_data")
-            return {
-                entity_id: [
-                    history_state(row, entity_id) for row in _rows(result.get(entity_id, []))
-                ]
-                for entity_id in source_entity_ids
-            }
+            for entity_ids, no_attributes in ((with_attributes, False), (without, True)):
+                if not entity_ids:
+                    continue
+                result = session.request(
+                    "history/history_during_period",
+                    # Home Assistant answers a malformed history request with an error result.
+                    failure="invalid_data",
+                    start_time=start.isoformat(),
+                    end_time=end.isoformat(),
+                    entity_ids=entity_ids,
+                    include_start_time_state=True,
+                    # Lights are not in Home Assistant's significant domains: without this, it
+                    # leaves out their brightness and color changes.
+                    significant_changes_only=False,
+                    minimal_response=False,
+                    no_attributes=no_attributes,
+                )
+                if not is_json_object(result):
+                    raise ConnectorError("invalid_data")
+                history |= {
+                    entity_id: [
+                        self._labelled(history_state(row, entity_id), entity_id)
+                        for row in _rows(result.get(entity_id, []))
+                    ]
+                    for entity_id in entity_ids
+                }
+        return {entity_id: history[entity_id] for entity_id in source_entity_ids}
 
     @contextlib.contextmanager
     def _session(self, max_size: int = MAX_PAYLOAD) -> Generator["Session"]:
@@ -256,21 +310,16 @@ class HomeAssistantConnector:
                 device_id = None
             kind = device_kind_of(entity_id)
             if not _DEVICE_ID.fullmatch(entity_id):
-                reason = NOT_A_DEVICE_REASON
-            elif entity.get("platform") == "group":
-                reason = GROUP_REASON
-            elif entity.get("disabled_by") is not None:
-                reason = DISABLED_REASON
-            # A switch outside a device, or one in a settings category, is a helper or an
-            # integration option, not a plug or switch someone uses.
-            elif kind == "switch" and entity.get("entity_category") is not None:
-                reason = SWITCH_CATEGORY_REASON
-            elif kind == "switch" and not device_id:
-                reason = SWITCH_DEVICE_REASON
-            # Only a candidate that passes every other rule needs its state.
+                kind = None
+                reason = ENTITY_ID_REASON
+            elif kind in ("light", "switch"):
+                reason = _light_or_switch_reason(entity, kind, device_id)
             else:
+                reason = _other_reason(entity, entity_id, device_id)
+            # Only a candidate that passes every other rule needs its state.
+            if reason is None:
                 if groups is None:
-                    groups = self._group_ids()
+                    groups = self._read_groups()
                 reason = GROUP_REASON if entity_id in groups else None
             supported = reason is None
             projected.append(
@@ -289,9 +338,10 @@ class HomeAssistantConnector:
             mapping[identity] = entity_id
         return Catalog(source_id="home_assistant", entities=projected), mapping
 
-    def _group_ids(self) -> frozenset[str]:
-        """The lights and switches whose state marks them as a group, from one read of every
-        state. An entity with no state has no group markers."""
+    def _read_groups(self) -> frozenset[str]:
+        """The devices whose state marks them as a group, from one read of every state. An
+        entity with no state has no group markers. Keeps each device's device class for
+        translating its state."""
         try:
             status, payload = self._get("/api/states", STATES_MAX_PAYLOAD)
             if status != HTTPStatus.OK:
@@ -308,12 +358,23 @@ class HomeAssistantConnector:
             if not is_json_object(row):
                 raise ConnectorError("invalid_data")
             entity_id = row.get("entity_id")
-            # Only lights and switches can be candidates; other domains' states are skipped.
-            if not isinstance(entity_id, str) or not _DEVICE_ID.fullmatch(entity_id):
+            # Only devices can be candidates; presence and malformed IDs are skipped.
+            if (
+                not isinstance(entity_id, str)
+                or not _DEVICE_ID.fullmatch(entity_id)
+                or device_kind_of(entity_id) is None
+            ):
                 continue
             attributes = row.get("attributes")
             if not is_json_object(attributes):
                 raise ConnectorError("invalid_data")
+            device_class = attributes.get("device_class")
+            if (
+                isinstance(device_class, str)
+                and 0 < len(device_class) <= MAX_DEVICE_CLASS_LENGTH
+                and device_class.isascii()
+            ):
+                self._device_classes[entity_id] = device_class
             if isinstance(attributes.get("entity_id"), list) or any(
                 value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
             ):
@@ -341,11 +402,13 @@ class HomeAssistantConnector:
         """Each identity's Home Assistant entity ID, from the latest successful discovery."""
         return dict(self._entities)
 
-    def read_states(
-        self, source_entity_ids: Sequence[str]
-    ) -> dict[str, LightState | SwitchState | None]:
-        """The current state of each light or switch, from one read of every state; None
-        when Home Assistant has no such entity. The API checks the selection itself."""
+    def _labelled[State: DeviceState](self, state: State, source_entity_id: str) -> State:
+        """The state with its word, from the translations the latest discovery read."""
+        return state.model_copy(update={"label": self._labels.of(source_entity_id, state.state)})
+
+    def read_states(self, source_entity_ids: Sequence[str]) -> dict[str, DeviceState | None]:
+        """The current state of each device, from one read of every state; None when Home
+        Assistant has no such entity. The API checks the selection itself."""
         wanted = set(source_entity_ids)
         if not all(_DEVICE_ID.fullmatch(entity_id) for entity_id in wanted):
             raise ConnectorError("configuration")
@@ -358,13 +421,14 @@ class HomeAssistantConnector:
             rows = json.loads(payload)
             if not isinstance(rows, list):
                 raise TypeError("Not a list of states")
-            found: dict[str, LightState | SwitchState | None] = {}
+            found: dict[str, DeviceState | None] = {}
             for row in cast("list[object]", rows):
                 if not is_json_object(row):
                     raise TypeError("Not a state")
                 entity_id = row.get("entity_id")
                 if isinstance(entity_id, str) and entity_id in wanted:
-                    found[entity_id] = device_state(row, entity_id)
+                    state = device_state(row, entity_id)
+                    found[entity_id] = state and self._labelled(state, entity_id)
         except ConnectorError:
             raise
         except (httpx.HTTPError, TimeoutError, ValueError, TypeError) as error:
@@ -438,6 +502,80 @@ class Session:
         return response.get("result")
 
 
+def _light_or_switch_reason(
+    entity: Mapping[str, object], kind: str, device_id: object
+) -> str | None:
+    if entity.get("platform") == "group":
+        return GROUP_REASON
+    if entity.get("disabled_by") is not None:
+        return DISABLED_REASON
+    # A switch outside a device, or one in a settings category, is a helper or an
+    # integration option, not a plug or switch someone uses.
+    if kind == "switch" and entity.get("entity_category") is not None:
+        return SWITCH_CATEGORY_REASON
+    if kind == "switch" and not device_id:
+        return SWITCH_DEVICE_REASON
+    return None
+
+
+def _other_reason(  # noqa: PLR0911 -- one return per ordered check
+    entity: Mapping[str, object], entity_id: str, device_id: object
+) -> str | None:
+    """Why an entity of any other domain is not a device to record, checked in this order."""
+    domain = entity_id.partition(".")[0]
+    if entity.get("disabled_by") is not None:
+        return DISABLED_REASON
+    if domain in PRESENCE_DOMAINS:
+        return PRESENCE_REASON
+    if entity.get("entity_category") is not None:
+        return CATEGORY_REASON
+    if entity.get("hidden_by") is not None:
+        return HIDDEN_REASON
+    if not device_id:
+        return NO_DEVICE_REASON
+    if entity.get("platform") == "group" or domain == "group":
+        return GROUP_REASON
+    return None
+
+
+def _state_words(session: "Session") -> dict[tuple[str, str, str], str]:
+    """Home Assistant's translated state words in its own language, else English. A failed
+    translations read leaves no words, so every label falls back to the raw state.
+
+    Unverified against a live Home Assistant: the result is read as `{"resources": {key:
+    word}}`, with keys `component.<domain>.entity_component.<device class or _>.state.<state>`.
+    """
+    # The same failures `_session` turns into codes; here they only cost the language or the
+    # words. An unknown language asks for English.
+    failures = (ConnectorError, OSError, WebSocketException, ValueError)
+    try:
+        config = session.request("get_config", failure="discovery")
+        language = config.get("language") if is_json_object(config) else None
+    except failures:
+        language = None
+    try:
+        result = session.request(
+            "frontend/get_translations",
+            failure="discovery",
+            language=language
+            if isinstance(language, str) and _LANGUAGE.fullmatch(language)
+            else "en",
+            category="entity_component",
+        )
+    except failures:
+        return {}
+    resources = result.get("resources") if is_json_object(result) else None
+    if not is_json_object(resources):
+        return {}
+    words: dict[tuple[str, str, str], str] = {}
+    for key, word in resources.items():
+        match = _STATE_WORD.fullmatch(key)
+        if match and isinstance(word, str) and 0 < len(word) <= MAX_STATE_LENGTH:
+            domain, device_class, state = match.groups()
+            words[domain, device_class, state] = word
+    return words
+
+
 def _rows(value: object) -> list[object]:
     """A raw list from Home Assistant; its callers validate each row."""
     if not isinstance(value, list):
@@ -451,10 +589,10 @@ def _timestamp(value: object) -> datetime:
     return datetime.fromtimestamp(value, UTC)
 
 
-def history_state(row: object, source_entity_id: str) -> LightState | SwitchState:
-    """One compressed history row, `{s, a, lc, lu}`, as a light's or switch's state. Times are
-    Unix seconds; Home Assistant always sends `lu` and leaves out `lc` when it equals `lu`.
-    Only the approved light attributes are kept; a switch keeps its state only."""
+def history_state(row: object, source_entity_id: str) -> DeviceState:
+    """One compressed history row, `{s, a, lc, lu}`, as a device's state. Times are Unix
+    seconds; Home Assistant always sends `lu` and leaves out `lc` when it equals `lu`. Only
+    the approved light attributes are kept; every other device keeps its state only."""
     if not is_json_object(row):
         raise ValueError("Invalid history row")
     updated = _timestamp(row.get("lu"))

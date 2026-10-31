@@ -1,0 +1,45 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "device_id": "device-n",
+        "device_kind": "state",
+        "device_name": "Hall thermostat",
+        "id": "note",
+        "missing": false,
+        "name": "Note",
+        "reason": null,
+        "source_entity_id": "sensor.note",
+        "state": {
+          "availability": "available",
+          "device_kind": "state",
+          "label": "<img src=x onerror=alert(1)>",
+          "last_changed": "2026-10-12T09:00:00+00:00",
+          "last_updated": "2026-10-12T09:00:00+00:00",
+          "state": "<img src=x onerror=alert(1)>"
+        },
+        "supported": true
+      },
+      {
+        "device_id": "device-t",
+        "device_kind": "state",
+        "device_name": "Hall thermostat",
+        "id": "thermostat",
+        "missing": false,
+        "name": "Hall heating",
+        "reason": null,
+        "source_entity_id": "climate.hall",
+        "state": {
+          "availability": "available",
+          "device_kind": "state",
+          "label": "Off",
+          "last_changed": "2026-10-12T09:00:00+00:00",
+          "last_updated": "2026-10-12T09:00:00+00:00",
+          "state": "off"
+        },
+        "supported": true
+      }
+    ]
+  }
+}

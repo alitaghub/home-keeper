@@ -5,6 +5,11 @@ Runs with the `control` profile, so setup also mints the controller's own token.
 Also proves that History reads Home Assistant's real recorder: the proof sets a template
 light's state a few times and reads the changes back through the reader and the API.
 
+Also proves generic state devices against the real integration: Home Assistant's `demo`
+integration registers device-backed climate entities, which the catalog must list as supported
+`state` devices, and a monitored climate reading carries Home Assistant's own translated word
+for its state (from the real `frontend/get_translations` payload).
+
 Uses its own Compose project and ports, and deletes its volumes at the end.
 """
 
@@ -35,7 +40,20 @@ template:
         turn_on: []
         turn_off: []
 """
+# Home Assistant's demo integration: climate, sensors, fans and more on demo devices, with no
+# hardware behind them.
+PROOF_CONFIG = f"{PROOF_LIGHT}\ndemo:\n"
 PROOF_ENTITY = "light.keeper_history_proof"
+# What Home Assistant's English translations call each mode a demo climate entity can report.
+CLIMATE_LABELS = {
+    "heat": "Heat",
+    "cool": "Cool",
+    "off": "Off",
+    "auto": "Auto",
+    "heat_cool": "Heat/Cool",
+    "dry": "Dry",
+    "fan_only": "Fan only",
+}
 # The states the proof sets, in order: on, brightness only, color only, then off.
 PROOF_STATES: list[dict[str, Any]] = [
     {"state": "on", "attributes": {"brightness": 100, "color_mode": "brightness"}},
@@ -258,6 +276,49 @@ def prove_history_comes_from_the_recorder(owner_token: str) -> None:
             assert near(change["time"], state["last_updated"]), (change, state)
 
 
+def prove_demo_climate_is_a_state_device_with_a_translated_label() -> None:
+    """The demo integration's climate entity is a supported `state` device on a device, and
+    once monitored its reading's label is Home Assistant's translated word for its state."""
+    headers = {"X-Home-Keeper": "1"}
+    with httpx.Client(base_url=KEEPER, timeout=30, trust_env=False) as client:
+        wait_for_healthy_reader(client)
+        deadline = time.monotonic() + 90
+        while True:
+            entities = client.get("/api/catalog").json()["entities"]
+            devices = [e for e in entities if e["supported"] and e.get("device_kind") == "state"]
+            if devices:
+                break
+            assert time.monotonic() < deadline, "The demo devices never appeared in the catalog"
+            time.sleep(2)
+        # Every generic device belongs to a device: the registry rule.
+        assert all(device["device_id"] for device in devices), devices
+        assert len(devices) <= 500, len(devices)
+
+        for device in devices:
+            selected = client.put(
+                f"/api/selection/{device['id']}", json={"selected": True}, headers=headers
+            )
+            assert selected.status_code == 200, selected.text
+        monitored = client.get("/api/monitored")
+        assert monitored.status_code == 200, monitored.text
+        climates = [
+            entity
+            for entity in monitored.json()["entities"]
+            if (entity["source_entity_id"] or "").startswith("climate.")
+        ]
+        assert climates, "No demo climate entity is monitored"
+        for climate in climates:
+            assert climate["device_kind"] == "state", climate
+            assert climate["supported"], climate
+            reading = climate["state"]
+            assert reading["device_kind"] == "state", reading
+            # Home Assistant's own word: "Heat" for `heat`, not the raw state.
+            assert reading["label"] == CLIMATE_LABELS[reading["state"]], reading
+            assert reading["label"] != reading["state"], reading
+            # A generic device has no attributes, such as a target temperature.
+            assert "temperature" not in reading, reading
+
+
 def main() -> None:
     started = time.monotonic()
     try:
@@ -347,7 +408,7 @@ def main() -> None:
         )
         assert unreachable.returncode != 0
 
-        # The proof's template light loads with Home Assistant's restart below.
+        # The proof's template light and the demo integration load with the restart below.
         compose(
             "exec",
             "-T",
@@ -355,7 +416,7 @@ def main() -> None:
             "sh",
             "-c",
             "cat >> /config/configuration.yaml",
-            stdin=PROOF_LIGHT,
+            stdin=PROOF_CONFIG,
         )
 
         # A restart removes HA's onboarding endpoint; setup must reuse both valid tokens.
@@ -368,6 +429,7 @@ def main() -> None:
         assert compose("exec", "-T", "reader", "cat", "/ha-token/token").stdout.strip() == token
 
         prove_history_comes_from_the_recorder(token)
+        prove_demo_climate_is_a_state_device_with_a_translated_label()
 
         # Losing the token cannot be repaired silently: setup fails and says how to reset.
         compose("run", "--rm", "--no-deps", "--entrypoint", "rm", "ha-setup", "/ha-token/token")

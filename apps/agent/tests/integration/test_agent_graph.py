@@ -16,6 +16,7 @@ from agent_support import (
     control_response,
     lights_response,
     snapshot,
+    state_device_response,
     switch_response,
 )
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
@@ -758,3 +759,26 @@ def test_plug_command_is_refused_when_control_is_off() -> None:
     assert tool_result(agent.get_state(config)).startswith("Not sent:")
     assert "control is off" in tool_result(agent.get_state(config))
     assert command_requests(keeper) == []
+
+
+@pytest.mark.parametrize("name", ["turn_on", "turn_off"])
+def test_a_command_for_a_state_device_never_reaches_the_device_and_ends_with_the_refusal(
+    name: str,
+) -> None:
+    refusal = {"detail": {"code": "not_supported", "message": "This device cannot be switched."}}
+    keeper = FakeKeeper(
+        {
+            # A text-like device whose state is `on` would pass every on/off check.
+            "/api/monitored": state_device_response("on", "Detected"),
+            "/api/control": control_response("on"),
+            "/api/devices/climate-a/command": (409, refusal),
+        }
+    )
+    call: ToolCall = {"name": name, "args": {"entity_id": "climate-a"}, "id": "call-state"}
+    agent, config = agent_after_light_call(keeper, call)
+
+    # The agent may refuse before an approval card or pass the keeper's refusal on after it.
+    if agent.get_state(config).interrupts:
+        resume(agent, config, "approve")
+
+    assert "cannot be switched" in tool_result(agent.get_state(config))

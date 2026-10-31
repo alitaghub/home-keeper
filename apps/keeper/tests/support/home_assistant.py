@@ -15,11 +15,18 @@ type Frame = dict[str, Any]
 type Handler = Callable[[httpx.Request], httpx.Response]
 
 
+# Registry reads: the scripted answer for each, whatever order the adapter asks in.
+REGISTRY_READS = ("config/entity_registry/list", "config/device_registry/list")
+
+
 class FakeSocket:
     """Replays the two registry answers and records every frame the adapter sends.
 
-    It answers `history/history_during_period` from `history`: Home Assistant's compressed
-    rows by entity ID, returned as they are for each requested entity it has. Like Home
+    It answers each read by its type, so the order the adapter asks in does not matter:
+    `history/history_during_period` from `history` (Home Assistant's compressed rows by
+    entity ID, returned as they are for each requested entity it has), `get_config` with
+    `{"language": language}`, and `frontend/get_translations` with `{"resources":
+    translations}`. A type named in `failing` is answered with an error result. Like Home
     Assistant, it refuses a request whose ID does not exceed every earlier ID on the
     connection.
     """
@@ -29,6 +36,10 @@ class FakeSocket:
         entities: list[Frame],
         devices: Iterable[Frame] = (),
         history: dict[str, list[Frame]] | None = None,
+        *,
+        language: str = "en",
+        translations: dict[str, str] | None = None,
+        failing: Iterable[str] = (),
     ) -> None:
         self.messages: deque[Frame] = deque(
             [
@@ -40,6 +51,11 @@ class FakeSocket:
         )
         self.sent: list[Frame] = []
         self.history: dict[str, list[Frame]] = history or {}
+        self.language = language
+        self.translations: dict[str, str] = translations or {}
+        self.failing = set(failing)
+        # The scripted registry answers; a test may edit them in place before discovery.
+        self._registries = dict(zip(REGISTRY_READS, list(self.messages)[2:], strict=True))
         self._last_id = 0
 
     def __enter__(self) -> Self:
@@ -68,15 +84,37 @@ class FakeSocket:
             )
             return
         self._last_id = identity
-        if frame.get("type") == "history/history_during_period":
+        command = frame.get("type")
+        if command in self.failing:
+            error = {"code": "unknown_error", "message": "Scripted failure."}
+            self.messages.appendleft(
+                {"id": identity, "type": "result", "success": False, "error": error}
+            )
+            return
+        result: Any
+        if command in self._registries:
+            scripted = self._registries[command]
+            for position, message in enumerate(self.messages):
+                if message is scripted:
+                    del self.messages[position]
+                    break
+            self.messages.appendleft(scripted | {"id": identity})
+            return
+        if command == "history/history_during_period":
             result = {
                 entity_id: self.history[entity_id]
                 for entity_id in frame.get("entity_ids", [])
                 if entity_id in self.history
             }
-            self.messages.appendleft(
-                {"id": identity, "type": "result", "success": True, "result": result}
-            )
+        elif command == "get_config":
+            result = {"language": self.language}
+        elif command == "frontend/get_translations":
+            result = {"resources": self.translations}
+        else:
+            return
+        self.messages.appendleft(
+            {"id": identity, "type": "result", "success": True, "result": result}
+        )
 
     def close(self) -> None:
         pass
@@ -198,6 +236,11 @@ def light_state(entity: str = "light.bulb", **attributes: Any) -> Frame:
         "last_updated": "2026-10-13T10:00:00Z",
         "context": {"id": "context1", "parent_id": None, "user_id": None},
     }
+
+
+def entity_state(entity: str, state: str, **attributes: Any) -> Frame:
+    """One entity state, as `GET /api/states` reports any domain."""
+    return light_state(entity, **attributes) | {"state": state}
 
 
 def hue_room(entity: str = "light.living_room") -> Frame:

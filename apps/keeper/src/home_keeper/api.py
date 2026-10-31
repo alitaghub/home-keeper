@@ -25,7 +25,6 @@ from home_keeper.models import (
     CommandsPage,
     ControlHeartbeat,
     ControlStatus,
-    DeviceKind,
     EventsPage,
     HealthStatus,
     Identity,
@@ -33,6 +32,7 @@ from home_keeper.models import (
     ReaderError,
     Selection,
     SelectionChange,
+    SwitchableKind,
     Unreachable,
     UsageReport,
     to_utc,
@@ -264,8 +264,8 @@ def create_app(
         end: datetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
     ):
-        """On-time, switch-ons and brightness of selected devices in `[start, end)`, from
-        Home Assistant's history."""
+        """On-time, switch-ons and brightness of selected lights, plugs and switches in
+        `[start, end)`, from Home Assistant's history. Other devices have no entry."""
         # A far-past offset can overflow the conversion to UTC.
         try:
             start = to_utc(start)
@@ -279,9 +279,11 @@ def create_app(
         if start > end or end - start > timedelta(days=366) or end.year >= MAXYEAR:
             raise HTTPException(422, "Invalid usage range")
         current = now().astimezone(UTC)
-        stored_kinds = monitoring.kinds()
-        # Unselected IDs are left out rather than reported as missing.
-        devices = sorted(set(entity_id or stored_kinds) & set(stored_kinds))
+        kinds = monitoring.kinds()
+        # Unselected IDs are left out rather than reported as missing, and devices with no
+        # on or off, such as a thermostat, have no usage.
+        switchable = {device for device, kind in kinds.items() if kind != "state"}
+        devices = sorted(set(entity_id or switchable) & switchable)
         # Home Assistant has no history after now.
         history_end = min(end, current)
         history = (
@@ -290,10 +292,10 @@ def create_app(
             else {}
         )
 
-        def kind_of(device: str) -> DeviceKind:
+        def kind_of(device: str) -> SwitchableKind:
             # A device selected without a kind is still known by its rows.
-            if stored := stored_kinds[device]:
-                return stored
+            if (kind := kinds[device]) is not None and kind != "state":
+                return kind
             rows = history.get(device, [])
             return "switch" if any(row.reading.device_kind == "switch" for row in rows) else "light"
 

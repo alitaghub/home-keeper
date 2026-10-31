@@ -525,8 +525,8 @@ export function App() {
                 ? "Waiting for Home Assistant."
                 : live
                   ? controlOn
-                    ? "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is on for monitored lights."
-                    : "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is off: Home Keeper only reads."
+                    ? "Home Assistant discovery. Home Keeper shows only the devices you select. Light control is on for monitored lights."
+                    : "Home Assistant discovery. Home Keeper shows only the devices you select. Light control is off: Home Keeper only reads."
                   : controlOn
                     ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
                     : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only reads."}
@@ -560,7 +560,7 @@ export function App() {
                   : "—"}
               </strong>
               <small className="text-xs text-muted-foreground">
-                Single lights, plugs and switches, without groups or rooms
+                Devices Home Keeper can monitor
               </small>
             </Card>
             <Card className="gap-1 px-5 py-4">
@@ -577,7 +577,7 @@ export function App() {
             <Card className="gap-4 py-5">
               <CardHeader className="px-5">
                 <h3 id="choose-heading" className="leading-none font-semibold">
-                  Choose lights to monitor
+                  Choose devices to monitor
                 </h3>
               </CardHeader>
               <CardContent className="grid gap-4 px-5">

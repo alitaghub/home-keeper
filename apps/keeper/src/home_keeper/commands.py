@@ -320,6 +320,12 @@ class Commands:
             kind = entity.device_kind or kind
         # Refusal messages call a plug or switch a device.
         noun = "device" if kind == "switch" else "light"
+        # Only a light, plug or switch is switched: a monitored device of another kind is
+        # refused whatever its state or control.
+        if kind not in (None, "light", "switch"):
+            if selected is None:
+                return Refusal("not_monitored", "Monitor this device before switching it")
+            return Refusal("not_supported", "This device cannot be switched.")
         if self.controller is None or not control_on:
             return Refusal("control_off", "Light control is off")
         if selected is None:

@@ -24,18 +24,25 @@ Name = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 StoredName = Annotated[str, StringConstraints(min_length=1, max_length=256, pattern=r"^[^\x00]*$")]
 SourceId = Literal["demo", "home_assistant"]
 # What a device is, from its Home Assistant domain. Separate from a record's `kind`.
-DeviceKind = Literal["light", "switch"]
+# The kinds Home Keeper can switch, and that have usage.
+SwitchableKind = Literal["light", "switch"]
+# `state`: any other device, shown by its state text alone.
+DeviceKind = SwitchableKind | Literal["state"]
+# People and trackers report where someone is, which Home Keeper does not record.
+PRESENCE_DOMAINS = frozenset({"person", "device_tracker"})
 
 
 def device_kind_of(source_entity_id: str) -> DeviceKind | None:
-    """The device kind a Home Assistant domain names, or None for every other domain."""
+    """The device kind a Home Assistant domain names, or None for presence and groups."""
     match source_entity_id.partition(".")[0]:
         case "light":
             return "light"
         case "switch":
             return "switch"
-        case _:
+        case domain if domain in PRESENCE_DOMAINS or domain == "group":
             return None
+        case _:
+            return "state"
 
 
 def device_kind_tag(value: object) -> object:
@@ -104,6 +111,19 @@ ColorMode = Literal[
 ]
 LightStateValue = Literal["on", "off", "unavailable", "unknown"]
 Availability = Literal["available", "unavailable", "unknown"]
+# Home Assistant caps a state at 255 characters; a translated state word fits the same bound.
+StateText = Annotated[str, StringConstraints(max_length=255)]
+
+
+def availability_of(state: str) -> Availability:
+    """`unavailable` and `unknown` are Home Assistant's words for a state it cannot report."""
+    if state == "unavailable":
+        return "unavailable"
+    if state == "unknown":
+        return "unknown"
+    return "available"
+
+
 Coordinate = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
 
@@ -146,19 +166,25 @@ class StateHeader(WireModel):
     last_updated: datetime | None = None
     last_reported: datetime | None = None
     availability: Availability | None = None
+    # Home Assistant's translated word for the state; the connector sets it after parsing.
+    label: StateText | None = None
 
     @model_validator(mode="after")
     def state_availability(self) -> Self:
-        expected = "available" if self.state in ("on", "off") else self.state
-        if self.availability is not None and self.availability != expected:
-            raise ValueError("Availability contradicts state")
-        self.availability = expected
+        self.availability = _checked_availability(self.state, self.availability)
         return self
 
     @field_validator("last_changed", "last_updated", "last_reported", check_fields=False)
     @classmethod
     def utc_timestamp(cls, value: datetime | None) -> datetime | None:
         return None if value is None else to_utc(value)
+
+
+def _checked_availability(state: str, availability: Availability | None) -> Availability:
+    expected = availability_of(state)
+    if availability is not None and availability != expected:
+        raise ValueError("Availability contradicts state")
+    return expected
 
 
 class LightState(StateHeader, LightAttributes):
@@ -169,6 +195,33 @@ class SwitchState(StateHeader):
     """A plug or switch: on or off, with no light attributes."""
 
     device_kind: Literal["switch"]
+
+
+class GenericState(WireModel):
+    """Any other device: its state text and source times, with no attributes."""
+
+    device_kind: Literal["state"]
+    state: StateText
+    last_changed: datetime | None = None
+    last_updated: datetime | None = None
+    last_reported: datetime | None = None
+    availability: Availability | None = None
+    # Home Assistant's translated word for the state; the connector sets it after parsing.
+    label: StateText | None = None
+
+    @model_validator(mode="after")
+    def state_availability(self) -> Self:
+        self.availability = _checked_availability(self.state, self.availability)
+        return self
+
+    @field_validator("last_changed", "last_updated", "last_reported")
+    @classmethod
+    def utc_timestamp(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else to_utc(value)
+
+
+# A state as the connector parses it from Home Assistant.
+DeviceState = LightState | SwitchState | GenericState
 
 
 CollectorError = Literal[
@@ -211,6 +264,8 @@ class ReadingHeader(WireModel):
     last_changed: Timestamp | None = None
     last_updated: Timestamp | None = None
     last_reported: Timestamp | None = None
+    # Home Assistant's translated word for the state, else the raw state.
+    label: StateText
 
 
 # Pydantic orders fields from the last base to the first, so the header fields lead the body.
@@ -227,8 +282,23 @@ class SwitchReading(ReadingHeader):
     device_kind: Literal["switch"]
 
 
+class StateReading(WireModel):
+    """Any other device's state as Home Assistant reports it: its text, with no attributes."""
+
+    state: StateText
+    availability: Availability
+    last_changed: Timestamp | None = None
+    last_updated: Timestamp | None = None
+    last_reported: Timestamp | None = None
+    # Home Assistant's translated word for the state, else the raw state.
+    label: StateText
+    device_kind: Literal["state"]
+
+
 Reading = Annotated[
-    Annotated[LightReading, Tag("light")] | Annotated[SwitchReading, Tag("switch")],
+    Annotated[LightReading, Tag("light")]
+    | Annotated[SwitchReading, Tag("switch")]
+    | Annotated[StateReading, Tag("state")],
     Discriminator(device_kind_tag),
 ]
 
@@ -418,7 +488,8 @@ CommandRecord = Annotated[
 
 
 # Why the API refused a command before sending it.
-# `not_supported`: the device cannot do what the command asks, such as a brightness for a plug.
+# `not_supported`: the device cannot do what the command asks, such as a brightness for a plug,
+# or cannot be switched at all.
 CommandRefusalCode = Literal[
     "control_off",
     "not_monitored",

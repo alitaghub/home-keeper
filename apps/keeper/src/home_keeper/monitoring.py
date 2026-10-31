@@ -1,8 +1,10 @@
 """The selection: which devices the user monitors, and what Home Assistant reports for each.
 
-Selecting a device checks Home Assistant's catalog through the reader.
+Selecting a device checks Home Assistant's catalog through the reader. A monitored device's
+kind follows the catalog; the stored kind is only for when Home Assistant cannot be read.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from home_keeper.models import (
@@ -63,15 +65,42 @@ class Monitoring:
             return Selection(entity_ids=store.selected(db))
 
     def kinds(self) -> dict[str, DeviceKind | None]:
-        """Each monitored device with the kind it was selected as, in ID order."""
+        """Each monitored device with its kind in Home Assistant's catalog, in ID order. While
+        Home Assistant cannot be read, or no longer lists a device, its stored kind."""
+        stored = self._stored_kinds()
+        try:
+            catalog = {entity.id: entity for entity in self.reader.catalog()}
+        except ReaderUnavailable:
+            return stored
+        return self._follow(stored, catalog)
+
+    def _stored_kinds(self) -> dict[str, DeviceKind | None]:
         with self.store.transaction() as db:
             rows = db.execute("SELECT id, device_kind FROM selection ORDER BY id").fetchall()
         return {row[0]: stored_kind.validate_python(row[1]) for row in rows}
 
+    def _follow(
+        self, stored: Mapping[str, DeviceKind | None], catalog: Mapping[str, Entity]
+    ) -> dict[str, DeviceKind | None]:
+        """The catalog's kind for each device it lists with one, stored for later."""
+        kinds = dict(stored)
+        for entity_id in kinds:
+            entity = catalog.get(entity_id)
+            if entity is not None and entity.device_kind is not None:
+                kinds[entity_id] = entity.device_kind
+        changed = [
+            (kind, entity_id) for entity_id, kind in kinds.items() if kind != stored[entity_id]
+        ]
+        if changed:
+            with self.store.transaction() as db:
+                # A device stopped meanwhile stays stopped: an UPDATE adds no row.
+                db.cursor().executemany("UPDATE selection SET device_kind=%s WHERE id=%s", changed)
+        return kinds
+
     def devices(self) -> MonitoredEntities:
         """Every monitored device with what Home Assistant reports for it now. While Home
         Assistant cannot be read, each device is listed by its ID with no state."""
-        kinds = self.kinds()
+        kinds = self._stored_kinds()
         try:
             catalog = {entity.id: entity for entity in self.reader.catalog()}
             states = self.reader.states(list(kinds))
@@ -94,7 +123,7 @@ class Monitoring:
                 ]
             )
         results: list[MonitoredEntity] = []
-        for entity_id, kind in kinds.items():
+        for entity_id, kind in self._follow(kinds, catalog).items():
             entity = catalog.get(entity_id)
             live = states.get(entity_id)
             described = entity or Entity(
