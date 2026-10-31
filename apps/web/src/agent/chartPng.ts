@@ -1,9 +1,6 @@
-// A chart card as a PNG, painted in the browser in the current theme.
-//
-// The usual route, an SVG loaded into an <img> and drawn on a canvas, needs a blob: or data:
-// image, which the dashboard's Content-Security-Policy (default-src 'self') blocks. So this
-// walks the chart's SVG and paints each shape and text with the canvas API, in the colors
-// the page computed for them. Text goes through fillText, so a name is never parsed as markup.
+// A chart card as a PNG in the current theme. The dashboard's CSP (default-src 'self') blocks
+// the blob: and data: images an <img>-and-canvas copy needs, so this paints the chart's SVG
+// shape by shape with the canvas API. Text goes through fillText, never markup.
 
 const PAD = 12;
 const GAP = 8;

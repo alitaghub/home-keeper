@@ -22,7 +22,7 @@ import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApprovalScope, RunsContext, ToolCall } from "./Approvals";
-import { ChartSkeleton } from "./ChartSkeleton";
+import { ChartBoundary, ChartSkeleton } from "./ChartStates";
 import { panelSlot, type WidthControl } from "./layout";
 import { parseMessages } from "./messages";
 import { DeviceNames } from "./names";
@@ -35,11 +35,14 @@ const ASSISTANT_ID = "agent";
 const ChartToolUI = lazy(() =>
   import("./ChartToolUI").then((module) => ({ default: module.ChartToolUI })),
 );
+// A chart whose code fails to load, or that fails to draw, shows its own error card.
 function ChartTool(props: ToolCallMessagePartProps) {
   return (
-    <Suspense fallback={<ChartSkeleton label="Drawing a chart" />}>
-      <ChartToolUI {...props} />
-    </Suspense>
+    <ChartBoundary>
+      <Suspense fallback={<ChartSkeleton label="Drawing a chart" />}>
+        <ChartToolUI {...props} />
+      </Suspense>
+    </ChartBoundary>
   );
 }
 // The agent's show_chart calls draw as charts, outside the collapsed tool group. The tool

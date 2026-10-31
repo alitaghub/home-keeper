@@ -6,9 +6,8 @@ import type { TooltipValueType } from "recharts";
 const INITIAL_DIMENSION = { width: 320, height: 200 } as const;
 type TooltipNameType = number | string;
 
-// Changed from upstream: no `color` or `theme`, and no ChartStyle. Upstream writes config
-// colors into a <style> element, which the dashboard's Content-Security-Policy
-// (style-src 'self') blocks; marks take their color from the app's CSS variables instead.
+// No colors in the config: the dashboard's CSP (style-src 'self') blocks the <style> element
+// that would set them. Marks take their color from the app's CSS variables.
 export type ChartConfig = Record<
   string,
   {

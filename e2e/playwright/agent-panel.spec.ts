@@ -355,44 +355,98 @@ async function fileOf(download: Download): Promise<Buffer> {
   return readFileSync(saved ?? "");
 }
 
-/** A PNG decoded by the browser itself: its size, how many colours it has, its corner pixel. */
-async function decodePng(page: Page, bytes: Buffer) {
+/**
+ * A PNG decoded by the browser itself: its size, how many colours it has, its corner pixel,
+ * and how many of its pixels have each of `targets`' RGB colours.
+ */
+async function decodePng(page: Page, bytes: Buffer, targets: number[][] = []) {
   // The PNG's IHDR chunk holds its width and height right after the 8-byte signature.
   expect(bytes.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   // A blank page, outside the dashboard's CSP, decodes it.
   const blank = await page.context().newPage();
   try {
-    return await blank.evaluate(async (base64) => {
-      const image = new Image();
-      image.src = `data:image/png;base64,${base64}`;
-      await image.decode();
-      const canvas = document.createElement("canvas");
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
-      const pen = canvas.getContext("2d");
-      if (!pen) throw new Error("No 2D canvas");
-      pen.drawImage(image, 0, 0);
-      const { data } = pen.getImageData(0, 0, canvas.width, canvas.height);
-      const colours = new Set<number>();
-      for (let index = 0; index < data.length; index += 4) {
-        colours.add(
-          (((data[index] ?? 0) << 24) |
-            ((data[index + 1] ?? 0) << 16) |
-            ((data[index + 2] ?? 0) << 8) |
-            (data[index + 3] ?? 0)) >>>
-            0,
-        );
-      }
-      return {
-        width: canvas.width,
-        height: canvas.height,
-        colours: colours.size,
-        corner: [data[0] ?? 0, data[1] ?? 0, data[2] ?? 0, data[3] ?? 0],
-      };
-    }, bytes.toString("base64"));
+    return await blank.evaluate(
+      async ([base64, wanted]) => {
+        const image = new Image();
+        image.src = `data:image/png;base64,${base64}`;
+        await image.decode();
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const pen = canvas.getContext("2d");
+        if (!pen) throw new Error("No 2D canvas");
+        pen.drawImage(image, 0, 0);
+        const { data } = pen.getImageData(0, 0, canvas.width, canvas.height);
+        const colours = new Set<number>();
+        // Antialiased edges blend; a bar's inside matches its colour within a few levels.
+        const near = (index: number, [red = 0, green = 0, blue = 0]: number[]) =>
+          Math.abs((data[index] ?? 0) - red) <= 8 &&
+          Math.abs((data[index + 1] ?? 0) - green) <= 8 &&
+          Math.abs((data[index + 2] ?? 0) - blue) <= 8;
+        const matches = wanted.map(() => 0);
+        for (let index = 0; index < data.length; index += 4) {
+          wanted.forEach((colour, which) => {
+            if (near(index, colour)) matches[which] = (matches[which] ?? 0) + 1;
+          });
+          colours.add(
+            (((data[index] ?? 0) << 24) |
+              ((data[index + 1] ?? 0) << 16) |
+              ((data[index + 2] ?? 0) << 8) |
+              (data[index + 3] ?? 0)) >>>
+              0,
+          );
+        }
+        return {
+          width: canvas.width,
+          height: canvas.height,
+          colours: colours.size,
+          corner: [data[0] ?? 0, data[1] ?? 0, data[2] ?? 0, data[3] ?? 0],
+          matches,
+        };
+      },
+      [bytes.toString("base64"), targets] as const,
+    );
   } finally {
     await blank.close();
   }
+}
+
+/** The RGB colours the page's CSS variables resolve to, as a canvas paints them. */
+function cssColours(page: Page, variables: string[]): Promise<number[][]> {
+  return page.evaluate(
+    (names) =>
+      names.map((name) => {
+        // Set through the CSSOM, which the CSP allows.
+        const probe = document.createElement("div");
+        probe.style.color = `var(${name})`;
+        document.body.append(probe);
+        const colour = getComputedStyle(probe).color;
+        probe.remove();
+        const canvas = document.createElement("canvas");
+        canvas.width = 1;
+        canvas.height = 1;
+        const pen = canvas.getContext("2d");
+        if (!pen) throw new Error("No 2D canvas");
+        pen.fillStyle = colour;
+        pen.fillRect(0, 0, 1, 1);
+        return [...pen.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+      }),
+    variables,
+  );
+}
+
+/** The area, in CSS pixels, of the bars Recharts draws for each series, in series order. */
+async function barAreas(panel: Locator): Promise<number[]> {
+  const areas: number[] = [];
+  for (const series of await panel.locator(".recharts-bar").all()) {
+    let area = 0;
+    for (const bar of await series.locator(".recharts-bar-rectangle").all()) {
+      const box = await bar.boundingBox();
+      area += box ? box.width * box.height : 0;
+    }
+    areas.push(area);
+  }
+  return areas;
 }
 
 const luminance = ([red = 0, green = 0, blue = 0]: number[]) =>
@@ -490,15 +544,26 @@ test("downloads a bar chart as CSV and as a PNG of the chart in the light theme"
   const png = await downloadFrom(page, panel, "Download PNG");
 
   expect(png.suggestedFilename()).toMatch(fileName("switch-ons-this-week", "png"));
-  const image = await decodePng(page, await fileOf(png));
+  const seriesColours = await cssColours(page, ["--chart-1", "--chart-2"]);
+  const areas = await barAreas(panel);
+  const image = await decodePng(page, await fileOf(png), seriesColours);
   const plot = await panel.locator("svg.recharts-surface").boundingBox();
   expect(plot).toBeTruthy();
+  const scale = Math.round(image.width / (plot?.width ?? 1));
   if (plot) {
     // The chart's size, at a whole device-pixel scale, plus room for the title and legend.
-    const scale = image.width / plot.width;
-    expect(scale).toBeGreaterThan(0.95);
-    expect(Math.abs(scale - Math.round(scale))).toBeLessThan(0.15);
-    expect(image.height).toBeGreaterThan(plot.height * Math.round(scale));
+    expect(image.width / plot.width).toBeGreaterThan(0.95);
+    expect(Math.abs(image.width / plot.width - scale)).toBeLessThan(0.15);
+    expect(image.height).toBeGreaterThan(plot.height * scale);
+  }
+  // The bars themselves are painted: each series' colour covers about the area its bars
+  // cover on screen. The title, text and legend swatches alone come nowhere near it.
+  expect(areas).toHaveLength(2);
+  for (const [index, area] of areas.entries()) {
+    expect(area).toBeGreaterThan(2000);
+    const painted = (image.matches[index] ?? 0) / (scale * scale);
+    expect(painted).toBeGreaterThan(area * 0.75);
+    expect(painted).toBeLessThan(area * 1.25);
   }
   // Not one flat colour: bars, text and grid are drawn.
   expect(image.colours).toBeGreaterThan(8);

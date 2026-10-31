@@ -2,7 +2,7 @@
 // AgentPanel registers a lazy wrapper, so a chat without charts never fetches this code.
 import { type ToolCallMessagePartComponent, useToolArgsStatus } from "@assistant-ui/react";
 import { Ellipsis } from "lucide-react";
-import { useContext, useEffect, useId, useRef, useState } from "react";
+import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { fetchUsageRange, type Usage } from "../useUsage";
-import { ChartSkeleton } from "./ChartSkeleton";
+import { CANNOT_DRAW, ChartNotice, ChartSkeleton } from "./ChartStates";
 import {
   categoricalDrawing,
   chartFileName,
@@ -32,16 +32,6 @@ import {
 import { chartPng } from "./chartPng";
 import { parseChartSpec, type UsageByDayChart } from "./chartSpec";
 import { DeviceNames } from "./names";
-
-const CANNOT_DRAW = "The agent sent a chart the panel cannot draw.";
-
-function Notice({ children }: { children: React.ReactNode }) {
-  return (
-    <div role="alert" className="my-3 grid justify-items-start gap-2 rounded-lg border p-3 text-sm">
-      {children}
-    </div>
-  );
-}
 
 type Row = Record<string, string | number>;
 
@@ -276,31 +266,40 @@ function UsageByDayView({ chart }: { chart: UsageByDayChart }) {
   >();
 
   useEffect(() => {
-    let current = true;
+    // An unmount, a Retry or a new range cancels the load in flight.
+    const controller = new AbortController();
     const asked = `${ids}\n${start}\n${end}\n${attempt}`;
-    fetchUsageRange(start, end, ids.split("\n")).then(
-      (usage) => current && setLoaded({ request: asked, usage }),
-      () => current && setLoaded({ request: asked, failed: true }),
+    fetchUsageRange(start, end, ids.split("\n"), controller.signal).then(
+      (usage) => controller.signal.aborted || setLoaded({ request: asked, usage }),
+      () => controller.signal.aborted || setLoaded({ request: asked, failed: true }),
     );
-    return () => {
-      current = false;
-    };
+    return () => controller.abort();
   }, [ids, start, end, attempt]);
 
   const shown = loaded?.request === request ? loaded : undefined;
+  const usage = shown && "usage" in shown ? shown.usage : undefined;
+  // The dashboard rebuilds its names on every poll; only these devices' names matter here.
+  const labels = chart.entityIds.map((id) => names.get(id) ?? id).join("\n");
+  // A year of days for five devices is a large table: build it once per answer.
+  const drawing = useMemo(() => {
+    if (!usage) return null;
+    const entityIds = ids.split("\n");
+    const byId = new Map(entityIds.map((id, index) => [id, labels.split("\n")[index] ?? id]));
+    const spec = { kind: "usage_by_day", entityIds, start, end } as const;
+    return usageDrawing(spec, usage, (id) => byId.get(id) ?? id);
+  }, [usage, ids, labels, start, end]);
   if (!shown) return <ChartSkeleton label="Loading the chart data" />;
   if ("failed" in shown) {
     return (
-      <Notice>
+      <ChartNotice>
         <p className="text-danger">Could not load the chart data</p>
         <Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>
           Retry
         </Button>
-      </Notice>
+      </ChartNotice>
     );
   }
-  const drawing = usageDrawing(chart, shown.usage, (id) => names.get(id) ?? id);
-  if (!drawing.marks.length) {
+  if (!drawing?.marks.length) {
     return (
       <p role="status" className="my-3 rounded-lg border p-3 text-sm text-muted-foreground">
         None of these devices is monitored, so there is no usage to chart.
@@ -317,9 +316,9 @@ export const ChartToolUI: ToolCallMessagePartComponent = ({ args, isError }) => 
   const chart = parseChartSpec(args);
   if (isError || !chart) {
     return (
-      <Notice>
+      <ChartNotice>
         <p className="text-danger">{CANNOT_DRAW}</p>
-      </Notice>
+      </ChartNotice>
     );
   }
   return chart.kind === "usage_by_day" ? (

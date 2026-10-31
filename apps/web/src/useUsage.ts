@@ -19,10 +19,16 @@ export function fetchUsage(days: number, entityIds?: string[]) {
 }
 
 /** Usage between two ISO 8601 times, for some devices or, without IDs, every monitored one. */
-export function fetchUsageRange(start: string, end: string, entityIds?: readonly string[]) {
+export function fetchUsageRange(
+  start: string,
+  end: string,
+  entityIds?: readonly string[],
+  signal?: AbortSignal,
+) {
   return unwrap(
     api.GET("/api/usage", {
       params: { query: { start, end, ...(entityIds && { entity_id: [...entityIds] }) } },
+      ...(signal && { signal }),
     }),
   );
 }

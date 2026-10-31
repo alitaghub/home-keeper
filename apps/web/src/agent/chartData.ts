@@ -107,13 +107,13 @@ export function categoricalDrawing(chart: CategoricalChart): Drawing {
 
 // A usage day is a calendar date in the report's time zone; format it as that date, not as a
 // moment in the browser's zone.
-const dayLabel = (date: string) =>
-  new Date(`${date}T00:00:00Z`).toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
+const DAY_LABEL = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+const dayLabel = (date: string) => DAY_LABEL.format(new Date(`${date}T00:00:00Z`));
 
 const hours = (seconds: number) => Math.round((seconds / 3600) * 100) / 100;
 
@@ -123,13 +123,18 @@ export function usageDrawing(
   usage: Usage,
   nameOf: (entityId: string) => string,
 ): Drawing {
-  const devices = chart.entityIds.flatMap((id) => {
-    const device = usage.devices.find((entry) => entry.entity_id === id);
+  const byId = new Map(usage.devices.map((device) => [device.entity_id, device]));
+  const found = chart.entityIds.flatMap((id) => {
+    const device = byId.get(id);
     return device ? [{ device, name: nameOf(id) }] : [];
   });
-  const dates = devices[0]?.device.days.map((day) => day.date) ?? [];
-  const perDay = (device: Usage["devices"][number]) =>
-    dates.map((date) => device.days.find((day) => day.date === date) ?? null);
+  const dates = found[0]?.device.days.map((day) => day.date) ?? [];
+  // Each device's days in the first device's date order, looked up once: a year of days for
+  // five devices must not search every list per cell.
+  const devices = found.map((entry) => {
+    const byDate = new Map(entry.device.days.map((day) => [day.date, day]));
+    return { ...entry, days: dates.map((date) => byDate.get(date)) };
+  });
   // A range Home Assistant recorded nothing for, as after its recorder purged it: every day
   // is unknown.
   const noHistory = devices.every(
@@ -154,25 +159,22 @@ export function usageDrawing(
       .join("; ")}.`,
     categories: dates.map(dayLabel),
     // One stack per device: on time under unknown time.
-    marks: devices.flatMap(({ device, name }, index) => {
-      const days = perDay(device);
-      return [
-        {
-          key: `d${index}on`,
-          label: `${name} on`,
-          fill: ON.fill,
-          stack: `d${index}`,
-          values: days.map((day) => hours(day?.on_seconds ?? 0)),
-        },
-        {
-          key: `d${index}unknown`,
-          label: `${name} unknown`,
-          fill: UNKNOWN.fill,
-          stack: `d${index}`,
-          values: days.map((day) => hours(day?.unknown_seconds ?? 0)),
-        },
-      ];
-    }),
+    marks: devices.flatMap(({ days, name }, index) => [
+      {
+        key: `d${index}on`,
+        label: `${name} on`,
+        fill: ON.fill,
+        stack: `d${index}`,
+        values: days.map((day) => hours(day?.on_seconds ?? 0)),
+      },
+      {
+        key: `d${index}unknown`,
+        label: `${name} unknown`,
+        fill: UNKNOWN.fill,
+        stack: `d${index}`,
+        values: days.map((day) => hours(day?.unknown_seconds ?? 0)),
+      },
+    ]),
     legend: [
       { label: "On", swatch: ON.swatch },
       { label: "Unknown", swatch: UNKNOWN.swatch },
@@ -181,8 +183,8 @@ export function usageDrawing(
       columns: ["Date", ...devices.flatMap(({ name }) => [`${name} on`, `${name} unknown`])],
       rows: dates.map((date, row) => [
         { text: date, raw: date },
-        ...devices.flatMap(({ device }) => {
-          const day = perDay(device)[row];
+        ...devices.flatMap(({ days }) => {
+          const day = days[row];
           return [day?.on_seconds ?? 0, day?.unknown_seconds ?? 0].map((seconds) => ({
             text: duration(seconds),
             // Hours, for a spreadsheet to add up.

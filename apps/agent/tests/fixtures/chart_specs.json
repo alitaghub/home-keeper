@@ -146,6 +146,42 @@
         "start": "2026-10-05T00:00:00+02:00",
         "end": "2026-10-12T00:00:00+02:00"
       }
+    },
+    {
+      "case": "usage_by_day over exactly 366 days, the longest /api/usage serves",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2025-10-12T00:00:00Z",
+        "end": "2026-10-13T00:00:00Z"
+      }
+    },
+    {
+      "case": "offset without a colon",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00+0200",
+        "end": "2026-10-12T00:00:00+0200"
+      }
+    },
+    {
+      "case": "space instead of T",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05 00:00:00Z",
+        "end": "2026-10-12 00:00:00Z"
+      }
+    },
+    {
+      "case": "lowercase z",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00z",
+        "end": "2026-10-12T00:00:00z"
+      }
     }
   ],
   "invalid": [
@@ -632,6 +668,15 @@
         "entity_ids": ["light.hue_desk"],
         "start": 1791158400,
         "end": "2026-10-12T00:00:00Z"
+      }
+    },
+    {
+      "case": "usage_by_day over 367 days",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2025-10-12T00:00:00Z",
+        "end": "2026-10-14T00:00:00Z"
       }
     }
   ]

@@ -6,6 +6,7 @@ fixtures in apps/agent/tests/fixtures/chart_specs.json hold both to that.
 """
 
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import Annotated, Literal, Self
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -28,6 +29,8 @@ from home_keeper_agent.tools import run_context
 # The dashboard has this many series colors.
 MAX_SERIES = 5
 MAX_CATEGORIES = 60
+# The longest range /api/usage answers.
+MAX_USAGE_DAYS = 366
 SHOWN = "Chart shown."
 
 CHART_RULE = """\
@@ -97,7 +100,8 @@ class LineChart(Categorical):
 
 class UsageByDay(Strict):
     """On and unknown time per day for monitored devices, drawn by the dashboard from Home
-    Assistant's history. Pass no numbers: the dashboard reads them itself."""
+    Assistant's history, over at most 366 days. Pass no numbers: the dashboard reads them
+    itself."""
 
     kind: Literal["usage_by_day"]
     entity_ids: list[Annotated[str, Field(min_length=1)]] = Field(
@@ -110,6 +114,8 @@ class UsageByDay(Strict):
     def ordered(self) -> Self:
         if self.end <= self.start:
             raise ValueError("end must be after start")
+        if self.end - self.start > timedelta(days=MAX_USAGE_DAYS):
+            raise ValueError(f"the range must be at most {MAX_USAGE_DAYS} days")
         return self
 
 
@@ -123,7 +129,8 @@ class ShowChartArgs(Strict):
 @tool(args_schema=ShowChartArgs)
 def show_chart(spec: ChartSpec) -> str:
     """Show the user a chart in the chat, next to your answer. Use usage_by_day for on and
-    unknown time per day; it draws Home Assistant's history, so you pass no numbers. Use bar
+    unknown time per day over at most 366 days; it draws Home Assistant's history, so you
+    pass no numbers. Use bar
     or line only with numbers from tool results. You choose the chart kind and data; the app
     chooses colors and layout."""
     del spec  # The dashboard draws the chart from the call's arguments.

@@ -101,7 +101,7 @@ const usageReply = (usage: Usage) => (call: { url: URL }) => {
 };
 
 const chartCall = (spec: unknown, status: "success" | "error" = "success"): Step => ({
-  tool: { name: "show_chart", args: { spec: spec as Record<string, unknown> } },
+  tool: { name: "show_chart", args: { spec } },
   result: "Chart shown.",
   status,
 });

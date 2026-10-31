@@ -135,10 +135,10 @@ colors, in light and dark mode. The agent cannot set colors, sizes or fonts.
 | `usage_by_day` | On time and unknown time per day for up to 5 monitored devices, stacked, with totals below.     |
 
 - For `bar` and `line`, the agent uses only numbers from its tool results.
-- For `usage_by_day`, the agent names only the devices and the range. The
-  dashboard loads the usage itself, labels each device with its name (or its
-  entity id when it has none) and shows the days in the time zone the usage
-  report names, as the History dialog does. With several devices, each device
+- For `usage_by_day`, the agent names only the devices and a range of at most
+  366 days. The dashboard loads the usage itself, labels each device with its
+  name (or its entity id when it has none) and shows the days in the time zone
+  the usage report names, as the History dialog does. With several devices, each device
   has its own stack of on and unknown time per day. A range without any history
   draws every day as unknown and says no history is recorded.
 - Hover a bar or point to see its value. Each chart has a short text summary for
