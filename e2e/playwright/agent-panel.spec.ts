@@ -641,6 +641,8 @@ test("draws charts and their PNG in the dark theme", async ({ page }) => {
     [`usage ${DESK}`, DESK_NAME, "usage-dark"],
   ] as const) {
     await panel.getByRole("button", { name: "New chat" }).click();
+    // Ask only once the new chat is open, so switching to it cannot clear the question.
+    await expect(panel.getByText("Ask about your home")).toBeVisible();
     await ask(panel, question);
     await expect(chartNamed(panel, new RegExp(name))).toBeVisible(ANSWER);
     await page.waitForTimeout(1500);
