@@ -28,6 +28,7 @@ READ_TOOLS = {
     "get_events",
     "get_health",
     "list_devices",
+    "get_measurements",
 }
 # Writes change only the keeper's selection, never a device.
 WRITE_TOOLS = {"monitor", "stop_monitoring"}

@@ -3,6 +3,7 @@
 import json
 from collections import deque
 from collections.abc import Callable, Iterable
+from datetime import datetime, timedelta
 from typing import Any, Self
 
 import httpx
@@ -48,6 +49,7 @@ class FakeSocket:
         devices: Iterable[Frame] = (),
         history: dict[str, list[Frame]] | None = None,
         *,
+        statistics: dict[str, list[Frame]] | None = None,
         language: str = "en",
         translations: dict[str, str] | None = None,
         failing: Iterable[str] = (),
@@ -69,6 +71,9 @@ class FakeSocket:
         )
         self.sent: list[Frame] = []
         self.history: dict[str, list[Frame]] = history or {}
+        # Long-term statistics rows by statistic ID, as `recorder/statistics_during_period`
+        # returns them: `start` and `end` in epoch milliseconds, then `mean`, `min`, `max`.
+        self.statistics: dict[str, list[Frame]] = statistics or {}
         self.language = language
         self.translations: dict[str, str] = translations or {}
         self.failing = set(failing)
@@ -152,6 +157,12 @@ class FakeSocket:
                 entity_id: self.history[entity_id]
                 for entity_id in frame.get("entity_ids", [])
                 if entity_id in self.history
+            }
+        elif command == "recorder/statistics_during_period":
+            result = {
+                statistic_id: self.statistics[statistic_id]
+                for statistic_id in frame.get("statistic_ids", [])
+                if statistic_id in self.statistics
             }
         elif command == "get_config":
             result = {"language": self.language}
@@ -318,6 +329,18 @@ def state_changed(entity: str = "light.bulb", **changes: Any) -> Frame:
                 | {"attributes": {"brightness": 180, "untrusted": "PRIVATE_SENTINEL"}, **changes},
             },
         },
+    }
+
+
+def statistics_row(start: datetime, mean: Any, low: Any, high: Any, *, hours: float = 1) -> Frame:
+    """One row of `recorder/statistics_during_period`: the bucket from `start` for `hours`,
+    with its times in epoch milliseconds. Pass `None` or leave a key out to test a bad row."""
+    return {
+        "start": start.timestamp() * 1000,
+        "end": (start + timedelta(hours=hours)).timestamp() * 1000,
+        "mean": mean,
+        "min": low,
+        "max": high,
     }
 
 

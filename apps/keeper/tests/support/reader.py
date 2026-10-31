@@ -1,8 +1,11 @@
 """A stand-in for the reader service: the catalog, the live states and the history the API
 reads."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
@@ -15,6 +18,9 @@ from home_keeper.reader import (
     ReaderError,
     ReaderUnavailable,
 )
+
+if TYPE_CHECKING:
+    from home_keeper.models import Bucket
 
 type Payload = dict[str, object]
 
@@ -41,6 +47,13 @@ def live(source_entity_id: str, state: Payload) -> LiveState:
             | state
         ),
     )
+
+
+def measuring(value: float | None, unit: str | None = "W", state: str | None = None) -> Payload:
+    """What Home Assistant reports for a measurement: `value` in `unit`, or no number when
+    `value` is None (then `state` says why, `unavailable` by default)."""
+    text = state or ("unavailable" if value is None else f"{value:g}")
+    return {"device_kind": "measurement", "state": text, "value": value, "unit": unit}
 
 
 def history_row(
@@ -109,6 +122,12 @@ class FakeReader:
         self.words_error: ReaderError | None = None
         # The entity IDs of each `words` call, in order.
         self.word_reads: list[list[str]] = []
+        # Home Assistant's long-term statistics by entity ID, in any order.
+        self.buckets: dict[str, list[Bucket]] = {}
+        # The (entity IDs, start, end) of each `statistics` call, in order.
+        self.statistics_reads: list[tuple[list[str], datetime, datetime]] = []
+        # Set to fail only the statistics reads, while everything else still answers.
+        self.statistics_error: ReaderError | None = None
 
     def health(self) -> None:
         self._check()
@@ -144,6 +163,31 @@ class FakeReader:
         if self.words_error is not None:
             raise ReaderUnavailable(self.words_error)
         return {entity_id: self.word_list.get(entity_id, RAW_WORDS) for entity_id in entity_ids}
+
+    def statistics(
+        self, entity_ids: Sequence[str], start: datetime, end: datetime
+    ) -> dict[str, list[Bucket]]:
+        """Like Home Assistant: each requested device's buckets that start in `[start, end)`,
+        oldest first. A device with none has []."""
+        self.statistics_reads.append((list(entity_ids), start, end))
+        self._check()
+        if self.statistics_error is not None:
+            raise ReaderUnavailable(self.statistics_error)
+        return {
+            entity_id: sorted(
+                (
+                    b
+                    for b in self.buckets.get(entity_id, [])
+                    if start <= datetime.fromisoformat(b.start) < end
+                ),
+                key=lambda b: datetime.fromisoformat(b.start),
+            )
+            for entity_id in entity_ids
+        }
+
+    def record_statistics(self, entity_id: str, *buckets: Bucket) -> None:
+        """Home Assistant's long-term statistics hold `buckets` for the device."""
+        self.buckets.setdefault(entity_id, []).extend(buckets)
 
     def record(self, entity_id: str, *rows: HistoryRow) -> None:
         """Home Assistant's recorder stores `rows` for the device."""

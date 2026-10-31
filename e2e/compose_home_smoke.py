@@ -15,6 +15,13 @@ sensors with a device class (moisture, motion), which the catalog must list as s
 `on_off` devices, and a monitored reading carries Home Assistant's translated word for its
 device class ("Wet", "Detected").
 
+Also proves measurements against Home Assistant's long-term statistics: the `demo`
+integration's outside temperature sensor has a `state_class`, so the catalog must list it as a
+supported `measurement` device. The proof imports known hourly statistics for it through
+`recorder/import_statistics`, one of them older than the recorder's 10-day raw history, with a
+gap, and reads them back through `/api/measurements` for 7 and 30 days: exact buckets and
+exact overall minimum, mean and maximum. An empty answer fails the proof.
+
 Uses its own Compose project and ports, and deletes its volumes at the end.
 """
 
@@ -65,6 +72,19 @@ BINARY_SENSOR_LABELS = {
     "moisture": {"on": "Wet", "off": "Dry"},
     "motion": {"on": "Detected", "off": "Clear"},
 }
+# A demo sensor with a `state_class` (a temperature, in °C). Unverified against the bundled
+# image: if it is absent the proof fails and lists the measurements Home Assistant does have.
+MEASURED_SENSOR = "sensor.outside_temperature"
+MEASURED_UNIT = "°C"
+# Hourly statistics the proof imports, as (hours before the current hour, mean, min, max). One
+# is 20 days old, past the recorder's default 10 days of raw history; two follow each other;
+# the hours between the later ones are a gap.
+STATISTICS: list[tuple[int, float, float, float]] = [
+    (20 * 24, 10.0, 5.0, 20.0),
+    (5 * 24, 30.0, 20.0, 45.0),
+    (5 * 24 - 1, 50.0, 40.0, 60.0),
+    (2 * 24, 70.0, 55.0, 95.0),
+]
 # The states the proof sets, in order: on, brightness only, color only, then off.
 PROOF_STATES: list[dict[str, Any]] = [
     {"state": "on", "attributes": {"brightness": 100, "color_mode": "brightness"}},
@@ -384,6 +404,168 @@ def prove_demo_binary_sensor_is_an_on_off_device_with_a_translated_label(token: 
                 assert "device_class" not in reading, reading
 
 
+def import_statistics(token: str, rows: list[dict[str, Any]]) -> None:
+    """Import hourly statistics for the measured sensor through Home Assistant's recorder.
+
+    Home Assistant 2026.10 names the metadata field for averaged statistics `mean_type`
+    (`has_mean` before it); this is unverified, so it asks with the newer name first and
+    retries with the older one when Home Assistant rejects the metadata.
+    """
+    metadata = {
+        "has_sum": False,
+        "name": None,
+        "source": "recorder",
+        "statistic_id": MEASURED_SENSOR,
+        "unit_of_measurement": MEASURED_UNIT,
+        "unit_class": "temperature",
+    }
+    refusals: list[Any] = []
+    for mean in ({"mean_type": 1}, {"has_mean": True}):
+        with connect(f"ws://127.0.0.1:{HA_PORT}/api/websocket") as socket:
+            socket.recv()
+            socket.send(json.dumps({"type": "auth", "access_token": token}))
+            assert json.loads(socket.recv())["type"] == "auth_ok"
+            socket.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "type": "recorder/import_statistics",
+                        "metadata": metadata | mean,
+                        "stats": rows,
+                    }
+                )
+            )
+            reply = json.loads(socket.recv())
+        if reply["success"]:
+            return
+        refusals.append(reply)
+    raise AssertionError(f"Home Assistant refused the imported statistics: {refusals}")
+
+
+def read_measurements(
+    client: httpx.Client, identity: str, start: datetime, end: datetime
+) -> dict[str, Any]:
+    response = client.get(
+        "/api/measurements",
+        params={"entity_id": identity, "start": start.isoformat(), "end": end.isoformat()},
+    )
+    assert response.status_code == 200, response.text
+    [series] = response.json()["devices"]
+    assert series["entity_id"] == identity, series
+    return dict(series)
+
+
+def prove_measurements_come_from_long_term_statistics(token: str) -> None:
+    """The demo temperature sensor is a supported `measurement` with a number and a unit;
+    statistics imported for it, one older than the raw history and with a gap, come back for 7
+    and 30 days as the same buckets with exact overall numbers."""
+    headers = {"X-Home-Keeper": "1"}
+    with httpx.Client(base_url=KEEPER, timeout=30, trust_env=False) as client:
+        wait_for_healthy_reader(client)
+        deadline = time.monotonic() + 90
+        while True:
+            entities = client.get("/api/catalog").json()["entities"]
+            measured = [
+                e for e in entities if e["supported"] and e.get("device_kind") == "measurement"
+            ]
+            if measured:
+                break
+            assert time.monotonic() < deadline, "No demo measurement appeared in the catalog"
+            time.sleep(2)
+        # Every measurement belongs to a device: the registry rule.
+        assert all(entity["device_id"] for entity in measured), measured
+
+        for entity in measured:
+            selected = client.put(
+                f"/api/selection/{entity['id']}", json={"selected": True}, headers=headers
+            )
+            assert selected.status_code == 200, selected.text
+        monitored = client.get("/api/monitored")
+        assert monitored.status_code == 200, monitored.text
+        sources = {
+            entity["source_entity_id"]: entity
+            for entity in monitored.json()["entities"]
+            if entity["device_kind"] == "measurement"
+        }
+        assert MEASURED_SENSOR in sources, f"Demo measurements are {sorted(sources)}"
+        sensor = sources[MEASURED_SENSOR]
+        reading = sensor["state"]
+        assert reading["device_kind"] == "measurement", reading
+        assert isinstance(reading["value"], float), reading
+        assert reading["unit"] == MEASURED_UNIT, reading
+        # The reading is Home Assistant's own number, not a rounded or converted one.
+        with httpx.Client(
+            base_url=HOME_ASSISTANT,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+            trust_env=False,
+        ) as home_assistant:
+            source = home_assistant.get(f"/api/states/{MEASURED_SENSOR}").json()
+        assert source["attributes"]["state_class"], source
+        assert reading["value"] == float(source["state"]), (reading, source)
+        # A reading is not a command target.
+        assert "brightness" not in reading, reading
+
+        hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        buckets = {
+            hour - timedelta(hours=back): (mean, low, high) for back, mean, low, high in STATISTICS
+        }
+        import_statistics(
+            token,
+            [
+                {"start": start.isoformat(), "mean": mean, "min": low, "max": high}
+                for start, (mean, low, high) in buckets.items()
+            ],
+        )
+
+        # Asked up to a day ago, so the sensor's own statistics for the last hours stay out of
+        # the exact numbers. The recorder writes the import within a few seconds.
+        end = hour - timedelta(hours=24)
+        deadline = time.monotonic() + 60
+        week = read_measurements(client, sensor["id"], end - timedelta(days=7), end)
+        while not week["buckets"]:
+            assert time.monotonic() < deadline, "The imported statistics never came back"
+            time.sleep(2)
+            week = read_measurements(client, sensor["id"], end - timedelta(days=7), end)
+        month = read_measurements(client, sensor["id"], end - timedelta(days=30), end)
+
+        def shown(series: dict[str, Any]) -> dict[datetime, tuple[float, float, float]]:
+            return {
+                datetime.fromisoformat(bucket["start"]): (
+                    bucket["mean"],
+                    bucket["min"],
+                    bucket["max"],
+                )
+                for bucket in series["buckets"]
+            }
+
+        in_week = {
+            start: values for start, values in buckets.items() if start >= end - timedelta(days=7)
+        }
+        # Seven days: hourly buckets, and the missing hours are gaps, not zero buckets.
+        assert week["period"] == "hour", week
+        assert week["unit"] == MEASURED_UNIT, week
+        assert shown(week) == in_week, (shown(week), in_week)
+        assert len(in_week) == 3, in_week
+        assert (week["min"], week["mean"], week["max"]) == (20.0, 50.0, 95.0), week
+        # Thirty days adds the bucket from 20 days ago, which no raw history reaches.
+        assert month["period"] == "hour", month
+        assert shown(month) == buckets, (shown(month), buckets)
+        assert (month["min"], month["mean"], month["max"]) == (5.0, 40.0, 95.0), month
+        assert month["latest"] == reading["value"], month
+        # Bucket ends are one hour after their starts.
+        for bucket in month["buckets"]:
+            assert datetime.fromisoformat(bucket["end"]) - datetime.fromisoformat(
+                bucket["start"]
+            ) == timedelta(hours=1), bucket
+
+        # A range with no statistics is an empty chart and null numbers, never zeros.
+        before = end - timedelta(days=60)
+        empty = read_measurements(client, sensor["id"], before - timedelta(days=7), before)
+        assert empty["buckets"] == [], empty
+        assert (empty["min"], empty["mean"], empty["max"]) == (None, None, None), empty
+
+
 def main() -> None:
     started = time.monotonic()
     try:
@@ -496,6 +678,7 @@ def main() -> None:
         prove_history_comes_from_the_recorder(token)
         prove_demo_climate_is_a_state_device_with_a_translated_label()
         prove_demo_binary_sensor_is_an_on_off_device_with_a_translated_label(token)
+        prove_measurements_come_from_long_term_statistics(token)
 
         # Losing the token cannot be repaired silently: setup fails and says how to reset.
         compose("run", "--rm", "--no-deps", "--entrypoint", "rm", "ha-setup", "/ha-token/token")
