@@ -1,3 +1,4 @@
+import { House, RefreshCw, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
@@ -12,7 +13,13 @@ import { Commands } from "./components/Commands";
 import { HistoryDialog } from "./components/History";
 import { type DeviceCommand, Monitored } from "./components/Monitored";
 import { Timeline } from "./components/Timeline";
+import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardHeader } from "./components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { date, time } from "./format";
+import { cn } from "./lib/utils";
 import { useCommands, useTimeline } from "./useTimeline";
 import { useRecentUsage } from "./useUsage";
 
@@ -263,58 +270,84 @@ export function App() {
   );
 
   const panel = (id: Tab) => ({
+    value: id,
     id: `panel-${id}`,
-    role: "tabpanel",
     "aria-labelledby": `tab-${id}`,
+    // Every panel stays mounted, so a hidden tab keeps its state and its ids.
+    forceMount: true as const,
     hidden: tab !== id,
+    className: "grid gap-6",
   });
 
   return (
-    <>
-      <header>
-        <div className="brand">
-          ◉ <strong>Home Keeper</strong>
+    <Tabs
+      value={tab}
+      onValueChange={(value) => {
+        const next = TABS.find((entry) => entry.id === value);
+        if (next) openTab(next.id);
+      }}
+      className="min-h-svh gap-0"
+    >
+      <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+          <div className="flex items-center gap-2 font-semibold tracking-tight">
+            <House className="size-5" aria-hidden="true" />
+            <strong>Home Keeper</strong>
+          </div>
+          <TabsList aria-label="Views" className="order-last w-full sm:order-none sm:w-auto">
+            {TABS.map(({ id, label }) => (
+              <TabsTrigger
+                key={id}
+                id={`tab-${id}`}
+                value={id}
+                aria-controls={`panel-${id}`}
+                // Radix switches tabs on mouse down; a click (keyboard, tests) switches too.
+                onClick={() => openTab(id)}
+                className="sm:px-4"
+              >
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <Badge id="source" variant="outline" className="ml-auto font-mono tracking-wide">
+            {snapshot ? (live ? "HOME ASSISTANT" : "SYNTHETIC DEMO") : "CONNECTING"}
+          </Badge>
         </div>
-        <div className="tabs" role="tablist" aria-label="Views">
-          {TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              id={`tab-${id}`}
-              type="button"
-              role="tab"
-              aria-selected={tab === id}
-              aria-controls={`panel-${id}`}
-              onClick={() => openTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <span id="source" className="demo">
-          {snapshot ? (live ? "HOME ASSISTANT" : "SYNTHETIC DEMO") : "CONNECTING"}
-        </span>
       </header>
-      <main>
-        <p id="message" className="message" role="status" aria-live="polite">
+      <main className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-6">
+        <p id="message" className="text-sm text-muted-foreground" role="status" aria-live="polite">
           {[commandNotice, message].filter(Boolean).join(" ")}
         </p>
         {unreachable && (
-          <p id="unreachable" className="alert" role="alert">
-            <strong>Can't reach Home Assistant</strong>
-            {health.error ? ` ${unreachableMessages[health.error]}` : ""}
-          </p>
+          <Alert id="unreachable" variant="destructive">
+            <TriangleAlert aria-hidden="true" />
+            <AlertTitle>Can't reach Home Assistant</AlertTitle>
+            {health.error && (
+              <AlertDescription>{unreachableMessages[health.error]}</AlertDescription>
+            )}
+          </Alert>
         )}
 
-        <section {...panel("home")}>
-          <p id="status-line" className="status-line">
+        <TabsContent {...panel("home")}>
+          <p
+            id="status-line"
+            className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+          >
             <span
-              className={`dot ${health?.status === "unreachable" ? "failed" : (health?.status ?? "pending")}`}
+              className={cn(
+                "size-2 rounded-full",
+                health?.status === "healthy" && "bg-foreground",
+                health?.status === "unreachable" && "bg-danger",
+                !health && "bg-muted-foreground",
+              )}
               aria-hidden="true"
             />
             {health
               ? `Home Assistant ${health.status} · checked ${time(health.checked_at)}`
               : "Connecting…"}
-            <span className="tag">{controlOn ? "CONTROL ON" : "READ ONLY"}</span>
+            <Badge variant={controlOn ? "default" : "secondary"} className="ml-auto">
+              {controlOn ? "CONTROL ON" : "READ ONLY"}
+            </Badge>
           </p>
           <Monitored
             entities={monitoredEntities}
@@ -329,116 +362,180 @@ export function App() {
             onChooseLights={() => openTab("setup")}
             sending={sendingIds}
           />
-        </section>
+        </TabsContent>
 
-        <section {...panel("history")}>
-          <div className="section-heading">
-            <h2 id="timeline-heading">History</h2>
-            <button
+        <TabsContent {...panel("history")}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 id="timeline-heading" className="text-2xl font-semibold tracking-tight">
+              History
+            </h2>
+            <Button
               id="timeline-refresh"
               type="button"
+              variant="outline"
+              size="sm"
               disabled={timeline.loading}
               onClick={() => void Promise.all([loadTimeline(), loadCommands()])}
             >
+              <RefreshCw aria-hidden="true" />
               Refresh history
-            </button>
+            </Button>
           </div>
           {(controlOn || Boolean(commands.commands?.length)) && (
-            <section className="panel" aria-labelledby="commands-heading">
-              <h3 id="commands-heading">Device commands</h3>
-              <Commands
-                commands={commands.commands}
-                names={names}
-                hasMore={commands.hasMore}
-                loading={commands.loading}
-                onMore={() => void loadCommands(true)}
-              />
+            <section aria-labelledby="commands-heading">
+              <Card className="gap-4 py-5">
+                <CardHeader className="px-5">
+                  <h3 id="commands-heading" className="leading-none font-semibold">
+                    Device commands
+                  </h3>
+                </CardHeader>
+                <CardContent className="px-5">
+                  <Commands
+                    commands={commands.commands}
+                    names={names}
+                    hasMore={commands.hasMore}
+                    loading={commands.loading}
+                    onMore={() => void loadCommands(true)}
+                  />
+                </CardContent>
+              </Card>
             </section>
           )}
-          <section className="panel" aria-labelledby="changes-heading">
-            <h3 id="changes-heading">Recorded changes</h3>
-            <p id="timeline-status" className="history-status" role="status" aria-live="polite">
-              {timeline.failed ? (
-                "Cannot load recorded history. Previously displayed entries may be out of date."
-              ) : (
-                <>
-                  History comes from Home Assistant. How far back it goes depends on its{" "}
-                  <a href={recorderDocs} target="_blank" rel="noreferrer">
-                    recorder settings
-                  </a>
-                  .
-                </>
-              )}
-            </p>
-            <Timeline events={timeline.events} names={names} />
-            <button
-              id="timeline-more"
-              type="button"
-              hidden={!timeline.hasMore}
-              disabled={timeline.loading}
-              onClick={() => void loadTimeline(true)}
-            >
-              Load older changes
-            </button>
-            <p className="history-status">
-              Missing entries do not prove nothing changed. Times use your browser's local timezone.
-            </p>
+          <section aria-labelledby="changes-heading">
+            <Card className="gap-4 py-5">
+              <CardHeader className="gap-2 px-5">
+                <h3 id="changes-heading" className="leading-none font-semibold">
+                  Recorded changes
+                </h3>
+                <p
+                  id="timeline-status"
+                  className={cn(
+                    "text-sm",
+                    timeline.failed ? "text-danger" : "text-muted-foreground",
+                  )}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {timeline.failed ? (
+                    "Cannot load recorded history. Previously displayed entries may be out of date."
+                  ) : (
+                    <>
+                      History comes from Home Assistant. How far back it goes depends on its{" "}
+                      <a
+                        href={recorderDocs}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium text-foreground underline underline-offset-4"
+                      >
+                        recorder settings
+                      </a>
+                      .
+                    </>
+                  )}
+                </p>
+              </CardHeader>
+              <CardContent className="grid gap-4 px-5">
+                <Timeline events={timeline.events} names={names} />
+                <Button
+                  id="timeline-more"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="justify-self-start"
+                  hidden={!timeline.hasMore}
+                  disabled={timeline.loading}
+                  onClick={() => void loadTimeline(true)}
+                >
+                  Load older changes
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Missing entries do not prove nothing changed. Times use your browser's local
+                  timezone.
+                </p>
+              </CardContent>
+            </Card>
           </section>
-        </section>
+        </TabsContent>
 
-        <section {...panel("setup")}>
-          <div className="section-heading">
-            <h2 id="lights-heading">Setup</h2>
+        <TabsContent {...panel("setup")}>
+          <h2 id="lights-heading" className="text-2xl font-semibold tracking-tight">
+            Setup
+          </h2>
+          <div className="grid gap-2">
+            <p
+              id="source-notice"
+              className="rounded-lg border bg-muted/50 px-4 py-3 text-sm text-muted-foreground"
+            >
+              {!snapshot
+                ? "Waiting for Home Assistant."
+                : live
+                  ? controlOn
+                    ? "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is on for monitored lights."
+                    : "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is off: Home Keeper only reads."
+                  : controlOn
+                    ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
+                    : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only reads."}
+            </p>
+            <p
+              id="catalog-status"
+              className="text-sm text-warning-foreground"
+              role="status"
+              aria-live="polite"
+            >
+              {snapshot && !snapshot.catalog
+                ? "Devices cannot be listed while Home Assistant cannot be reached."
+                : ""}
+            </p>
           </div>
-          <p id="source-notice" className="notice">
-            {!snapshot
-              ? "Waiting for Home Assistant."
-              : live
-                ? controlOn
-                  ? "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is on for monitored lights."
-                  : "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is off: Home Keeper only reads."
-                : controlOn
-                  ? "Demo data only. No hardware or Home Assistant is connected. Light control is on for monitored lights."
-                  : "Demo data only. No hardware or Home Assistant is connected. Light control is off: Home Keeper only reads."}
-          </p>
-          <p id="catalog-status" className="history-status" role="status" aria-live="polite">
-            {snapshot && !snapshot.catalog
-              ? "Devices cannot be listed while Home Assistant cannot be reached."
-              : ""}
-          </p>
-          <div className="stats">
-            <section>
-              <span>Home Assistant</span>
-              <strong id="health">{health ? health.status : "Connecting…"}</strong>
-              <small id="heartbeat">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Card className="gap-1 px-5 py-4">
+              <span className="text-sm text-muted-foreground">Home Assistant</span>
+              <strong id="health" className="text-2xl font-semibold capitalize">
+                {health ? health.status : "Connecting…"}
+              </strong>
+              <small id="heartbeat" className="text-xs text-muted-foreground">
                 {health ? `Last checked: ${date(health.checked_at)}` : "Waiting for Home Assistant"}
               </small>
-            </section>
-            <section>
-              <span>Supported devices</span>
-              <strong id="count">
+            </Card>
+            <Card className="gap-1 px-5 py-4">
+              <span className="text-sm text-muted-foreground">Supported devices</span>
+              <strong id="count" className="text-2xl font-semibold tabular-nums">
                 {snapshot?.catalog
                   ? String(snapshot.catalog.entities.filter((entity) => entity.supported).length)
                   : "—"}
               </strong>
-              <small>Single lights, plugs and switches, without groups or rooms</small>
-            </section>
-            <section>
-              <span>Monitoring</span>
-              <strong id="selected-count">{snapshot?.selection.entity_ids.length ?? 0}</strong>
-              <small>You choose what Home Keeper shows</small>
-            </section>
+              <small className="text-xs text-muted-foreground">
+                Single lights, plugs and switches, without groups or rooms
+              </small>
+            </Card>
+            <Card className="gap-1 px-5 py-4">
+              <span className="text-sm text-muted-foreground">Monitoring</span>
+              <strong id="selected-count" className="text-2xl font-semibold tabular-nums">
+                {snapshot?.selection.entity_ids.length ?? 0}
+              </strong>
+              <small className="text-xs text-muted-foreground">
+                You choose what Home Keeper shows
+              </small>
+            </Card>
           </div>
-          <section className="panel" aria-labelledby="choose-heading">
-            <h3 id="choose-heading">Choose lights to monitor</h3>
-            <Catalog
-              entities={snapshot?.catalog?.entities ?? null}
-              homeAssistantUrl={snapshot?.catalog?.home_assistant_url ?? null}
-              selected={snapshot?.selection.entity_ids ?? []}
-              onToggle={(id, selected) => void toggle(id, selected)}
-            />
+          <section aria-labelledby="choose-heading">
+            <Card className="gap-4 py-5">
+              <CardHeader className="px-5">
+                <h3 id="choose-heading" className="leading-none font-semibold">
+                  Choose lights to monitor
+                </h3>
+              </CardHeader>
+              <CardContent className="grid gap-4 px-5">
+                <Catalog
+                  entities={snapshot?.catalog?.entities ?? null}
+                  homeAssistantUrl={snapshot?.catalog?.home_assistant_url ?? null}
+                  selected={snapshot?.selection.entity_ids ?? []}
+                  onToggle={(id, selected) => void toggle(id, selected)}
+                />
+              </CardContent>
+            </Card>
           </section>
-        </section>
+        </TabsContent>
         {historyFor && (
           <HistoryDialog
             key={historyFor.id}
@@ -447,8 +544,10 @@ export function App() {
             onClose={() => setHistoryFor(null)}
           />
         )}
-        <footer>History comes from Home Assistant · Changes show what happened, not why</footer>
+        <footer className="border-t pt-4 text-xs text-muted-foreground">
+          History comes from Home Assistant · Changes show what happened, not why
+        </footer>
       </main>
-    </>
+    </Tabs>
   );
 }

@@ -53,7 +53,8 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
     .locator("#monitored article")
     .filter({ has: page.getByRole("heading", { name: LAMP }) });
   await expect(card).toBeVisible();
-  const state = card.locator(".tile-state");
+  // The card's one status indicator, which holds the state text.
+  const state = card.locator("[data-status]");
   await expect(state).toHaveText(/^(On|Off|Unavailable|Unknown)/, COLLECTION);
   // The card shows what the demo home reports now; it names no recorded evidence.
   await card.getByText("Details").click();
@@ -109,8 +110,8 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   const rows = page.locator("#timeline article").filter({ hasText: LAMP });
   await expect(rows.filter({ hasText: `turned ${now}` }).first()).toBeVisible(COLLECTION);
   await expect(rows.first().locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
-  // The panel around the "Recorded changes" heading.
-  const changes = page.locator("#changes-heading").locator("..");
+  // The panel the "Recorded changes" heading names.
+  const changes = page.getByRole("region", { name: "Recorded changes" });
   await expect(changes).not.toContainText(
     /Evidence ID|Retained since|Retention cutoff|received|Stored/i,
   );

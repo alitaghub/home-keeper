@@ -1,13 +1,16 @@
 import type { CommandRecord } from "../api/client";
 import { date, time } from "../format";
+import { cn } from "../lib/utils";
+import { Button } from "./ui/button";
 
-const outcomeText: Record<CommandRecord["outcome"], string> = {
-  observed: "Observed",
-  not_observed: "Not observed",
-  refused: "Refused by Home Assistant",
-  unreachable: "Controller unreachable",
-  pending: "Pending",
-  interrupted: "Interrupted",
+// Observed is the expected result; anything else may need a look.
+const outcomes: Record<CommandRecord["outcome"], { label: string; tone: string }> = {
+  observed: { label: "Observed", tone: "text-foreground" },
+  not_observed: { label: "Not observed", tone: "text-warning-foreground" },
+  refused: { label: "Refused by Home Assistant", tone: "text-danger" },
+  unreachable: { label: "Controller unreachable", tone: "text-danger" },
+  pending: { label: "Pending", tone: "text-warning-foreground" },
+  interrupted: { label: "Interrupted", tone: "text-warning-foreground" },
 };
 
 function actionText(command: CommandRecord["command"]) {
@@ -48,31 +51,48 @@ export function Commands({
   onMore: () => void;
 }) {
   return (
-    <div id="commands" className="rows">
-      {commands && !commands.length && <p className="empty">No device commands yet.</p>}
+    <div id="commands" className="grid">
+      {commands && !commands.length && (
+        <p className="text-sm text-muted-foreground">No device commands yet.</p>
+      )}
       {commands?.map((command) => (
-        <article key={command.id} className="row command">
-          <div className="line">
-            <span className="row-main">
-              <strong>{names.get(command.entity_id) ?? command.entity_id}</strong>{" "}
-              <span className="command-action">{actionText(command.command)}</span>
-              {" · "}
-              <span className={`command-outcome ${command.outcome}`}>
-                {outcomeText[command.outcome]}
-              </span>
-              {" · "}
-              <small>{senderText(command.sender)}</small>
+        <article
+          key={command.id}
+          className="flex items-baseline justify-between gap-3 border-b py-2.5 text-sm last-of-type:border-0"
+        >
+          <span className="min-w-0 break-words">
+            <strong className="font-medium">
+              {names.get(command.entity_id) ?? command.entity_id}
+            </strong>{" "}
+            <span>{actionText(command.command)}</span>
+            {" · "}
+            <span className={cn("font-medium", outcomes[command.outcome].tone)}>
+              {outcomes[command.outcome].label}
             </span>
-            <time dateTime={command.sent_at} title={date(command.sent_at)}>
-              {time(command.sent_at)}
-            </time>
-          </div>
+            {" · "}
+            <small className="text-xs text-muted-foreground">{senderText(command.sender)}</small>
+          </span>
+          <time
+            dateTime={command.sent_at}
+            title={date(command.sent_at)}
+            className="shrink-0 text-xs text-muted-foreground tabular-nums"
+          >
+            {time(command.sent_at)}
+          </time>
         </article>
       ))}
       {hasMore && (
-        <button id="commands-more" type="button" disabled={loading} onClick={onMore}>
+        <Button
+          id="commands-more"
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-3 justify-self-start"
+          disabled={loading}
+          onClick={onMore}
+        >
           Load older commands
-        </button>
+        </Button>
       )}
     </div>
   );
