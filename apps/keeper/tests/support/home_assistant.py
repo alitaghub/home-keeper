@@ -7,6 +7,9 @@ from typing import Any, Self
 
 import httpx
 import pytest
+from websockets.client import ClientProtocol
+from websockets.frames import OP_TEXT
+from websockets.frames import Frame as WebSocketFrame
 
 from home_keeper.home_assistant import HomeAssistantConnector
 
@@ -163,6 +166,41 @@ class FakeSocket:
 
     def close(self) -> None:
         pass
+
+
+class Utf8Socket(FakeSocket):
+    """A FakeSocket that sends UTF-8 JSON text frames, as Home Assistant does, without
+    escaping non-ASCII text. `answer_bytes` records the UTF-8 size of each result frame."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.answer_bytes: list[int] = []
+
+    def recv(self, timeout: float | None = None) -> str:
+        text = json.dumps(json.loads(super().recv(timeout)), ensure_ascii=False)
+        if json.loads(text).get("type") == "result":
+            self.answer_bytes.append(len(text.encode("utf-8")))
+        return text
+
+
+class ProtocolSocket(FakeSocket):
+    """A FakeSocket whose frames pass through the installed websockets library's real frame
+    parser and its `max_size`, with no network. Set `protocol` to the client protocol first;
+    a message over the limit raises the library's own close exception, as a real socket does."""
+
+    protocol: ClientProtocol
+
+    def recv(self, timeout: float | None = None) -> str:
+        raw = super().recv(timeout)
+        self.protocol.receive_data(WebSocketFrame(OP_TEXT, raw.encode()).serialize(mask=False))
+        events = self.protocol.events_received()
+        if self.protocol.parser_exc is not None:
+            self.protocol.receive_eof()
+            assert self.protocol.close_exc is not None
+            raise self.protocol.close_exc
+        [event] = events
+        assert isinstance(event, WebSocketFrame)
+        return bytes(event.data).decode()
 
 
 def install_socket(monkeypatch: pytest.MonkeyPatch, socket: FakeSocket) -> None:
