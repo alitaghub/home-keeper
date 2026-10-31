@@ -153,7 +153,7 @@ def main() -> None:
         config = json.loads(compose("config", "--format", "json").stdout)
         services = config["services"]
         published = sorted(name for name, service in services.items() if service.get("ports"))
-        assert published == ["api"], published
+        assert published == ["web"], published
         assert "controller" in services, "control profile adds no controller"
         controller_networks = set(services["controller"]["networks"])
         assert controller_networks == {"control"}, controller_networks

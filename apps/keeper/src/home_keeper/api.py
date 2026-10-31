@@ -4,7 +4,6 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import MAXYEAR, UTC, datetime, timedelta
-from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
@@ -13,7 +12,6 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import RequestResponseEndpoint
 
 from home_keeper.changes import BEFORE_START, read_cursor, read_page
@@ -376,7 +374,4 @@ def create_app(
             raise HTTPException(422, "Invalid event scope")
         return page
 
-    web_path = Path.cwd() / "web"
-    if web_path.exists():
-        app.mount("/", StaticFiles(directory=web_path, html=True), name="dashboard")
     return app

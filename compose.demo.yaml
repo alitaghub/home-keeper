@@ -4,12 +4,12 @@ name: home-keeper-demo
 # `--profile control` to switch the synthetic lights.
 include:
   - compose.postgres.yaml
+  - compose.web.yaml
   - compose.agent.yaml
 services:
   api:
     build: .
-    ports:
-      - "127.0.0.1:${HOME_KEEPER_PORT:-8000}:${HOME_KEEPER_PORT:-8000}"
+    # No published port: the browser reaches it through `web` (compose.web.yaml).
     environment:
       HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
       HOME_KEEPER_BIND: 0.0.0.0

@@ -30,7 +30,7 @@ flowchart LR
         db[("Postgres<br/>monitored devices, commands,<br/>conversations, bot state")]
         dashboard["Dashboard<br/>devices and history"]
         api -- "state and history reads" --> reader
-        dashboard <-->|"monitoring and history"| api
+        dashboard <-->|"monitoring and history, through web"| api
         api --> db
         controller["Controller<br/>optional, profile control"]
         api -- "light on/off" --> controller
@@ -247,7 +247,7 @@ user IDs, setup, limits, and what goes through Telegram.
 | Path            | What lives there                                                   |
 | --------------- | ------------------------------------------------------------------ |
 | `apps/keeper`   | Python service: FastAPI API, reader, Home Assistant setup, Postgres store, tests |
-| `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI  |
+| `apps/web`      | Dashboard: React and TypeScript, API types generated from OpenAPI, and the Caddy image that serves it |
 | `apps/agent`    | Optional agent: Deep Agent served by Aegra, tools over the public API |
 | `apps/controller` | Optional light controller: the only code that calls Home Assistant services |
 | `apps/chat`     | Image recipe for the unmodified Agent Chat UI                      |

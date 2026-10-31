@@ -1,8 +1,11 @@
 # Security boundary
 
-- The Home Keeper API publishes only on `127.0.0.1`. Its API and reader run as an
-  unprivileged user, without Linux capabilities, with read-only filesystems
-  except their mounted volumes. The bundled Home Assistant also publishes only a
+- Only `web` publishes Home Keeper's port, on `127.0.0.1`. It serves the
+  dashboard with the same Content-Security-Policy as before and forwards `/api`
+  to the API, which publishes no port. `web` passes the browser's Host and Origin
+  through unchanged, so the API's Host and Origin checks still decide every
+  write. The API, the reader and `web` run as an unprivileged user, without Linux
+  capabilities, with read-only filesystems except their mounted volumes. The bundled Home Assistant also publishes only a
   loopback port and runs with its upstream container identity, without
   privileged mode, host networking, USB or Bluetooth access.
 - Only the reader reads the Home Assistant token at run time, from a
