@@ -290,16 +290,17 @@ def _command_refusal(
     def check() -> str | None:  # noqa: PLR0911 -- one return per ordered check
         if not context.may_control:
             return NOT_ALLOWED
+        device = next((device for device in monitored().entities if device.id == entity_id), None)
+        # The keeper refuses these too, but only after the user approved it. A device that
+        # can never be switched says so before whether control is on.
+        if device is not None and device.device_kind not in (None, "light", "switch"):
+            return f"Not sent: {NOT_SWITCHABLE}"
         if control().state == "off":
             return "Not sent: light control is off."
         if brightness is not None and brightness not in range(1, 101):
             return "Not sent: brightness must be 1 to 100 percent."
-        device = next((device for device in monitored().entities if device.id == entity_id), None)
         if device is None:
             return f"Not sent: {entity_id} is not monitored. Offer to start monitoring it first."
-        # The keeper refuses these too, but only after the user approved it.
-        if device.device_kind not in (None, "light", "switch"):
-            return f"Not sent: {NOT_SWITCHABLE}"
         if brightness is not None and device.device_kind == "switch":
             return f"Not sent: {entity_id} is a plug or switch and has no brightness."
         return _state_refusal(entity_id, device.state, action, brightness)

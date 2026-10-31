@@ -142,8 +142,8 @@ The API refuses these before it sends anything. It records nothing for them.
 | Status | `detail`                                  | When                                                        |
 | ------ | ----------------------------------------- | ----------------------------------------------------------- |
 | 404    | `Unknown entity`                          | The ID is not in the catalog.                               |
-| 422    | `Entity is unsupported`                   | Home Keeper cannot monitor this entity.                     |
-| 409    | code `not_monitored` or `not_supported`   | The device is not a light, plug or switch, such as a thermostat: `not_monitored` when you do not monitor it, else `not_supported`. |
+| 409    | code `not_monitored` or `not_supported`   | The device is not a light, plug or switch, such as a thermostat: `not_monitored` when you do not monitor it, else `not_supported`, even when Home Keeper can no longer monitor it. |
+| 422    | `Entity is unsupported`                   | Home Keeper cannot monitor this light, plug or switch, or this entity of no device kind.                     |
 | 409    | code `control_off`                        | `GET /api/control` says `off`.                              |
 | 409    | code `not_monitored`                      | You do not monitor the device. Monitor it first.            |
 | 409    | code `state_unknown`                      | Home Assistant cannot be reached or has no such entity, or the state is `unknown`. |

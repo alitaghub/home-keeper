@@ -538,6 +538,44 @@ async def test_a_command_for_a_state_device_is_refused_before_every_other_check_
     assert house.audit() == []
 
 
+@pytest.mark.parametrize(
+    ("selected", "refusal"),
+    [
+        pytest.param(
+            True, Refusal("not_supported", "This device cannot be switched."), id="monitored"
+        ),
+        pytest.param(
+            False,
+            Refusal("not_monitored", "Monitor this device before switching it"),
+            id="unmonitored",
+        ),
+    ],
+)
+async def test_a_state_device_the_catalog_now_calls_unsupported_gets_the_state_device_refusal(
+    store: Store, *, selected: bool, refusal: Refusal
+) -> None:
+    house = home(store)
+    house.reader.entities.append(
+        Entity(
+            id=THERMOSTAT.entity_id,
+            name="Hall",
+            device_kind="state",
+            supported=False,
+            reason="Hidden in Home Assistant",
+        )
+    )
+    if selected:
+        house.select(THERMOSTAT)
+    house.report(THERMOSTAT, {"state": "heat"})
+    assert house.commands.heartbeat(NOW)
+
+    result = await switch(house, THERMOSTAT, ON)
+
+    assert result == refusal
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
 async def test_state_from_outside_the_device_domain_makes_the_entity_unsupported(
     store: Store,
 ) -> None:

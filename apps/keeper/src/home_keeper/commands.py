@@ -302,12 +302,15 @@ class Commands:
         else:
             if entity is None:
                 return UnknownEntity()
-            if not entity.supported:
+            # Any other kind is refused below for its kind, supported or not, and needs no state.
+            switchable = entity.device_kind in (None, "light", "switch")
+            if switchable and not entity.supported:
                 return UnsupportedEntity()
-            try:
-                live = self.reader.states([entity_id]).get(entity_id)
-            except ReaderUnavailable:
-                live = None
+            if switchable:
+                try:
+                    live = self.reader.states([entity_id]).get(entity_id)
+                except ReaderUnavailable:
+                    live = None
         # Read after Home Assistant answers, so a Stop monitoring or control turning off
         # during those reads still refuses the command.
         with self.store.transaction() as db:
@@ -320,8 +323,8 @@ class Commands:
             kind = entity.device_kind or kind
         # Refusal messages call a plug or switch a device.
         noun = "device" if kind == "switch" else "light"
-        # Only a light, plug or switch is switched: a monitored device of another kind is
-        # refused whatever its state or control.
+        # Only a light, plug or switch is switched: a device of another kind is refused
+        # whatever its support, state or control.
         if kind not in (None, "light", "switch"):
             if selected is None:
                 return Refusal("not_monitored", "Monitor this device before switching it")

@@ -87,6 +87,8 @@ class FakeReader:
         self.entities = list(entities)
         self.live: dict[str, LiveState] = dict(states or {})
         self.error: ReaderError | None = None
+        # Set to fail only the live-state reads, while the catalog and history still answer.
+        self.states_error: ReaderError | None = None
         self.on_read: Callable[[], object] | None = None
         # The entity ids of each `states` call, in order.
         self.reads: list[list[str]] = []
@@ -109,6 +111,8 @@ class FakeReader:
         if self.on_read is not None:
             self.on_read()
         self._check()
+        if self.states_error is not None:
+            raise ReaderUnavailable(self.states_error)
         return {entity_id: self.live.get(entity_id) for entity_id in entity_ids}
 
     def history(

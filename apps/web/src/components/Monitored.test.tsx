@@ -129,4 +129,16 @@ describe("sections on Home", () => {
     expect(container.querySelector("img, b")).toBeNull();
     expect(screen.getAllByText(markup).length).toBeGreaterThan(0);
   });
+
+  it("words an unavailable generic device as it words an unavailable light", () => {
+    show([
+      fixtures.monitoredState(thermostat, "unavailable", "unavailable", "unavailable"),
+      fixtures.monitoredLight(desk, "off", "unavailable"),
+    ]);
+
+    const other = screen.getByRole("heading", { level: 2, name: "Other" }).closest("section");
+    if (!other) throw new Error("Other is not a section");
+    expect(within(other).getAllByText("Unavailable").length).toBeGreaterThan(0);
+    expect(within(other).queryByText("unavailable")).not.toBeInTheDocument();
+  });
 });

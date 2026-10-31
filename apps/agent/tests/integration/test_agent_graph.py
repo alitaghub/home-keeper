@@ -761,15 +761,17 @@ def test_plug_command_is_refused_when_control_is_off() -> None:
     assert command_requests(keeper) == []
 
 
+@pytest.mark.parametrize("control", ["on", "off"])
 @pytest.mark.parametrize(("name", "state"), [("turn_on", "off"), ("turn_off", "on")])
 def test_a_command_for_a_state_device_is_refused_before_any_approval_and_sends_nothing(
-    name: str, state: str
+    name: str, state: str, control: str
 ) -> None:
     keeper = FakeKeeper(
         {
             # On or off, so every on/off check would pass for a switch.
             "/api/monitored": state_device_response(state, state.capitalize()),
-            "/api/control": control_response("on"),
+            # The device cannot be switched whether or not control is on.
+            "/api/control": control_response(control),
         }
     )
     call: ToolCall = {"name": name, "args": {"entity_id": "climate-a"}, "id": "call-state"}
@@ -777,5 +779,7 @@ def test_a_command_for_a_state_device_is_refused_before_any_approval_and_sends_n
     agent, config = agent_after_light_call(keeper, call)
 
     assert agent.get_state(config).interrupts == ()
-    assert "cannot be switched" in tool_result(agent.get_state(config))
+    result = tool_result(agent.get_state(config))
+    assert "cannot be switched" in result
+    assert "control is off" not in result
     assert command_requests(keeper) == []

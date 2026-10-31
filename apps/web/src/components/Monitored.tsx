@@ -307,20 +307,25 @@ function OtherTile({
 }) {
   const name = lightName(entity);
   const { state } = entity;
-  const known = state?.availability === "available";
   return (
     <article className="min-w-0">
       <Card className="h-full gap-4 px-5 py-5">
         <div className="flex items-start justify-between gap-3">
           <h3 className="min-w-0 font-semibold leading-snug break-words">{name}</h3>
-          <p
-            className={cn(
-              "inline-flex min-w-0 items-center rounded-full border px-2.5 py-0.5 text-sm font-medium break-words",
-              known ? statusStyles.off.pill : statusStyles.unknown.pill,
-            )}
-          >
-            {state ? state.label : "State unknown"}
-          </p>
+          {/* Home Assistant has no per-domain word for unavailable or unknown, so those show
+              the same badge as a light's or plug's. */}
+          {state?.availability === "available" ? (
+            <p
+              className={cn(
+                "inline-flex min-w-0 items-center rounded-full border px-2.5 py-0.5 text-sm font-medium break-words",
+                statusStyles.off.pill,
+              )}
+            >
+              {state.label}
+            </p>
+          ) : (
+            <StatusPill state={state} />
+          )}
         </div>
         {!entity.supported && entity.reason && (
           <p className="text-xs text-warning-foreground">{entity.reason}</p>

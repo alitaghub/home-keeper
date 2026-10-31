@@ -110,10 +110,13 @@ class Monitoring:
 
     def devices(self) -> MonitoredEntities:
         """Every monitored device with what Home Assistant reports for it now. While Home
-        Assistant cannot be read, each device is listed by its ID with no state."""
+        Assistant cannot be read, each device is listed by its ID with no state, by the kind
+        the catalog gave it, if the catalog answered, else its stored kind."""
         kinds = self._stored_kinds()
         try:
             catalog = {entity.id: entity for entity in self.reader.catalog()}
+            # Stored as soon as the catalog answers, whether or not the states can be read.
+            kinds = self._follow(kinds, catalog)
             states = self.reader.states(list(kinds))
         except ReaderUnavailable:
             return MonitoredEntities(
@@ -134,7 +137,7 @@ class Monitoring:
                 ]
             )
         results: list[MonitoredEntity] = []
-        for entity_id, kind in self._follow(kinds, catalog).items():
+        for entity_id, kind in kinds.items():
             entity = catalog.get(entity_id)
             live = states.get(entity_id)
             described = entity or Entity(
