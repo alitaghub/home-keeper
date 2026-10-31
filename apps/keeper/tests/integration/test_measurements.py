@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 from support.api import BROWSER, NOW, TOKEN
-from support.reader import FakeReader, history_row, live, measuring
+from support.reader import FakeReader, Payload, history_row, live, measuring
 from support.statistics import bucket
 
 from home_keeper.api import create_app
@@ -64,7 +64,7 @@ BUCKET_KEYS = {"start", "end", "mean", "min", "max"}
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
 # Every reading a monitored device has now, so each device can be told apart.
-READINGS = {
+READINGS: dict[str, Payload] = {
     POWER.id: measuring(412),
     TEMPERATURE.id: measuring(21.5, "°C"),
     NOTE.id: {"device_kind": "state", "state": "hello"},
