@@ -3,7 +3,14 @@ attributes."""
 
 from typing import Any, TypeIs
 
-from home_keeper.models import DeviceState, GenericState, LightState, SwitchState, device_kind_of
+from home_keeper.models import (
+    DeviceState,
+    GenericState,
+    LightState,
+    OnOffState,
+    SwitchState,
+    device_kind_of,
+)
 
 COLOR_FIELDS = (
     "brightness",
@@ -39,6 +46,8 @@ def device_state(payload: object, source_entity_id: str) -> DeviceState | None:
     match device_kind_of(source_entity_id):
         case "switch":
             return SwitchState.model_validate(state | {"device_kind": "switch"})
+        case "on_off":
+            return OnOffState.model_validate(state | {"device_kind": "on_off"})
         case "state":
             return GenericState.model_validate(state | {"device_kind": "state"})
         case "light":

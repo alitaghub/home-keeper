@@ -21,7 +21,7 @@ from support.reader import FakeReader, Payload, history_row
 
 from home_keeper.api import create_app
 from home_keeper.models import Entity
-from home_keeper.reader import ReaderError
+from home_keeper.reader import OnOffWords, ReaderError
 
 HOUR = 3600.0
 MS = timedelta(milliseconds=1)
@@ -49,7 +49,21 @@ PLUG = Entity(
     device_kind="switch",
     supported=True,
 )
-SOURCES = {BULB_A.id: "light.bulb_a", BULB_B.id: "light.bulb_b", PLUG.id: "switch.kettle"}
+# Built on demand: a kind the code does not know fails the tests that use it, not the module.
+DOOR = {
+    "id": "door-a",
+    "device_id": "device-door-a",
+    "device_name": "Door sensor",
+    "name": "Front door",
+    "device_kind": "on_off",
+    "supported": True,
+}
+SOURCES = {
+    BULB_A.id: "light.bulb_a",
+    BULB_B.id: "light.bulb_b",
+    PLUG.id: "switch.kettle",
+    DOOR["id"]: "binary_sensor.front_door",
+}
 REPORT_KEYS = {"start", "end", "timezone", "devices"}
 UNREACHABLE: list[ReaderError] = ["reader_unreachable", "connection", "authentication", "timeout"]
 type Query = str | list[str]
@@ -85,6 +99,8 @@ class Home:
     def record(self, entity_id: str, *rows: Row) -> None:
         """Home Assistant's recorder holds each (time, state) of the device, in order."""
         kind: Payload = {"device_kind": "switch"} if entity_id == PLUG.id else {}
+        if entity_id == DOOR["id"]:
+            kind = {"device_kind": "on_off"}
         for at, state in rows:
             self.reader.record(entity_id, history_row(SOURCES[entity_id], at, state | kind))
 
@@ -116,10 +132,14 @@ def home(
     clock: datetime,
     timezone: str = "UTC",
 ) -> Generator[Home]:
-    """Home Assistant has two bulbs and a plug; `devices` are monitored, in that order, and
-    the recorder holds nothing yet."""
+    """Home Assistant has two bulbs and a plug, and a door sensor when `devices` names it;
+    `devices` are monitored, in that order, and the recorder holds nothing yet."""
     time = [clock]
     reader = FakeReader([BULB_A, BULB_B, PLUG])
+    if "door-a" in devices:
+        reader.entities.append(Entity.model_validate(DOOR))
+        # Home Assistant's translations of a door sensor's states.
+        reader.word_list["door-a"] = OnOffWords(on="Open", off="Closed")
     app = create_app(
         database,
         TOKEN,
@@ -609,3 +629,79 @@ def test_time_without_history_is_in_no_period(database: str) -> None:
         interval(utc(10, 8), utc(10, 10), "no_history"),
         interval(utc(10, 12), utc(10, 14), "no_history"),
     ]
+
+
+def test_on_off_usage_has_the_switch_numbers_the_translated_words_and_no_brightness(
+    database: str,
+) -> None:
+    # Copenhagen is UTC+2 in mid-October. Local times: open 23:30, unavailable 00:15-01:00,
+    # closed 01:45.
+    with home(
+        database, ("bulb-a", "door-a"), clock=utc(14, 1), timezone="Europe/Copenhagen"
+    ) as house:
+        house.record(
+            "door-a",
+            (utc(13, 17), OFF),
+            (utc(13, 21, 30), on()),
+            (utc(13, 22, 15), {"state": "unavailable"}),
+            # Open before the unavailable stretch and after it: no switch-on is inferred.
+            (utc(13, 23), on()),
+            (utc(13, 23, 45), OFF),
+        )
+        house.reader.set("door-a", "binary_sensor.front_door", {"device_kind": "on_off", **on()})
+
+        report = house.usage(utc(13, 21), utc(14, 0))
+
+    door = {device["entity_id"]: device for device in report["devices"]}["door-a"]
+    assert door["device_kind"] == "on_off"
+    assert door["on_label"] == "Open"
+    assert door["off_label"] == "Closed"
+    assert "average_brightness" not in door
+    assert door["on_seconds"] == 1.5 * HOUR
+    assert door["unknown_seconds"] == 0.75 * HOUR
+    assert door["switch_ons"] == 1
+    assert door["days"] == [
+        {"date": "2026-10-13", "on_seconds": 0.5 * HOUR, "unknown_seconds": 0},
+        {"date": "2026-10-14", "on_seconds": HOUR, "unknown_seconds": 0.75 * HOUR},
+    ]
+    assert door["hours"] == hours(h23=0.5 * HOUR, h0=0.25 * HOUR, h1=0.75 * HOUR)
+    assert unknown(door) == [interval(utc(13, 22, 15), utc(13, 23), "unavailable")]
+    assert [(p["state"], set(p)) for p in periods(door)] == [
+        ("off", {"start", "end", "state"}),
+        ("on", {"start", "end", "state"}),
+        ("on", {"start", "end", "state"}),
+        ("off", {"start", "end", "state"}),
+    ]
+
+
+def test_a_door_closed_for_the_whole_range_still_reports_the_word_for_open(database: str) -> None:
+    with home(database, ("door-a",), clock=utc(10, 12)) as house:
+        # Only "off" rows: the history alone never shows the word for on.
+        house.record("door-a", (utc(10, 6), OFF))
+
+        door = house.devices(utc(10, 8), utc(10, 12))["door-a"]
+
+    assert door["on_seconds"] == 0
+    assert (door["on_label"], door["off_label"]) == ("Open", "Closed")
+    assert house.reader.word_reads == [["door-a"]]
+
+
+def test_an_on_off_device_without_translation_reports_on_and_off(database: str) -> None:
+    with home(database, ("door-a",), clock=utc(10, 12)) as house:
+        house.reader.word_list.clear()
+        house.record("door-a", (utc(10, 9), on()), (utc(10, 10), OFF))
+
+        door = house.devices(utc(10, 8), utc(10, 12))["door-a"]
+
+    assert door["on_seconds"] == HOUR
+    assert (door["on_label"], door["off_label"]) == ("on", "off")
+
+
+def test_usage_cannot_be_read_while_home_assistant_words_are_unreachable(database: str) -> None:
+    with home(database, ("door-a",), clock=utc(10, 12)) as house:
+        house.record("door-a", (utc(10, 9), on()))
+        house.reader.error = "connection"
+
+        response = house.usage_response(utc(10, 8), utc(10, 12))
+
+    assert response.status_code == 503, response.text

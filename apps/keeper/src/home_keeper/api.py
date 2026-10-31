@@ -32,13 +32,13 @@ from home_keeper.models import (
     ReaderError,
     Selection,
     SelectionChange,
-    SwitchableKind,
     Unreachable,
+    UsageKind,
     UsageReport,
     to_utc,
 )
 from home_keeper.monitoring import Monitoring, SelectionFull, UnknownEntity, UnsupportedEntity
-from home_keeper.reader import Reader, ReaderUnavailable
+from home_keeper.reader import RAW_WORDS, Reader, ReaderUnavailable
 from home_keeper.store import Store
 from home_keeper.usage import device_usage
 
@@ -266,8 +266,9 @@ def create_app(
         end: datetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
     ):
-        """On-time, switch-ons and brightness of selected lights, plugs and switches in
-        `[start, end)`, from Home Assistant's history. Other devices have no entry."""
+        """On-time, switch-ons and brightness of selected lights, plugs, switches and other
+        on/off devices in `[start, end)`, from Home Assistant's history. An on/off device also
+        has Home Assistant's words for its on and off. Devices of kind `state` have no entry."""
         # A far-past offset can overflow the conversion to UTC.
         try:
             start = to_utc(start)
@@ -294,12 +295,17 @@ def create_app(
             else {}
         )
 
-        def kind_of(device: str) -> SwitchableKind:
+        def kind_of(device: str) -> UsageKind:
             # A device selected without a kind is still known by its rows.
             if (kind := kinds[device]) is not None and kind != "state":
                 return kind
-            rows = history.get(device, [])
-            return "switch" if any(row.reading.device_kind == "switch" for row in rows) else "light"
+            seen = {row.reading.device_kind for row in history.get(device, [])}
+            return "on_off" if "on_off" in seen else "switch" if "switch" in seen else "light"
+
+        # Home Assistant's words for each on/off device's on and off, even one that stayed in
+        # one state for the whole range. Asked only when an on/off device is in the report.
+        on_off = [device for device in devices if kind_of(device) == "on_off"]
+        words = reader.words(on_off) if on_off else {}
 
         return UsageReport(
             start=start.isoformat(),
@@ -314,6 +320,7 @@ def create_app(
                     now=current,
                     timezone=timezone,
                     rows=history.get(device, []),
+                    words=words.get(device, RAW_WORDS),
                 )
                 for device in devices
             ],

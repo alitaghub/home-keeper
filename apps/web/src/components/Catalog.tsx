@@ -12,11 +12,13 @@ export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
 
 /**
  * A catalog row's name. A light or plug is named by its device, as today; one device can
- * have several other entities, such as a temperature and a humidity sensor, so those add the
- * entity's own name when it differs.
+ * have several other entities, such as a temperature and a humidity sensor, or a motion and
+ * a door sensor, so those add the entity's own name when it differs.
  */
 const rowName = (entity: Entity) =>
-  entity.device_kind === "state" && entity.device_name && entity.name !== entity.device_name
+  (entity.device_kind === "state" || entity.device_kind === "on_off") &&
+  entity.device_name &&
+  entity.name !== entity.device_name
     ? `${entity.device_name} · ${entity.name}`
     : lightName(entity);
 
@@ -26,9 +28,13 @@ const UNGROUPED = "__ungrouped";
 const KINDS = [
   {
     heading: "Lights",
-    has: (entity: Entity) => entity.device_kind !== "switch" && entity.device_kind !== "state",
+    has: (entity: Entity) =>
+      entity.device_kind !== "switch" &&
+      entity.device_kind !== "on_off" &&
+      entity.device_kind !== "state",
   },
   { heading: "Plugs and switches", has: (entity: Entity) => entity.device_kind === "switch" },
+  { heading: "Other on/off", has: (entity: Entity) => entity.device_kind === "on_off" },
   { heading: "Other", has: (entity: Entity) => entity.device_kind === "state" },
 ];
 

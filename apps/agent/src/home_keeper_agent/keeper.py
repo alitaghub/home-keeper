@@ -19,8 +19,10 @@ class KeeperError(Exception):
 
 
 # What a device is; None for a domain the keeper does not record, such as a person.
-# `state`: any other device, which reports a state but cannot be switched.
-DeviceKind = Literal["light", "switch", "state"] | None
+# `on_off`: a device that is only on or off, such as a fan or a door sensor, which has usage
+# but cannot be switched. `state`: any other device, which reports a state but cannot be
+# switched.
+DeviceKind = Literal["light", "switch", "on_off", "state"] | None
 
 
 class Reading(Wire):
@@ -90,7 +92,14 @@ class SwitchUsage(UsageFields):
     device_kind: Literal["switch"]
 
 
-DeviceUsage = Annotated[LightUsage | SwitchUsage, Field(discriminator="device_kind")]
+class OnOffUsage(UsageFields):
+    device_kind: Literal["on_off"]
+    # Home Assistant's words for on and off, such as "Open" and "Closed" for a door.
+    on_label: str
+    off_label: str
+
+
+DeviceUsage = Annotated[LightUsage | SwitchUsage | OnOffUsage, Field(discriminator="device_kind")]
 
 
 class Usage(Wire):

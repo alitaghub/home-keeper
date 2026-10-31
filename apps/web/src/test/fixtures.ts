@@ -71,6 +71,17 @@ export const thermostat = {
   device_kind: "state",
 } satisfies Schemas["Entity"];
 
+// A door sensor: an on/off device Home Keeper words with Home Assistant's own words for it.
+export const frontDoor = {
+  id: "binary_sensor.front_door",
+  device_id: "front-door-sensor",
+  device_name: "Front door",
+  name: "Door",
+  supported: true,
+  reason: null,
+  device_kind: "on_off",
+} satisfies Schemas["Entity"];
+
 export const catalog = {
   source_id: "demo",
   home_assistant_url: null,
@@ -287,6 +298,27 @@ export const monitoredState = (
     missing: false,
   }) satisfies MonitoredEntity;
 
+/** A monitored on/off device: Home Assistant's `state` (on or off), worded as `label`. */
+export const monitoredOnOff = (
+  entity: Schemas["Entity"] & { device_kind: "on_off" },
+  state: "on" | "off" | "unavailable" | "unknown",
+  label: string,
+  availability: Reading["availability"] = "available",
+) =>
+  ({
+    ...entity,
+    source_entity_id: entity.id,
+    state: {
+      device_kind: "on_off",
+      state,
+      label,
+      availability,
+      last_changed: reportedAt,
+      last_updated: reportedAt,
+    },
+    missing: false,
+  }) satisfies MonitoredEntity;
+
 /** A monitored device while Home Assistant cannot be reached: listed, with no state. */
 export const unknownDevice = (entity: Schemas["Entity"]) =>
   ({
@@ -433,3 +465,30 @@ export const usage = {
 } satisfies Schemas["UsageReport"];
 
 export const emptyUsage = { ...usage, devices: [] } satisfies Schemas["UsageReport"];
+
+/** The last day's usage of the front door: open 2 h, in two stretches, in Home Assistant's words. */
+export const doorUsage = {
+  ...usage,
+  devices: [
+    {
+      device_kind: "on_off",
+      entity_id: frontDoor.id,
+      on_seconds: 7200,
+      unknown_seconds: 0,
+      switch_ons: 2,
+      days: [
+        { date: "2026-10-11", on_seconds: 7200, unknown_seconds: 0 },
+        { date: "2026-10-12", on_seconds: 0, unknown_seconds: 0 },
+      ],
+      hours: hourly(20, 7200),
+      unknown_intervals: [],
+      periods: [
+        { start: "2026-10-11T10:00:00+00:00", end: "2026-10-11T20:00:00+00:00", state: "off" },
+        { start: "2026-10-11T20:00:00+00:00", end: "2026-10-11T22:00:00+00:00", state: "on" },
+        { start: "2026-10-11T22:00:00+00:00", end: "2026-10-12T10:00:00+00:00", state: "off" },
+      ],
+      on_label: "Open",
+      off_label: "Closed",
+    },
+  ],
+} satisfies Schemas["UsageReport"];

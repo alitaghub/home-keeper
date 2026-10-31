@@ -147,3 +147,47 @@ def test_a_demo_command_appears_in_the_history(database: str) -> None:
         newest = home.changes(entity_id=plug)[0]
         assert datetime.fromisoformat(newest["time"]) >= sent
         assert (newest["old"]["state"], newest["new"]["state"]) == (before, after)
+
+
+def test_demo_home_has_a_ceiling_fan_and_a_front_door_with_history_and_hass_words(
+    database: str,
+) -> None:
+    fan, door = "fan.ceiling_fan", "binary_sensor.front_door"
+    with demo(database) as home:
+        catalog = {entry["id"]: entry for entry in home.api.get("/api/catalog").json()["entities"]}
+        for identity, name in ((fan, "Ceiling fan"), (door, "Front door")):
+            assert catalog[identity]["supported"] is True
+            assert catalog[identity]["device_kind"] == "on_off"
+            assert catalog[identity]["device_name"] == name
+        # Not monitored by default.
+        assert not {fan, door} & set(home.api.get("/api/selection").json()["entity_ids"])
+        for identity in (fan, door):
+            home.api.put(
+                f"/api/selection/{identity}",
+                json={"selected": True},
+                headers={"X-Home-Keeper": "1"},
+            ).raise_for_status()
+
+        monitored = {e["id"]: e for e in home.api.get("/api/monitored").json()["entities"]}
+        words = {fan: {"on": "On", "off": "Off"}, door: {"on": "Open", "off": "Closed"}}
+        for identity in (fan, door):
+            reading = monitored[identity]["state"]
+            assert reading["device_kind"] == "on_off"
+            assert reading["label"] == words[identity][reading["state"]]
+        now = datetime.now(UTC)
+        usage = {
+            device["entity_id"]: device
+            for device in home.api.get(
+                "/api/usage",
+                params={"start": (now - timedelta(hours=24)).isoformat(), "end": now.isoformat()},
+            ).json()["devices"]
+        }
+        for identity in (fan, door):
+            assert usage[identity]["device_kind"] == "on_off"
+            assert usage[identity]["periods"], identity
+            assert (usage[identity]["on_label"], usage[identity]["off_label"]) == (
+                words[identity]["on"],
+                words[identity]["off"],
+            )
+        changes = home.changes(start=(now - timedelta(hours=24)).isoformat())
+        assert {fan, door} <= {change["entity_id"] for change in changes}

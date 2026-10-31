@@ -142,3 +142,76 @@ describe("sections on Home", () => {
     expect(within(other).queryByText("unavailable")).not.toBeInTheDocument();
   });
 });
+
+describe("other on/off devices on Home", () => {
+  const { desk, smartPlug, thermostat, frontDoor } = fixtures;
+  const door = fixtures.monitoredOnOff(frontDoor, "on", "Open");
+
+  function showWithUsage(entities: Schemas["MonitoredEntity"][], onSwitch: (() => void) | null) {
+    return render(
+      <Monitored
+        entities={entities}
+        usage={fixtures.doorUsage}
+        onStop={ignore}
+        onSwitch={onSwitch}
+        onHistory={ignore}
+        onChooseLights={ignore}
+        sending={new Set()}
+      />,
+    );
+  }
+
+  it("shows a door sensor under Other on/off with its label, its strip and a usage history button", () => {
+    showWithUsage([door], null);
+
+    const section = screen
+      .getByRole("heading", { level: 2, name: "Other on/off" })
+      .closest("section");
+    if (!section) throw new Error("Other on/off is not a section");
+    const card = within(section).getByRole("heading", { name: "Front door" });
+    expect(section.querySelector("#monitored-onoff")).toContainElement(card);
+    expect(within(section).getAllByText("Open").length).toBeGreaterThan(0);
+    // The strip words on time with Home Assistant's word, not "on".
+    const strip = within(section).getByRole("img", { name: /^Last 24 hours/ });
+    expect(strip).toHaveAccessibleName(/Open/);
+    expect(strip).not.toHaveAccessibleName(/\bon\b/);
+    expect(
+      within(section).getByRole("button", { name: "Usage history of Front door" }),
+    ).toBeInTheDocument();
+    // It is not shown as a light.
+    expect(screen.queryByRole("heading", { level: 2, name: "Lights" })).not.toBeInTheDocument();
+  });
+
+  it("gives an on/off device no dimmer and no switch buttons, even with control on", () => {
+    showWithUsage([door], () => {});
+
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Turn (on|off)/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Usage history of Front door" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop monitoring Front door" })).toBeInTheDocument();
+  });
+
+  it("shows an unavailable on/off device as unavailable instead of with its label", () => {
+    show([fixtures.monitoredOnOff(frontDoor, "unavailable", "Unavailable", "unavailable")]);
+
+    const section = screen
+      .getByRole("heading", { level: 2, name: "Other on/off" })
+      .closest("section");
+    if (!section) throw new Error("Other on/off is not a section");
+    const card = within(section).getByRole("heading", { name: "Front door" }).closest("article");
+    if (!card) throw new Error("Front door is not inside a card");
+    expect(card.querySelector("[data-status]")).toHaveAttribute("data-status", "unknown");
+    expect(card).toHaveTextContent("Unavailable");
+  });
+
+  it("orders the sections Lights, Plugs and switches, Other on/off, Other", () => {
+    show([
+      fixtures.monitoredState(thermostat, "heat", "Heat"),
+      door,
+      fixtures.monitoredSwitch(smartPlug, "on"),
+      fixtures.monitoredLight(desk, "on"),
+    ]);
+
+    expect(headings()).toEqual(["Lights", "Plugs and switches", "Other on/off", "Other"]);
+  });
+});

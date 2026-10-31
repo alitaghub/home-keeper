@@ -416,6 +416,11 @@ class HomeAssistantConnector:
         """The state with its word, from the translations the latest discovery read."""
         return state.model_copy(update={"label": self._labels.of(source_entity_id, state.state)})
 
+    def words(self, source_entity_id: str) -> tuple[str, str]:
+        """A device's words for `on` and `off`, from the translations the latest discovery
+        read; the raw state where Home Assistant has none."""
+        return self._labels.of(source_entity_id, "on"), self._labels.of(source_entity_id, "off")
+
     def read_states(self, source_entity_ids: Sequence[str]) -> dict[str, DeviceState | None]:
         """The current state of each device, from one read of every state; None when Home
         Assistant has no such entity. The API checks the selection itself."""

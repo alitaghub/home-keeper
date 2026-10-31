@@ -1001,3 +1001,157 @@ def test_discovery_gives_up_on_unanswered_language_and_translation_reads_within_
         "heat",
         "on",
     ]
+
+
+ON_OFF_DOMAINS = ["fan", "binary_sensor", "siren", "humidifier", "remote"]
+
+
+@pytest.mark.parametrize("domain", ON_OFF_DOMAINS)
+def test_a_fan_sensor_siren_humidifier_or_remote_on_a_device_is_a_supported_on_off_device(
+    connector: Connector, domain: str
+) -> None:
+    client, install, _ = connector
+    demo = {"platform": "demo", "translation_key": None}
+    install(
+        [
+            registry_entry("ok", f"{domain}.hall", **demo),
+            registry_entry("config", f"{domain}.setting", entity_category="config", **demo),
+            registry_entry("hidden", f"{domain}.spare", hidden_by="user", **demo),
+            registry_entry("loose", f"{domain}.loose", device_id=None, **demo),
+            registry_entry("disabled", f"{domain}.off", disabled_by="user", **demo),
+            registry_entry("helper", f"{domain}.helper", platform="group"),
+            registry_entry("members", f"{domain}.zones", **demo),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        states=[
+            entity_state(f"{domain}.hall", "on"),
+            entity_state(f"{domain}.zones", "on", entity_id=[f"{domain}.hall"]),
+        ],
+    )
+
+    catalog = client.discover()
+
+    by_id = {entity.id: entity for entity in catalog.entities}
+    # The registry rule is the one of state devices.
+    assert {key: (entity.supported, entity.reason) for key, entity in by_id.items()} == {
+        "ha:ok": (True, None),
+        "ha:config": (False, CATEGORY),
+        "ha:hidden": (False, HIDDEN),
+        "ha:loose": (False, NO_DEVICE_ENTITY),
+        "ha:disabled": (False, DISABLED),
+        "ha:helper": (False, GROUP),
+        "ha:members": (False, GROUP),
+    }
+    # The kind is set on unsupported entities of the domain too.
+    assert {entity.model_dump()["device_kind"] for entity in by_id.values()} == {"on_off"}
+
+
+DOOR_TRANSLATIONS = {
+    "component.binary_sensor.entity_component.door.state.on": "Open",
+    "component.binary_sensor.entity_component.door.state.off": "Closed",
+    "component.binary_sensor.entity_component._.state.on": "Detected",
+    "component.fan.entity_component._.state.on": "On",
+}
+
+
+def test_an_on_off_reading_has_no_attributes_and_is_labeled_by_its_device_class(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    demo = {"platform": "demo", "translation_key": None}
+    install(
+        [
+            registry_entry("door", "binary_sensor.front", **demo),
+            registry_entry("fan", "fan.ceiling", **demo),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        [
+            entity_state(
+                "binary_sensor.front", "on", device_class="door", secret="PRIVATE_SENTINEL"
+            ),
+            entity_state("binary_sensor.back", "off", device_class="door"),
+            entity_state("fan.ceiling", "on", percentage=50, preset_mode="PRIVATE_SENTINEL"),
+        ],
+        translations=DOOR_TRANSLATIONS,
+    )
+    client.discover()
+
+    readings = client.read_states(["binary_sensor.front", "fan.ceiling"])
+
+    door, fan = readings["binary_sensor.front"], readings["fan.ceiling"]
+    assert door is not None
+    assert fan is not None
+    for reading in (door, fan):
+        encoded = reading.model_dump(exclude_none=True)
+        assert encoded["device_kind"] == "on_off"
+        assert encoded["state"] == "on"
+        assert encoded["availability"] == "available"
+        assert set(encoded) <= {
+            "device_kind",
+            "state",
+            "availability",
+            "label",
+            "last_changed",
+            "last_updated",
+            "last_reported",
+        }
+        assert "PRIVATE_SENTINEL" not in reading.model_dump_json()
+    assert door.model_dump()["label"] == "Open"
+    assert fan.model_dump()["label"] == "On"
+
+
+@pytest.mark.parametrize("word", ["unavailable", "unknown"])
+def test_an_on_off_device_that_reports_unavailable_or_unknown_is_not_available(
+    connector: Connector, word: str
+) -> None:
+    client, install, _ = connector
+    install([], states=[entity_state("binary_sensor.front", word)])
+
+    reading = client.read_states(["binary_sensor.front"])["binary_sensor.front"]
+
+    assert reading is not None
+    assert reading.model_dump()["device_kind"] == "on_off"
+    assert reading.model_dump()["availability"] == word
+
+
+def test_history_of_on_off_devices_is_read_one_device_per_request_without_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    end = datetime(2026, 10, 13, 10, tzinfo=UTC)
+    at = start.timestamp()
+    install(
+        [registry_entry("door", "binary_sensor.front", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Hall"}],
+        [entity_state("binary_sensor.front", "on", device_class="door")],
+        translations=DOOR_TRANSLATIONS,
+    )
+    client.discover()
+    # A fresh connection for the history read; the labels learned in discovery stay.
+    socket = install(
+        [],
+        history={
+            "binary_sensor.front": [{"s": "off", "lu": at}, {"s": "on", "lu": at + 60}],
+            "fan.ceiling": [{"s": "on", "lu": at}],
+            "light.desk": [{"s": "on", "a": {"brightness": 120}, "lu": at}],
+        },
+    )
+
+    history = client.history(["binary_sensor.front", "fan.ceiling", "light.desk"], start, end)
+
+    door = history["binary_sensor.front"]
+    assert [(row.model_dump()["state"], row.model_dump()["label"]) for row in door] == [
+        ("off", "Closed"),
+        ("on", "Open"),
+    ]
+    assert {row.model_dump()["device_kind"] for row in door + history["fan.ceiling"]} == {"on_off"}
+    assert history["light.desk"][0].model_dump()["brightness"] == 120
+    requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    assert sorted(r["entity_ids"] for r in requests) == [
+        ["binary_sensor.front"],
+        ["fan.ceiling"],
+        ["light.desk"],
+    ]
+    for request in requests:
+        assert request["no_attributes"] is (request["entity_ids"] != ["light.desk"])

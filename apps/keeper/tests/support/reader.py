@@ -7,7 +7,14 @@ from datetime import datetime
 from pydantic import TypeAdapter
 
 from home_keeper.models import Entity, Reading
-from home_keeper.reader import HistoryRow, LiveState, ReaderError, ReaderUnavailable
+from home_keeper.reader import (
+    RAW_WORDS,
+    HistoryRow,
+    LiveState,
+    OnOffWords,
+    ReaderError,
+    ReaderUnavailable,
+)
 
 type Payload = dict[str, object]
 
@@ -96,6 +103,10 @@ class FakeReader:
         self.recorded: dict[str, list[HistoryRow]] = {}
         # The (entity IDs, start, end) of each `history` call, in order.
         self.history_reads: list[tuple[list[str], datetime, datetime]] = []
+        # Home Assistant's words for on and off by entity ID; a device not listed has none.
+        self.word_list: dict[str, OnOffWords] = {}
+        # The entity IDs of each `words` call, in order.
+        self.word_reads: list[list[str]] = []
 
     def health(self) -> None:
         self._check()
@@ -124,6 +135,11 @@ class FakeReader:
             entity_id: period(self.recorded.get(entity_id, []), start, end)
             for entity_id in entity_ids
         }
+
+    def words(self, entity_ids: Sequence[str]) -> dict[str, OnOffWords]:
+        self.word_reads.append(list(entity_ids))
+        self._check()
+        return {entity_id: self.word_list.get(entity_id, RAW_WORDS) for entity_id in entity_ids}
 
     def record(self, entity_id: str, *rows: HistoryRow) -> None:
         """Home Assistant's recorder stores `rows` for the device."""
