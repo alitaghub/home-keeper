@@ -93,7 +93,9 @@ export function Catalog({
           </p>
         )}
         {!!supported.length && !kinds.length && (
-          <p className="text-sm text-muted-foreground">No devices match “{query.trim()}”.</p>
+          <p className="text-sm text-muted-foreground">
+            {found.length ? "No supported devices match" : "No devices match"} “{query.trim()}”.
+          </p>
         )}
         {kinds.map((group) => (
           <section key={group.heading} className="grid gap-2">

@@ -38,8 +38,8 @@ describe("catalog on the Setup tab", () => {
       Boolean(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING);
     expect(follows(lights, plugs)).toBe(true);
     expect(follows(plugs, other)).toBe(true);
-    expect(follows(monitorButton("Desk lamp") as Node, plugs)).toBe(true);
-    expect(follows(plugs, monitorButton("Smart plug") as Node)).toBe(true);
+    expect(follows(screen.getByRole("button", { name: "Monitor Desk lamp" }), plugs)).toBe(true);
+    expect(follows(plugs, screen.getByRole("button", { name: "Monitor Smart plug" }))).toBe(true);
     expect(other).not.toHaveAttribute("open");
     expect(other).toHaveTextContent("All living room lights");
     expect(other).toHaveTextContent("Ungrouped sensor");
@@ -81,5 +81,19 @@ describe("catalog on the Setup tab", () => {
     }
     expect(otherEntities()).toHaveTextContent("All living room lights");
     expect(otherEntities()).toHaveTextContent("Ungrouped sensor");
+  });
+
+  it("says when a search matches only unsupported entities, and when it matches nothing", async () => {
+    const user = renderCatalog();
+    const search = screen.getByRole("searchbox", { name: "Search devices" });
+
+    await user.type(search, "living room");
+    expect(screen.getByText(/No supported devices match “living room”/)).toBeInTheDocument();
+    expect(screen.queryByText(/^No devices match/)).toBeNull();
+
+    await user.clear(search);
+    await user.type(search, "zzz");
+    expect(screen.getByText(/^No devices match “zzz”/)).toBeInTheDocument();
+    expect(screen.queryByText(/No supported devices match/)).toBeNull();
   });
 });

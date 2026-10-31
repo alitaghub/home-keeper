@@ -531,10 +531,11 @@ def test_a_registry_of_up_to_5000_entity_or_device_rows_is_discovered(
 ) -> None:
     client, install, _ = connector
     entity_rows, device_rows = registry_of(entities, devices)
-    # At 5000 rows, the rows weigh what a real home's do: past the old 2 MiB message limit.
+    # Real registry rows are 400 to 600 bytes, so 5000 of them weigh over 2.5 MiB. Rows
+    # without history keep the test honest about message size.
     heaviest = max(len(json.dumps(entity_rows)), len(json.dumps(device_rows)))
-    old_limit = 2 * 1024 * 1024
-    assert (heaviest > old_limit) == (max(entities, devices) == 5000)
+    if max(entities, devices) == 5000:
+        assert heaviest > 2.5 * 1024 * 1024
     install(entity_rows, device_rows)
 
     catalog = client.discover()
@@ -558,8 +559,13 @@ def test_5001_entity_rows_or_5001_device_rows_fail_with_invalid_data(
 
 @pytest.mark.parametrize(
     "body",
-    [b"{not json", b'{"entity_id": "light.bulb"}', b'["not a state"]'],
-    ids=["not_json", "not_a_list", "entry_not_an_object_state"],
+    [
+        b"{not json",
+        b'{"entity_id": "light.bulb"}',
+        b'["not a state"]',
+        b'[{"entity_id": "light.bulb", "attributes": []}]',
+    ],
+    ids=["not_json", "not_a_list", "entry_not_an_object_state", "attributes_not_an_object"],
 )
 def test_a_malformed_bulk_states_body_fails_discovery_with_invalid_data(
     connector: Connector, body: bytes
