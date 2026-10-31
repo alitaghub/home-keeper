@@ -17,7 +17,8 @@ from typing import Any, NoReturn, Protocol, cast
 from urllib.parse import urlsplit
 
 import httpx
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import ConnectionClosed, PayloadTooBig, WebSocketException
+from websockets.frames import CloseCode
 from websockets.sync.client import connect
 
 from home_keeper.events import device_state, is_json_object
@@ -219,7 +220,7 @@ class HomeAssistantConnector:
             if device_kind_of(entity_id) not in attributed
         ]
         history: dict[str, list[DeviceState]] = {}
-        with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL) as session:
+        with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL, deadline) as session:
             for entity_ids, no_attributes in requests:
                 result = session.request(
                     "history/history_during_period",
@@ -250,24 +251,29 @@ class HomeAssistantConnector:
 
     @contextlib.contextmanager
     def _session(
-        self, max_size: int = MAX_PAYLOAD, max_total: int | None = None
+        self,
+        max_size: int = MAX_PAYLOAD,
+        max_total: int | None = None,
+        deadline: float | None = None,
     ) -> Generator["Session"]:
         """An authenticated WebSocket for read requests, whose answers may total `max_total`
-        bytes. Every failure inside, including the caller's parsing, leaves as a safe
-        ConnectorError code."""
+        bytes. Connecting and authenticating end by `deadline`, a `time.monotonic()` value.
+        Every failure inside, including the caller's parsing, leaves as a safe ConnectorError
+        code."""
         try:
             with connect(
                 self._websocket_url,
-                open_timeout=self._timeout,
-                close_timeout=self._timeout,
+                open_timeout=self._wait(deadline),
+                close_timeout=self._wait(deadline),
                 max_size=max_size,
                 proxy=None,
                 logger=_WS_LOGGER,
             ) as socket:
-                if self._receive(socket, max_size).get("type") != "auth_required":
+                answer = self._receive(socket, max_size, self._wait(deadline))
+                if answer.get("type") != "auth_required":
                     raise ConnectorError("invalid_data")
                 socket.send(json.dumps({"type": "auth", "access_token": self._token}))
-                authentication = self._receive(socket, max_size).get("type")
+                authentication = self._receive(socket, max_size, self._wait(deadline)).get("type")
                 if authentication == "auth_invalid":
                     raise ConnectorError("authentication")
                 if authentication != "auth_ok":
@@ -276,12 +282,22 @@ class HomeAssistantConnector:
         except Exception as error:
             _raise_safe(error)
 
+    def _wait(self, deadline: float | None) -> float:
+        """The connector's timeout, cut to what is left before `deadline`. Raises TimeoutError
+        once it has passed."""
+        if deadline is None:
+            return self._timeout
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError
+        return min(self._timeout, left)
+
     def _receive(
         self, socket: WebSocket, max_size: int = MAX_PAYLOAD, timeout: float | None = None
     ) -> dict[str, Any]:
         """One message, waiting at most `timeout`, else the connector's timeout."""
         raw = socket.recv(timeout=self._timeout if timeout is None else timeout)
-        if len(raw) > max_size:
+        if _size(raw) > max_size:
             raise ConnectorError("invalid_data")
         data = json.loads(raw)
         if not is_json_object(data):
@@ -495,6 +511,13 @@ def _raise_safe(error: Exception) -> NoReturn:
         raise ConnectorError("tls") from None
     if isinstance(error, TimeoutError):
         raise ConnectorError("timeout") from None
+    # An answer over the size limit: websockets closes with 1009, "message too big".
+    if isinstance(error, PayloadTooBig) or (
+        isinstance(error, ConnectionClosed)
+        and CloseCode.MESSAGE_TOO_BIG
+        in {close.code for close in (error.rcvd, error.sent) if close is not None}
+    ):
+        raise ConnectorError("invalid_data") from None
     if isinstance(error, (OSError, WebSocketException)):
         raise ConnectorError("connection") from None
     raise ConnectorError("invalid_data") from None
@@ -553,10 +576,15 @@ class _Counted:
 
     def recv(self, timeout: float | None = None) -> str | bytes:
         raw = self._socket.recv(timeout=timeout)
-        self._received += len(raw)
+        self._received += _size(raw)
         if self._max_total is not None and self._received > self._max_total:
             raise ConnectorError("invalid_data")
         return raw
+
+
+def _size(raw: str | bytes) -> int:
+    """A message's size in bytes; a text message is UTF-8 on the wire."""
+    return len(raw) if isinstance(raw, bytes) else len(raw.encode())
 
 
 def _light_or_switch_reason(

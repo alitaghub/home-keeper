@@ -12,7 +12,9 @@ from support.home_assistant import (
     FakeClock,
     FakeSocket,
     Frame,
+    ProtocolSocket,
     StateServer,
+    Utf8Socket,
     entity_state,
     hue_room,
     install_socket,
@@ -22,9 +24,13 @@ from support.home_assistant import (
     registry_entry,
     use_transport,
 )
+from websockets.client import ClientProtocol
+from websockets.protocol import OPEN
+from websockets.uri import parse_uri
 
 from home_keeper.home_assistant import (
     HISTORY_MAX_PAYLOAD,
+    HISTORY_MAX_TOTAL,
     MAX_PAYLOAD,
     STATES_MAX_PAYLOAD,
     ConnectorError,
@@ -1241,3 +1247,92 @@ def test_discovery_waits_only_the_budget_for_silent_translations_when_the_langua
     [reading] = client.read_states(["climate.hall"]).values()
     assert reading is not None
     assert reading.model_dump()["label"] == "heat"
+
+
+def note_history(count: int, character: str) -> list[Frame]:
+    """History rows of valid 250-character state text, one per second inside the day."""
+    start = datetime(2026, 10, 13, tzinfo=UTC).timestamp()
+    return [{"s": character * 249 + str(index % 2), "lu": start + index} for index in range(count)]
+
+
+DAY_START = datetime(2026, 10, 13, tzinfo=UTC)
+DAY_END = DAY_START + timedelta(days=1)
+
+
+def test_the_64_mib_history_budget_counts_utf8_bytes_not_characters(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, _ = connector
+    sources = [f"sensor.note_{number}" for number in range(5)]
+    rows = note_history(18_000, "温")
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
+    one = Utf8Socket([], history=dict.fromkeys(sources, rows))
+    install_socket(monkeypatch, one)
+    # One device alone is fine, and each answer is under the per-answer cap.
+    assert len(client.history(sources[:1], DAY_START, DAY_END)[sources[0]]) == len(rows)
+    [answer] = one.answer_bytes
+    assert answer < HISTORY_MAX_PAYLOAD
+    # Five of them are over the total in bytes (though under it counted in characters).
+    assert answer * len(sources) > HISTORY_MAX_TOTAL
+
+    install_socket(monkeypatch, Utf8Socket([], history=dict.fromkeys(sources, rows)))
+    with pytest.raises(ConnectorError) as error:
+        client.history(sources, DAY_START, DAY_END)
+
+    assert error.value.code == "invalid_data"
+
+
+def test_slow_connect_and_authentication_count_toward_the_8_second_history_deadline(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, _ = connector
+    clock = FakeClock()
+    monkeypatch.setattr("home_keeper.home_assistant.time", clock)
+    socket = FakeSocket(
+        [], history={"fan.ceiling": [{"s": "on", "lu": DAY_START.timestamp()}]}, clock=clock
+    )
+    # Each frame arrives within the 5 s receive timeout, but together they take 9 s.
+    socket.messages.clear()
+    socket.messages.extend(
+        [
+            {"slow": 4.5, "reply": {"type": "auth_required"}},
+            {"slow": 4.5, "reply": {"type": "auth_ok"}},
+        ]
+    )
+    install_socket(monkeypatch, socket)
+    started = clock.monotonic()
+
+    with pytest.raises(ConnectorError) as error:
+        client.history(["fan.ceiling"], DAY_START, DAY_END)
+
+    assert error.value.code == "timeout"
+    assert clock.monotonic() - started <= 8
+
+
+@pytest.mark.parametrize(("count", "code"), [(3, None), (65_000, "invalid_data")])
+def test_a_history_answer_over_the_message_size_limit_is_invalid_data_not_a_connection_fault(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch, count: int, code: str | None
+) -> None:
+    client, _, _ = connector
+    source = "sensor.note"
+    socket = ProtocolSocket([], history={source: note_history(count, "a")})
+
+    def connect(*_args: object, **kwargs: object) -> ProtocolSocket:
+        # The adapter hands the library its per-message limit; the real parser enforces it.
+        assert kwargs["max_size"] == HISTORY_MAX_PAYLOAD
+        socket.protocol = ClientProtocol(
+            parse_uri("ws://ha.example/api/websocket"), state=OPEN, max_size=HISTORY_MAX_PAYLOAD
+        )
+        return socket
+
+    monkeypatch.setattr("home_keeper.home_assistant.connect", connect)
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
+    if code is None:
+        assert len(client.history([source], DAY_START, DAY_END)[source]) == count
+        return
+    assert len(json.dumps(socket.history).encode()) > HISTORY_MAX_PAYLOAD
+
+    with pytest.raises(ConnectorError) as error:
+        client.history([source], DAY_START, DAY_END)
+
+    assert error.value.code == code
