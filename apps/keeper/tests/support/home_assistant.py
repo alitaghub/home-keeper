@@ -371,8 +371,7 @@ def state_changed(entity: str = "light.bulb", **changes: Any) -> Frame:
 
 
 def statistics_row(start: datetime, mean: Any, low: Any, high: Any, *, hours: float = 1) -> Frame:
-    """One row of `recorder/statistics_during_period`: the bucket from `start` for `hours`,
-    with its times in epoch milliseconds. Pass `None` or leave a key out to test a bad row."""
+    """A `recorder/statistics_during_period` row: `hours` from `start`, times in epoch ms."""
     return {
         "start": start.timestamp() * 1000,
         "end": (start + timedelta(hours=hours)).timestamp() * 1000,

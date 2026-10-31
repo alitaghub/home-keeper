@@ -1,9 +1,5 @@
-"""Measurements: what a monitored power meter or thermometer reports now, and Home Assistant's
-long-term statistics for it, through `/api/measurements`.
-
-Each test records buckets in Home Assistant's long-term statistics through a fake reader, then
-asks the API. A bucket is one period (5 minutes or an hour); a period with no bucket is a gap.
-"""
+"""`/api/measurements`: a monitored measurement's long-term statistics and current reading.
+A period with no bucket is a gap."""
 
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -326,3 +322,34 @@ def test_a_state_device_the_catalog_now_calls_a_measurement_becomes_one_without_
         house.reader.error = "connection"
         kept = house.client.get("/api/monitored").json()["entities"][0]
         assert kept["device_kind"] == "measurement"
+
+
+def test_measurements_keep_buckets_and_totals_when_only_the_states_read_fails(
+    database: str,
+) -> None:
+    with home(database) as house:
+        house.reader.record_statistics(
+            POWER.id,
+            bucket(NOW - 6 * HOUR, mean=10, low=5, high=20),
+            bucket(NOW - 2 * HOUR, mean=60, low=1, high=90),
+        )
+        house.reader.states_error = "timeout"
+
+        series = house.measurements(NOW - 7 * DAY, NOW)[POWER.id]
+
+    # Without a reading there is no unit and no latest, but the statistics stand.
+    assert (series["unit"], series["latest"]) == (None, None)
+    assert len(series["buckets"]) == 2
+    assert (series["min"], series["mean"], series["max"]) == (1.0, 35.0, 90.0)
+
+
+def test_measurements_are_a_503_when_the_statistics_read_fails_even_if_states_read_fine(
+    database: str,
+) -> None:
+    with home(database) as house:
+        house.reader.statistics_error = "connection"
+
+        response = house.measurements_response(NOW - 7 * DAY, NOW)
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"] == "connection"

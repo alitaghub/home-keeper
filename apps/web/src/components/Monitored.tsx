@@ -1,6 +1,7 @@
 import { ChevronDown, History, Power } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Schemas } from "../api/client";
+import { KIND_GROUPS, type Kind, kindOf } from "../deviceKinds";
 import { ago, brightnessPercent, date, measurement } from "../format";
 import { cn } from "../lib/utils";
 import type { Measurements, Series } from "../useMeasurements";
@@ -409,6 +410,14 @@ function MeasurementTile({
 }
 
 const grid = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
+// Each kind's section ids. The lights grid keeps the plain `#monitored`.
+const SECTIONS: Record<Kind, { headingId: string; gridId: string }> = {
+  light: { headingId: "lights-section-heading", gridId: "monitored" },
+  switch: { headingId: "switches-heading", gridId: "monitored-switches" },
+  on_off: { headingId: "onoff-heading", gridId: "monitored-onoff" },
+  measurement: { headingId: "measurements-heading", gridId: "monitored-measurements" },
+  state: { headingId: "other-heading", gridId: "monitored-other" },
+};
 const sectionHeading = "text-lg font-semibold tracking-tight";
 
 /** A headed group of cards on Home; a kind with no monitored device shows no section. */
@@ -462,18 +471,8 @@ export function Monitored({
 }) {
   const all = entities ?? [];
   const empty = entities !== null && !entities.length;
-  const switches = all.filter((entity) => entity.device_kind === "switch");
-  const onOffs = all.filter((entity) => entity.device_kind === "on_off");
-  const measured = all.filter((entity) => entity.device_kind === "measurement");
-  const others = all.filter((entity) => entity.device_kind === "state");
-  // A device without a kind counts as a light, as the API does.
-  const lights = all.filter(
-    (entity) =>
-      entity.device_kind !== "switch" &&
-      entity.device_kind !== "on_off" &&
-      entity.device_kind !== "measurement" &&
-      entity.device_kind !== "state",
-  );
+  const ofKind = (kind: Kind) => all.filter((entity) => kindOf(entity) === kind);
+  const lights = ofKind("light");
   const devices = new Map(usage?.devices.map((device) => [device.entity_id, device]));
   const recent = (id: string): Recent | null => usage && { range: usage, device: devices.get(id) };
   const series = new Map(measurements?.devices.map((device) => [device.entity_id, device]));
@@ -491,21 +490,39 @@ export function Monitored({
       busy={sending.has(entity.id)}
     />
   );
+  const card = (entity: Schemas["MonitoredEntity"]) => {
+    switch (kindOf(entity)) {
+      case "measurement":
+        return (
+          <MeasurementTile
+            key={entity.id}
+            entity={entity}
+            recent={recentSeries(entity.id)}
+            onStop={onStop}
+            onHistory={onHistory}
+          />
+        );
+      case "state":
+        return <OtherTile key={entity.id} entity={entity} onStop={onStop} />;
+      default:
+        return tile(entity);
+    }
+  };
   return (
     <>
       {/* The lights grid stays mounted, hidden while it has nothing to show, so it keeps its
           place while the list loads and when the last device stops being monitored. */}
       <section
         className="grid gap-4"
-        aria-labelledby={lights.length ? "lights-section-heading" : undefined}
+        aria-labelledby={lights.length ? SECTIONS.light.headingId : undefined}
         hidden={!lights.length && !empty}
       >
         {lights.length > 0 && (
-          <h2 id="lights-section-heading" className={sectionHeading}>
-            Lights
+          <h2 id={SECTIONS.light.headingId} className={sectionHeading}>
+            {KIND_GROUPS[0].heading}
           </h2>
         )}
-        <div id="monitored" className={grid}>
+        <div id={SECTIONS.light.gridId} className={grid}>
           {empty && (
             <div className="col-span-full grid justify-items-start gap-3 rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
               <p>No devices monitored yet. Choose the devices Home Keeper should look after.</p>
@@ -517,36 +534,11 @@ export function Monitored({
           {lights.map(tile)}
         </div>
       </section>
-      <Section
-        heading="Plugs and switches"
-        headingId="switches-heading"
-        gridId="monitored-switches"
-      >
-        {switches.map(tile)}
-      </Section>
-      <Section heading="Other on/off" headingId="onoff-heading" gridId="monitored-onoff">
-        {onOffs.map(tile)}
-      </Section>
-      <Section
-        heading="Measurements"
-        headingId="measurements-heading"
-        gridId="monitored-measurements"
-      >
-        {measured.map((entity) => (
-          <MeasurementTile
-            key={entity.id}
-            entity={entity}
-            recent={recentSeries(entity.id)}
-            onStop={onStop}
-            onHistory={onHistory}
-          />
-        ))}
-      </Section>
-      <Section heading="Other" headingId="other-heading" gridId="monitored-other">
-        {others.map((entity) => (
-          <OtherTile key={entity.id} entity={entity} onStop={onStop} />
-        ))}
-      </Section>
+      {KIND_GROUPS.slice(1).map(({ kind, heading }) => (
+        <Section key={kind} heading={heading} {...SECTIONS[kind]}>
+          {ofKind(kind).map(card)}
+        </Section>
+      ))}
     </>
   );
 }

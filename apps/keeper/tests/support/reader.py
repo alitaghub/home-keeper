@@ -50,8 +50,7 @@ def live(source_entity_id: str, state: Payload) -> LiveState:
 
 
 def measuring(value: float | None, unit: str | None = "W", state: str | None = None) -> Payload:
-    """What Home Assistant reports for a measurement: `value` in `unit`, or no number when
-    `value` is None (then `state` says why, `unavailable` by default)."""
+    """A measurement's reading: `value` in `unit`; None is `unavailable` unless `state` says."""
     text = state or ("unavailable" if value is None else f"{value:g}")
     return {"device_kind": "measurement", "state": text, "value": value, "unit": unit}
 
@@ -167,8 +166,7 @@ class FakeReader:
     def statistics(
         self, entity_ids: Sequence[str], start: datetime, end: datetime
     ) -> dict[str, list[Bucket]]:
-        """Like Home Assistant: each requested device's buckets that start in `[start, end)`,
-        oldest first. A device with none has []."""
+        """Each device's buckets starting in `[start, end)`, oldest first; [] for none."""
         self.statistics_reads.append((list(entity_ids), start, end))
         self._check()
         if self.statistics_error is not None:
@@ -186,7 +184,7 @@ class FakeReader:
         }
 
     def record_statistics(self, entity_id: str, *buckets: Bucket) -> None:
-        """Home Assistant's long-term statistics hold `buckets` for the device."""
+        """The device has these long-term statistics buckets."""
         self.buckets.setdefault(entity_id, []).extend(buckets)
 
     def record(self, entity_id: str, *rows: HistoryRow) -> None:

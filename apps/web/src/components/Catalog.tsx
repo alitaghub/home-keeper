@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 import type { Schemas } from "../api/client";
+import { KIND_GROUPS, kindOf } from "../deviceKinds";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -13,31 +14,14 @@ export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
 /** A device's name; an on/off, measurement or other entity adds its own, since one device can
  * have several. */
 export const deviceName = (entity: Pick<Entity, "device_kind" | "device_name" | "name">) =>
-  (entity.device_kind === "state" ||
-    entity.device_kind === "on_off" ||
-    entity.device_kind === "measurement") &&
+  kindOf(entity) !== "light" &&
+  kindOf(entity) !== "switch" &&
   entity.device_name &&
   entity.name !== entity.device_name
     ? `${entity.device_name} · ${entity.name}`
     : lightName(entity);
 
 const UNGROUPED = "__ungrouped";
-
-// A supported entity without a kind counts as a light, as the API does.
-const KINDS = [
-  {
-    heading: "Lights",
-    has: (entity: Entity) =>
-      entity.device_kind !== "switch" &&
-      entity.device_kind !== "on_off" &&
-      entity.device_kind !== "measurement" &&
-      entity.device_kind !== "state",
-  },
-  { heading: "Plugs and switches", has: (entity: Entity) => entity.device_kind === "switch" },
-  { heading: "Other on/off", has: (entity: Entity) => entity.device_kind === "on_off" },
-  { heading: "Measurements", has: (entity: Entity) => entity.device_kind === "measurement" },
-  { heading: "Other", has: (entity: Entity) => entity.device_kind === "state" },
-];
 
 // Case-insensitive substring match on the entity's or its device's name.
 function matches(entity: Entity, query: string) {
@@ -73,9 +57,9 @@ export function Catalog({
   const supported = entities?.filter((entity) => entity.supported) ?? [];
   const found = entities?.filter((entity) => matches(entity, query)) ?? [];
   const others = found.filter((entity) => !entity.supported);
-  const kinds = KINDS.map(({ heading, has }) => ({
+  const kinds = KIND_GROUPS.map(({ kind, heading }) => ({
     heading,
-    entities: found.filter((entity) => entity.supported && has(entity)),
+    entities: found.filter((entity) => entity.supported && kindOf(entity) === kind),
   })).filter((group) => group.entities.length);
   return (
     <>

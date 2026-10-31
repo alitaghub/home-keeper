@@ -273,10 +273,8 @@ def create_app(
         end: datetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
     ):
-        """On-time, switch-ons and brightness of selected lights, plugs, switches and other
-        on/off devices in `[start, end)`, from Home Assistant's history. An on/off device also
-        has Home Assistant's words for its on and off. Devices of kind `state` or `measurement`
-        have no entry."""
+        """On-time, switch-ons and brightness of monitored on/off devices in `[start, end)`,
+        from Home Assistant's history. Other kinds have no entry."""
         # A far-past offset can overflow the conversion to UTC.
         try:
             start = to_utc(start)
@@ -341,10 +339,8 @@ def create_app(
         end: datetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
     ):
-        """Statistics of monitored measurements in `[start, end)`, from Home Assistant: 5-minute
-        buckets for a range up to 24 hours, else hourly ones, with each device's lowest, mean,
-        highest and current value. Periods without statistics are gaps. Other devices have no
-        entry."""
+        """Statistics of monitored measurements in `[start, end)`: 5-minute buckets up to 24
+        hours, else hourly. Periods without statistics are gaps. Other kinds have no entry."""
         # A far-past offset can overflow the conversion to UTC.
         try:
             start = to_utc(start)
@@ -357,7 +353,11 @@ def create_app(
         # Unselected IDs and other kinds are left out rather than reported as missing.
         devices = sorted(set(entity_id or measured) & measured)
         statistics = reader.statistics(devices, start, end) if devices else {}
-        current = reader.states(devices) if devices else {}
+        # The statistics answered, so a failed current read costs only the unit and latest value.
+        try:
+            current = reader.states(devices) if devices else {}
+        except ReaderUnavailable:
+            current = {}
         period = statistics_period(start, end)
         return MeasurementReport(
             start=start.isoformat(),

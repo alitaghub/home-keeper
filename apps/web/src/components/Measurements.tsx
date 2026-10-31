@@ -1,10 +1,7 @@
-import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
 import { measurement, time } from "../format";
 import { cn } from "../lib/utils";
 import { fetchMeasurements, type Measurements, type Series } from "../useMeasurements";
-import { type Days, RANGES } from "./History";
-import { Button } from "./ui/button";
+import { RANGES, RangeDialog } from "./RangeDialog";
 
 type Bucket = Series["buckets"][number];
 type Range = Pick<Measurements, "start" | "end">;
@@ -48,6 +45,12 @@ function steps(run: Bucket[], value: (bucket: Bucket) => number, axis: ReturnTyp
 
 const points = (list: number[][]) => list.map(([x, y]) => `${x},${y}`).join(" ");
 
+/** The lowest to highest value over the range, such as "7 days: 30–900 W". */
+const spread = (series: Series, caption: string) =>
+  series.min == null || series.max == null
+    ? `${caption}: no statistics`
+    : `${caption}: ${measurement(series.min, null)}–${measurement(series.max, series.unit)}`;
+
 /** The mean of each bucket as a line across the range; gaps break the line. */
 export function Sparkline({
   range,
@@ -60,17 +63,13 @@ export function Sparkline({
 }) {
   const means = series.buckets.map((bucket) => bucket.mean);
   const axis = axes(range, Math.min(...means), Math.max(...means), SPARK_HEIGHT);
-  const label =
-    series.min == null || series.max == null
-      ? `${caption}: no statistics`
-      : `${caption}: ${measurement(series.min, null)}–${measurement(series.max, series.unit)}`;
   return (
     <svg
       className="block h-8 w-full overflow-hidden rounded-sm"
       viewBox={`0 0 ${WIDTH} ${SPARK_HEIGHT}`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={label}
+      aria-label={spread(series, caption)}
     >
       <rect className="fill-muted" width={WIDTH} height={SPARK_HEIGHT} />
       {runs(series.buckets).map((run) => (
@@ -88,14 +87,15 @@ export function Sparkline({
 }
 
 /** Each bucket's lowest to highest value as a band, and its mean as a line; gaps stay empty. */
-function Chart({ range, series }: { range: Range; series: Series }) {
+function Chart({ range, series, caption }: { range: Range; series: Series; caption: string }) {
   const axis = axes(range, series.min ?? 0, series.max ?? 0, CHART_HEIGHT);
   return (
     <svg
       className="block h-40 w-full overflow-hidden rounded-sm"
       viewBox={`0 0 ${WIDTH} ${CHART_HEIGHT}`}
       preserveAspectRatio="none"
-      aria-hidden="true"
+      role="img"
+      aria-label={spread(series, caption)}
     >
       <rect className="fill-muted" width={WIDTH} height={CHART_HEIGHT} />
       {runs(series.buckets).map((run) => (
@@ -155,93 +155,26 @@ export function MeasurementDialog({
   name: string;
   onClose: () => void;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  // A retry asks again for the same range.
-  const [request, setRequest] = useState({ days: 1 as Days, attempt: 0 });
-  const { days } = request;
-  // Each answer remembers its request, so a range switch or a retry never shows old numbers.
-  const [loaded, setLoaded] = useState<
-    { request: typeof request; report: Measurements } | { request: typeof request; failed: true }
-  >();
-
-  useEffect(() => {
-    dialog.current?.showModal();
-  }, []);
-
-  useEffect(() => {
-    let current = true;
-    fetchMeasurements(request.days, [entityId]).then(
-      (report) => current && setLoaded({ request, report }),
-      () => current && setLoaded({ request, failed: true }),
-    );
-    return () => {
-      current = false;
-    };
-  }, [request, entityId]);
-
-  const shown = loaded?.request === request ? loaded : undefined;
-  const report = shown && "report" in shown ? shown.report : undefined;
-  const series = report?.devices.find((entry) => entry.entity_id === entityId);
-
   return (
-    <dialog
-      ref={dialog}
-      className="m-auto w-[calc(100%-2rem)] max-w-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-lg border bg-background p-6 text-foreground shadow-lg backdrop:bg-black/50"
-      aria-labelledby="measurement-dialog-heading"
+    <RangeDialog
+      headingId="measurement-dialog-heading"
+      name={name}
+      entityId={entityId}
+      load={fetchMeasurements}
+      failure="Cannot load measurements."
       onClose={onClose}
     >
-      <div className="grid gap-5">
-        <div className="flex items-start justify-between gap-3">
-          <h2
-            id="measurement-dialog-heading"
-            className="min-w-0 text-lg font-semibold leading-snug break-words"
-          >
-            {name}
-          </h2>
-          <Button type="button" variant="ghost" size="sm" onClick={() => dialog.current?.close()}>
-            <X aria-hidden="true" />
-            Close
-          </Button>
-        </div>
-        <fieldset className="flex flex-wrap items-center gap-2">
-          <legend className="sr-only">Range</legend>
-          {RANGES.map((range) => (
-            <Button
-              key={range.days}
-              type="button"
-              size="sm"
-              variant={range.days === days ? "default" : "outline"}
-              aria-pressed={range.days === days}
-              onClick={() => setRequest({ days: range.days, attempt: 0 })}
-            >
-              {range.label}
-            </Button>
-          ))}
-        </fieldset>
-        {shown && "failed" in shown ? (
-          <p className="text-sm text-danger" role="status">
-            Cannot load measurements.{" "}
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto p-0"
-              onClick={() => setRequest({ days, attempt: request.attempt + 1 })}
-            >
-              Retry
-            </Button>
-          </p>
-        ) : !report ? (
-          <p className="text-sm text-muted-foreground" role="status">
-            Loading…
-          </p>
-        ) : !series ? (
+      {(report, days) => {
+        const series = report.devices.find((entry) => entry.entity_id === entityId);
+        const label = RANGES.find((range) => range.days === days)?.label ?? "";
+        return !series ? (
           <p className="text-sm text-muted-foreground" role="status">
             Home Assistant has no statistics for this device.
           </p>
         ) : (
           <>
             <div className="grid gap-1">
-              <Chart range={report} series={series} />
+              <Chart range={report} series={series} caption={label} />
               <p className="flex justify-between text-xs text-muted-foreground">
                 <span>{time(report.start)}</span>
                 <span>{time(report.end)}</span>
@@ -271,8 +204,8 @@ export function MeasurementDialog({
               {`Each ${series.period === "hour" ? "hour" : "5 minutes"} is one period of Home Assistant's statistics. Periods without statistics are left empty and count toward no number.`}
             </p>
           </>
-        )}
-      </div>
-    </dialog>
+        );
+      }}
+    </RangeDialog>
   );
 }

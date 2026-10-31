@@ -937,7 +937,7 @@ def test_history_of_a_state_device_is_read_without_attributes_and_a_light_keeps_
         assert not {"climate.hall", "light.desk"} <= set(request["entity_ids"])
 
 
-def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
+def test_busy_sensors_are_read_25_to_a_request_so_each_answer_fits_and_a_light_keeps_attributes(
     connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, install, _ = connector
@@ -946,22 +946,23 @@ def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
     monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
     start = datetime(2026, 10, 13, tzinfo=UTC)
     end = start + timedelta(days=1)
-    rows = 43_000
+    rows = 12_500
     # Home Assistant sends Unix seconds as floats with microseconds.
     busy = {
         f"sensor.busy_{number}": [
             {"s": f"{20 + index % 7}.5", "lu": start.timestamp() + index * 2 + 0.123456}
             for index in range(rows)
         ]
-        for number in range(10)
+        for number in range(60)
     }
     light: list[Frame] = [
         {"s": "on", "a": {"brightness": 120}, "lu": start.timestamp() + 1.654321},
         {"s": "off", "a": {}, "lu": start.timestamp() + 90.5},
     ]
-    # Together the sensors outgrow one answer, so one request for all of them cannot work.
+    # All together the sensors outgrow one answer, so one request for all of them cannot work;
+    # 25 of them fit.
     assert len(json.dumps(busy)) > HISTORY_MAX_PAYLOAD
-    assert all(len(json.dumps(one)) < HISTORY_MAX_PAYLOAD for one in busy.values())
+    assert len(json.dumps(dict(list(busy.items())[:25]))) < HISTORY_MAX_PAYLOAD
     socket = install([], history={**busy, "light.desk": light})
 
     history = client.history([*busy, "light.desk"], start, end)
@@ -972,17 +973,11 @@ def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
     }
     assert history["light.desk"][0].model_dump()["brightness"] == 120
     requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
-    for request in requests:
-        sensors = [i for i in request["entity_ids"] if i.startswith("sensor.")]
-        if sensors:
-            # Each non-light device is read on its own, without attributes.
-            assert request["entity_ids"] == sensors
-            assert len(sensors) == 1
-            assert request["no_attributes"] is True
-        else:
-            assert request["entity_ids"] == ["light.desk"]
-            assert request["no_attributes"] is False
-    assert len(requests) == 11
+    sensors = [r for r in requests if r["entity_ids"] != ["light.desk"]]
+    assert [len(r["entity_ids"]) for r in sensors] == [25, 25, 10]
+    assert {r["no_attributes"] for r in sensors} == {True}
+    [lamp] = [r for r in requests if r["entity_ids"] == ["light.desk"]]
+    assert lamp["no_attributes"] is False
 
 
 def test_discovery_gives_up_on_unanswered_language_and_translation_reads_within_a_budget(
@@ -1131,7 +1126,7 @@ def test_an_on_off_device_that_reports_unavailable_or_unknown_is_not_available(
     assert reading.model_dump()["availability"] == word
 
 
-def test_history_of_on_off_devices_is_read_one_device_per_request_without_attributes(
+def test_history_of_on_off_devices_is_read_together_without_attributes_and_apart_from_a_light(
     connector: Connector,
 ) -> None:
     client, install, _ = connector
@@ -1166,8 +1161,7 @@ def test_history_of_on_off_devices_is_read_one_device_per_request_without_attrib
     assert history["light.desk"][0].model_dump()["brightness"] == 120
     requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
     assert sorted(r["entity_ids"] for r in requests) == [
-        ["binary_sensor.front"],
-        ["fan.ceiling"],
+        ["binary_sensor.front", "fan.ceiling"],
         ["light.desk"],
     ]
     for request in requests:
@@ -1180,8 +1174,8 @@ def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all
     client, install, _ = connector
     clock = FakeClock()
     monkeypatch.setattr("home_keeper.home_assistant.time", clock)
-    devices = [f"sensor.slow_{number}" for number in range(10)]
-    # Each device answers in 3 s: alone fast enough, together far too slow.
+    devices = [f"sensor.slow_{number}" for number in range(60)]
+    # Each request of 25 answers in 3 s: alone fast enough, the three of them too slow.
     install(
         [],
         history={device: [{"s": "1", "lu": 1.0}] for device in devices},
@@ -1199,20 +1193,19 @@ def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all
     assert clock.monotonic() - started <= 8
 
 
-def test_history_answers_that_together_pass_64_mib_are_invalid_data(
+def test_history_answers_that_together_pass_the_total_cap_are_invalid_data(
     connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, install, _ = connector
-    # Parsing tens of MiB takes real time, more under coverage; only simulated time counts
-    # against the history deadline.
-    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
-    # About 13.5 MiB of rows per device: each answer is under the 16 MiB cap, five are over 64.
+    # 30 sensors go in two requests: 25 and 5. Each answer is far under the per-answer cap, but
+    # the two together pass a total cap set between 25 sensors' answer and all 30 sensors'.
     row = {"s": "x" * 250, "lu": 1_760_000_000.0}
-    rows = [row] * (13_500_000 // len(json.dumps(row)))
-    devices = [f"sensor.busy_{number}" for number in range(5)]
+    rows = [row] * 150
+    devices = [f"sensor.busy_{number}" for number in range(30)]
+    one = len(json.dumps({"sensor.busy_0": rows}))
+    monkeypatch.setattr("home_keeper.home_assistant.HISTORY_MAX_TOTAL", 27 * one)
     install([], history=dict.fromkeys(devices, rows))
-    assert len(json.dumps({"x": rows})) < HISTORY_MAX_PAYLOAD
-    assert 5 * len(json.dumps(rows)) > 64 * 1024 * 1024
+    assert one * 30 < HISTORY_MAX_PAYLOAD
 
     with pytest.raises(ConnectorError) as error:
         client.history(
@@ -1608,3 +1601,55 @@ def test_statistics_home_assistant_refuses_are_invalid_data_and_a_bad_id_sends_n
     assert malformed.value.code == "configuration"
     assert client.statistics([], start, start + timedelta(hours=2)) == {}
     assert not [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
+
+
+def test_60_non_light_devices_are_read_in_history_requests_of_25_25_and_10_without_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    devices = [f"sensor.device_{number}" for number in range(60)]
+    at = start.timestamp()
+    socket = install(
+        [],
+        history={device: [{"s": str(number), "lu": at}] for number, device in enumerate(devices)},
+    )
+
+    history = client.history(devices, start, start + timedelta(hours=1))
+
+    requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    assert [len(r["entity_ids"]) for r in requests] == [25, 25, 10]
+    # Every device is asked for once, in order, and none with attributes.
+    assert [i for r in requests for i in r["entity_ids"]] == devices
+    assert {r["no_attributes"] for r in requests} == {True}
+    assert list(history) == devices
+    assert [history[device][0].state for device in devices] == [str(n) for n in range(60)]
+
+
+def test_120_measurements_are_read_in_statistics_requests_of_50_50_and_20_and_merged(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 6, 10, tzinfo=UTC)
+    end = start + timedelta(days=7)
+    meters = [f"sensor.meter_{number}" for number in range(120)]
+    socket = install(
+        [],
+        statistics={
+            meter: [statistics_row(start, number, number - 1, number + 1)]
+            for number, meter in enumerate(meters)
+        },
+    )
+
+    result = client.statistics(meters, start, end)
+
+    requests = [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
+    assert [len(r["statistic_ids"]) for r in requests] == [50, 50, 20]
+    assert [i for r in requests for i in r["statistic_ids"]] == meters
+    # Each request asks the same question of its own devices.
+    assert {(r["period"], r["start_time"], r["end_time"]) for r in requests} == {
+        ("hour", requests[0]["start_time"], requests[0]["end_time"])
+    }
+    assert sorted(r["types"] for r in requests) == [["mean", "min", "max"]] * 3
+    assert list(result) == meters
+    assert [result[meter][0].mean for meter in meters] == [float(n) for n in range(120)]

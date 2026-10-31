@@ -119,10 +119,8 @@ export interface paths {
         };
         /**
          * Measurements
-         * @description Statistics of monitored measurements in `[start, end)`, from Home Assistant: 5-minute
-         *     buckets for a range up to 24 hours, else hourly ones, with each device's lowest, mean,
-         *     highest and current value. Periods without statistics are gaps. Other devices have no
-         *     entry.
+         * @description Statistics of monitored measurements in `[start, end)`: 5-minute buckets up to 24
+         *     hours, else hourly. Periods without statistics are gaps. Other kinds have no entry.
          */
         get: operations["measurements_api_measurements_get"];
         put?: never;
@@ -193,10 +191,8 @@ export interface paths {
         };
         /**
          * Usage
-         * @description On-time, switch-ons and brightness of selected lights, plugs, switches and other
-         *     on/off devices in `[start, end)`, from Home Assistant's history. An on/off device also
-         *     has Home Assistant's words for its on and off. Devices of kind `state` or `measurement`
-         *     have no entry.
+         * @description On-time, switch-ons and brightness of monitored on/off devices in `[start, end)`,
+         *     from Home Assistant's history. Other kinds have no entry.
          */
         get: operations["usage_api_usage_get"];
         put?: never;

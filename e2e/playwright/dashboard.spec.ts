@@ -168,9 +168,10 @@ test("monitors the demo power meter and opens its history with Min, Mean and Max
 
   await card.getByRole("button", { name: /history/i }).click();
   const history = page.getByRole("dialog", { name: POWER_METER });
-  const totals = history.getByText(/^(Min|Mean|Max)$/);
-  await expect(totals).toHaveCount(3);
-  const range = async () => history.getByText(/^Min$/).locator("xpath=..").textContent();
+  // The totals list, apart from the chart's legend, which has a "Mean" of its own.
+  const totals = history.locator("dl");
+  await expect(totals.getByText(/^(Min|Mean|Max)$/)).toHaveCount(3);
+  const range = async () => totals.getByText(/^Min$/).locator("xpath=..").textContent();
   // Each range shows numbers with the unit, never a dash: the demo has 30 days of statistics.
   for (const label of ["24 hours", "7 days", "30 days"]) {
     await history.getByRole("button", { name: label }).click();
@@ -178,10 +179,13 @@ test("monitors the demo power meter and opens its history with Min, Mean and Max
       "aria-pressed",
       "true",
     );
-    await expect(history.getByRole("img", { name: new RegExp(label) })).toBeVisible(COLLECTION);
+    // The chart's name starts with the range, as "7 days: 30–900 W".
+    await expect(history.getByRole("img", { name: new RegExp(`^${label}: `) })).toBeVisible(
+      COLLECTION,
+    );
     await expect.poll(range, COLLECTION).toMatch(/Min\s*-?\d+(\.\d+)? W/);
     for (const total of ["Min", "Mean", "Max"]) {
-      const text = await history
+      const text = await totals
         .getByText(new RegExp(`^${total}$`))
         .locator("xpath=..")
         .textContent();
@@ -191,6 +195,8 @@ test("monitors the demo power meter and opens its history with Min, Mean and Max
   await history.getByRole("button", { name: "Close" }).click();
   await expect(history).toHaveCount(0);
 
+  // Stopping is inside the card's details.
+  await card.getByText("Details").click();
   await card.getByRole("button", { name: /^Stop monitoring/ }).click();
   await expect(card).toHaveCount(0);
 });

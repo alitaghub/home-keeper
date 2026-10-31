@@ -1,11 +1,8 @@
 """The synthetic home the demo reader serves. No device, vendor, network-administration or
 model access.
 
-With the `control` profile, the demo controller forwards light and switch commands to the
-demo reader, and they switch the synthetic home's lights and plug. The garage door is a
-generic device: it only reports open or closed. The ceiling fan and the front door sensor are
-on/off devices with usage. The desk plug's power is a measurement with synthetic statistics.
-No command switches any of these four.
+With the `control` profile, the demo controller's commands switch the synthetic lights and
+plug. No command switches a device of any other kind.
 """
 
 import math

@@ -252,6 +252,7 @@ describe("a measurement's history dialog", () => {
     const [min, mean, max] = totals(dialog);
     expect(min).toMatch(/Min\s*80 W/);
     expect(mean).toMatch(/Mean\s*180 W/);
+    expect(within(dialog).getByRole("img", { name: "24 hours: 80–350 W" })).toBeVisible();
     expect(max).toMatch(/Max\s*350 W/);
     // Each stretch of buckets has its band and its line; nothing is drawn across the gap.
     expect(dialog.querySelectorAll('polygon[data-segment="band"]')).toHaveLength(2);
@@ -282,6 +283,8 @@ describe("a measurement's history dialog", () => {
       "aria-pressed",
       "true",
     );
+    // The chart is named by its range and spread.
+    expect(within(dialog).getByRole("img", { name: "7 days: 30–900 W" })).toBeVisible();
     // The week has two stretches too, one on each side of the gap.
     expect(dialog.querySelectorAll('polygon[data-segment="band"]')).toHaveLength(2);
 
@@ -311,6 +314,7 @@ describe("a measurement's history dialog", () => {
     expect(mean).toMatch(/Mean\s*—/);
     expect(max).toMatch(/Max\s*—/);
     expect(dialog.querySelector("[data-segment]")).toBeNull();
+    expect(within(dialog).getByRole("img", { name: "24 hours: no statistics" })).toBeVisible();
     expect(
       within(dialog).getByText("Home Assistant has no statistics for this range."),
     ).toBeVisible();
@@ -324,5 +328,133 @@ describe("a measurement's history dialog", () => {
 
     expect(screen.queryByRole("dialog")).toBeNull();
     await act(() => vi.advanceTimersByTimeAsync(0));
+  });
+});
+
+// Means 100, 300, 200 and 400, each bucket reaching 50 below and above its mean, so the series
+// runs from 50 to 450.
+const WAVE_ROWS: [number, number, number, number][] = [
+  [40, 100, 50, 150],
+  [35, 300, 250, 350],
+  [30, 200, 150, 250],
+  [25, 400, 350, 450],
+];
+const WAVE_MEANS = [100, 300, 200, 400];
+
+function waveReport(call: ApiCall) {
+  const range = rangeOf(call);
+  return fixtures.measurementReport(range, [
+    {
+      entity_id: powerMeter.id,
+      unit: "W",
+      period: "5minute",
+      buckets: fixtures.bucketsBefore(range.end, "5minute", WAVE_ROWS),
+      min: 50,
+      mean: 250,
+      max: 450,
+      latest: 412,
+    },
+  ]);
+}
+
+/** The vertical positions of a line or area, as the SVG draws them (small is high up). */
+const heights = (shape: Element | null | undefined) =>
+  (shape?.getAttribute("points") ?? "")
+    .trim()
+    .split(/\s+/)
+    .map((point) => Number(point.split(",")[1]));
+
+/** One height for each bucket, in order: the values of a step line, whatever its points. */
+const perBucket = (shape: Element | null | undefined) => [...new Set(heights(shape))];
+
+describe("the vertical scale of a measurement's charts", () => {
+  /** Whether a higher value sits higher up: heights fall as `values` rise. */
+  const followsValues = (drawn: number[], values: number[]) => {
+    expect(drawn).toHaveLength(values.length);
+    for (const [index, value] of values.entries()) {
+      for (const [other, otherValue] of values.entries()) {
+        if (value > otherValue) expect(drawn[index]).toBeLessThan(drawn[other] ?? Number.NaN);
+      }
+    }
+  };
+
+  it("draws the sparkline's mean higher where it is higher", async () => {
+    renderDashboard({
+      "GET /api/monitored": monitored(),
+      "GET /api/measurements": waveReport,
+    });
+
+    const sparkline = await within(await waitForCard()).findByRole("img", {
+      name: /^Last 24 hours/,
+    });
+
+    // A flat scale gives every bucket one height, so four different means must give four.
+    followsValues(perBucket(sparkline.querySelector('polyline[data-segment="mean"]')), WAVE_MEANS);
+  });
+
+  it("draws the dialog's mean and band on one scale, the band reaching beyond the mean", async () => {
+    const { user } = renderDashboard({
+      "GET /api/monitored": monitored(),
+      "GET /api/measurements": waveReport,
+    });
+    await user.click(within(await waitForCard()).getByRole("button", { name: /history/i }));
+    const dialog = screen.getByRole("dialog", { name: powerMeter.name });
+
+    await waitFor(() => expect(dialog.querySelector('polyline[data-segment="mean"]')).toBeTruthy());
+
+    const mean = perBucket(dialog.querySelector('polyline[data-segment="mean"]'));
+    followsValues(mean, WAVE_MEANS);
+    // The band runs from the highest maximum (450) to the lowest minimum (50): above the
+    // highest mean (400) and below the lowest mean (100).
+    const band = heights(dialog.querySelector('polygon[data-segment="band"]'));
+    expect(Math.min(...band)).toBeLessThan(Math.min(...mean));
+    expect(Math.max(...band)).toBeGreaterThan(Math.max(...mean));
+  });
+});
+
+describe("the cards' sparklines over time", () => {
+  const SPARK = /^Last 24 hours: /;
+  const MINUTE_MS = 60_000;
+
+  it("reload after a minute with the new statistics, and not on every 3 second poll", async () => {
+    const { api } = renderDashboard({
+      "GET /api/monitored": monitored(),
+      // Each report reaches one watt higher, so a stale sparkline shows.
+      "GET /api/measurements": (call) => {
+        const reload = api.callsTo("GET /api/measurements").length;
+        const range = rangeOf(call);
+        return fixtures.measurementReport(range, [
+          {
+            entity_id: powerMeter.id,
+            unit: "W",
+            period: "5minute",
+            buckets: fixtures.bucketsBefore(range.end, "5minute", [
+              [40, 100, 50 + reload, 150],
+              [35, 200, 60, 250 + reload],
+            ]),
+            min: 50 + reload,
+            mean: 150,
+            max: 250 + reload,
+            latest: 412,
+          },
+        ]);
+      },
+    });
+    const first = await within(await waitForCard()).findByRole("img", {
+      name: "Last 24 hours: 51–251 W",
+    });
+    expect(first).toBeVisible();
+
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    expect(api.callsTo("GET /api/measurements")).toHaveLength(1);
+
+    await act(() => vi.advanceTimersByTimeAsync(MINUTE_MS));
+
+    expect(
+      await within(card()).findByRole("img", { name: "Last 24 hours: 52–252 W" }),
+    ).toBeVisible();
+    expect(api.callsTo("GET /api/measurements")).toHaveLength(2);
+    expect(within(card()).queryByRole("img", { name: SPARK })).toBeInTheDocument();
   });
 });

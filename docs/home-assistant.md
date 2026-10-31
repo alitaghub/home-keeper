@@ -166,14 +166,16 @@ statistics. Home Assistant writes a period's statistics after it ends, so the
 newest period appears a few minutes late.
 
 Each history read asks Home Assistant for the lights, plugs and switches in one
-request, and for every other device in a request of its own. Three limits apply
-to one history read:
+request, with their attributes, and for every other device without attributes,
+up to 25 devices to a request. A measurement's statistics read asks for up to 50
+devices to a request. The requests of one read share one connection, and three
+limits apply to the whole read:
 
 - One answer can be at most 16 MiB.
 - All answers of the read together can be at most 64 MiB.
-- The whole read must finish within 8 seconds.
+- The whole read, connecting included, must finish within 8 seconds.
 
-A device that changes very often, such as a busy power sensor, can exceed the
+A device that changes very often, such as a busy text sensor, can exceed the
 size limits over a long range. Then the whole read fails with `invalid_data`. A
 read that takes longer than 8 seconds fails with `timeout`. In both cases History
 and usage cannot load for that range. Choose a shorter range, or stop monitoring

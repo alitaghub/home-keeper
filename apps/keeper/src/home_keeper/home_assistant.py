@@ -48,6 +48,12 @@ HISTORY_MAX_TOTAL = 64 * 1024 * 1024
 # One history read, every request included, ends within this; below the API's wait for the
 # reader (READER_TIMEOUT_SECONDS), so a slow read fails as a timeout, not an unreachable reader.
 HISTORY_SECONDS = 8
+# Devices read without attributes, per history request: many sensors in one read must not cost
+# one round trip each.
+HISTORY_BATCH = 25
+# Measurements per statistics request, so a month of hourly statistics stays under
+# HISTORY_MAX_PAYLOAD per answer.
+STATISTICS_BATCH = 50
 # Every entity's state in one answer, sensors included.
 STATES_MAX_PAYLOAD = 16 * 1024 * 1024
 MAX_REGISTRY_ROWS = MAX_CATALOG_ENTITIES
@@ -225,16 +231,15 @@ class HomeAssistantConnector:
             raise ConnectorError("configuration")
         if not source_entity_ids:
             return {}
-        # One `no_attributes` per request: lights and switches share one, with attributes. Each
-        # other device has its own, without them, so one busy sensor cannot fill the others'.
+        # One `no_attributes` per request: lights and switches share one, with attributes. Other
+        # devices go without them, HISTORY_BATCH to a request.
         deadline = time.monotonic() + HISTORY_SECONDS
         attributed = ("light", "switch")
         with_attributes = [i for i in source_entity_ids if device_kind_of(i) in attributed]
+        without = [i for i in source_entity_ids if device_kind_of(i) not in attributed]
         requests = [(with_attributes, False)] if with_attributes else []
         requests += [
-            ([entity_id], True)
-            for entity_id in source_entity_ids
-            if device_kind_of(entity_id) not in attributed
+            (list(batch), True) for batch in itertools.batched(without, HISTORY_BATCH, strict=False)
         ]
         history: dict[str, list[DeviceState]] = {}
         with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL, deadline) as session:
@@ -279,29 +284,32 @@ class HomeAssistantConnector:
     def statistics(
         self, source_entity_ids: Sequence[str], start: datetime, end: datetime
     ) -> dict[str, list[Bucket]]:
-        """Each measurement's statistics from `start` to `end`, oldest first, in one request:
-        5-minute buckets for a range up to 24 hours, else hourly ones. An entity with no
-        statistics has []."""
+        """Each measurement's statistics from `start` to `end`, oldest first, STATISTICS_BATCH
+        measurements to a request: 5-minute buckets for a range up to 24 hours, else hourly ones.
+        An entity with no statistics has []."""
         if any(not _DEVICE_ID.fullmatch(entity_id) for entity_id in source_entity_ids):
             raise ConnectorError("configuration")
         if not source_entity_ids:
             return {}
         # The whole read, connecting included, ends within HISTORY_SECONDS, as a history read.
         deadline = time.monotonic() + HISTORY_SECONDS
+        statistics: dict[str, list[Bucket]] = {}
         with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL, deadline) as session:
-            result = session.request(
-                "recorder/statistics_during_period",
-                # Home Assistant answers a malformed statistics request with an error result.
-                failure="invalid_data",
-                deadline=deadline,
-                start_time=start.isoformat(),
-                end_time=end.isoformat(),
-                statistic_ids=list(source_entity_ids),
-                period=statistics_period(start, end),
-                types=["mean", "min", "max"],
-            )
-            # Parsed inside the session, so malformed data leaves as ConnectorError.
-            return statistics_buckets(result, source_entity_ids)
+            for batch in itertools.batched(source_entity_ids, STATISTICS_BATCH, strict=False):
+                result = session.request(
+                    "recorder/statistics_during_period",
+                    # Home Assistant answers a malformed statistics request with an error result.
+                    failure="invalid_data",
+                    deadline=deadline,
+                    start_time=start.isoformat(),
+                    end_time=end.isoformat(),
+                    statistic_ids=list(batch),
+                    period=statistics_period(start, end),
+                    types=["mean", "min", "max"],
+                )
+                # Parsed inside the session, so malformed data leaves as ConnectorError.
+                statistics |= statistics_buckets(result, batch)
+        return {entity_id: statistics[entity_id] for entity_id in source_entity_ids}
 
     @contextlib.contextmanager
     def _session(
@@ -779,13 +787,9 @@ def _statistic(row: Mapping[str, object], key: str) -> float:
 
 
 def statistics_buckets(result: object, statistic_ids: Sequence[str]) -> dict[str, list[Bucket]]:
-    """Home Assistant's `recorder/statistics_during_period` result as each entity's buckets,
-    oldest first; [] for an entity it has no statistics for.
-
-    Written against the expected shape, not yet checked against Home Assistant 2026.10.1:
-    `{entity_id: [{"start": ms, "end": ms, "mean": x, "min": x, "max": x}, ...]}`, with
-    `start` and `end` as Unix milliseconds and the three values as finite numbers. A row
-    missing any of them, or with null, raises ValueError or TypeError."""
+    """A `recorder/statistics_during_period` result, `{entity_id: [{start, end, mean, min,
+    max}]}` with times in Unix milliseconds, as each entity's buckets, oldest first; [] for an
+    entity without statistics. A missing or null value raises ValueError or TypeError."""
     if not is_json_object(result):
         raise TypeError("Invalid statistics")
     statistics: dict[str, list[Bucket]] = {}

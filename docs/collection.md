@@ -53,9 +53,9 @@ Assistant's history through the reader with
 [`history/history_during_period`](https://developers.home-assistant.io/docs/api/websocket/),
 with `significant_changes_only` off so brightness and color changes are included.
 Lights, plugs and switches are read with their attributes; every other device is
-read with `no_attributes`, each in a request of its own on the same connection,
-so one busy device cannot fill the answer for the others.
-[History retention](home-assistant.md#history-retention) gives the size limit.
+read with `no_attributes`, up to 25 devices to a request, on the same connection.
+[History retention](home-assistant.md#history-retention) gives the size and time
+limits.
 A change is two consecutive history rows whose state, availability, brightness or
 color differ. Each row says the change in words, such as "Desk lamp turned on at
 40%", at Home Assistant's time. A change of any other device, on/off devices
@@ -172,8 +172,11 @@ devices that are not monitored, are left out. Each entry in `devices` has:
   `unavailable`, or it cannot be read.
 
 The dashboard's sparkline uses the last 24 hours and reloads once a minute. If
-Home Assistant cannot be read, the endpoint answers 503 with a safe error. The
-whole read must finish within 8 seconds, and its answer can be at most 16 MiB.
+Home Assistant cannot be read, the endpoint answers 503 with a safe error. If
+only the current readings cannot be read, the report keeps its buckets and
+overall numbers, with `unit` and `latest` null. The statistics read asks for up
+to 50 devices to a request, and has the
+[limits of a history read](home-assistant.md#history-retention).
 A measurement's statistics row without a mean, a lowest or a highest value is
 data Home Keeper cannot read: the read fails with `invalid_data`.
 

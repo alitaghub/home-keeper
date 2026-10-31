@@ -15,12 +15,9 @@ sensors with a device class (moisture, motion), which the catalog must list as s
 `on_off` devices, and a monitored reading carries Home Assistant's translated word for its
 device class ("Wet", "Detected").
 
-Also proves measurements against Home Assistant's long-term statistics: the `demo`
-integration's outside temperature sensor has a `state_class`, so the catalog must list it as a
-supported `measurement` device. The proof imports known hourly statistics for it through
-`recorder/import_statistics`, one of them older than the recorder's 10-day raw history, with a
-gap, and reads them back through `/api/measurements` for 7 and 30 days: exact buckets and
-exact overall minimum, mean and maximum. An empty answer fails the proof.
+Also proves measurements: the `demo` outside temperature sensor has a `state_class`, so it is
+a supported `measurement`. Hourly statistics imported for it (one 20 days old, with a gap)
+come back through `/api/measurements` for 7 and 30 days with exact buckets and totals.
 
 Uses its own Compose project and ports, and deletes its volumes at the end.
 """
@@ -72,8 +69,7 @@ BINARY_SENSOR_LABELS = {
     "moisture": {"on": "Wet", "off": "Dry"},
     "motion": {"on": "Detected", "off": "Clear"},
 }
-# A demo sensor with a `state_class` (a temperature, in °C). Unverified against the bundled
-# image: if it is absent the proof fails and lists the measurements Home Assistant does have.
+# A demo sensor with a `state_class`. Unverified: if absent, the proof lists the measurements.
 MEASURED_SENSOR = "sensor.outside_temperature"
 MEASURED_UNIT = "°C"
 # Hourly statistics the proof imports, as (hours before the current hour, mean, min, max). One
@@ -407,9 +403,8 @@ def prove_demo_binary_sensor_is_an_on_off_device_with_a_translated_label(token: 
 def import_statistics(token: str, rows: list[dict[str, Any]]) -> None:
     """Import hourly statistics for the measured sensor through Home Assistant's recorder.
 
-    Home Assistant 2026.10 names the metadata field for averaged statistics `mean_type`
-    (`has_mean` before it); this is unverified, so it asks with the newer name first and
-    retries with the older one when Home Assistant rejects the metadata.
+    The mean field is `mean_type` in newer Home Assistant and `has_mean` before it (unverified
+    for 2026.10): try the new name, then the old.
     """
     metadata = {
         "has_sum": False,
@@ -456,9 +451,7 @@ def read_measurements(
 
 
 def prove_measurements_come_from_long_term_statistics(token: str) -> None:
-    """The demo temperature sensor is a supported `measurement` with a number and a unit;
-    statistics imported for it, one older than the raw history and with a gap, come back for 7
-    and 30 days as the same buckets with exact overall numbers."""
+    """Imported statistics for the demo temperature `measurement` come back for 7 and 30 days."""
     headers = {"X-Home-Keeper": "1"}
     with httpx.Client(base_url=KEEPER, timeout=30, trust_env=False) as client:
         wait_for_healthy_reader(client)
@@ -518,8 +511,7 @@ def prove_measurements_come_from_long_term_statistics(token: str) -> None:
             ],
         )
 
-        # Asked up to a day ago, so the sensor's own statistics for the last hours stay out of
-        # the exact numbers. The recorder writes the import within a few seconds.
+        # End a day ago, so the sensor's own recent statistics stay out of the exact numbers.
         end = hour - timedelta(hours=24)
         deadline = time.monotonic() + 60
         week = read_measurements(client, sensor["id"], end - timedelta(days=7), end)

@@ -423,8 +423,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         entity_ids: list[str] | None = None,
     ) -> str:
         """Report the lowest, mean, highest and latest value, with the unit, of monitored
-        measurements such as a power meter or a thermometer, over the last 24 hours, 7 days or
-        30 days, from Home Assistant's statistics. Use this for every sensor value.
+        measurements, such as a power meter. Use this for every sensor value.
 
         Args:
             range: How far back from now: "24h", "7d" or "30d".
@@ -472,11 +471,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_devices() -> str:
         """List the devices in Home Assistant, with each one's kind and whether it can be
-        monitored. Kinds: light; switch, which covers plugs; on_off, another device that is
-        only on or off, such as a fan or a door sensor, which has usage but cannot be switched;
-        measurement, a sensor with a value and unit, such as a power meter or a thermometer,
-        which has statistics but cannot be switched; state, any other device, such as a
-        thermostat or a cover, which reports a state but cannot be switched."""
+        monitored. Only kinds light and switch (plugs included) can be switched."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:
