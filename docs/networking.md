@@ -4,7 +4,8 @@
 
 The default stack uses four Compose networks:
 
-- `dashboard`: the API and the dashboard port.
+- `dashboard`: the API and `web`, the container that serves the dashboard on its
+  published port and forwards `/api` to the API.
 - `collection`: internal; the API and the reader.
 - `control`: internal; the API and, with `--profile control`, the controller.
 - `home-assistant`: Home Assistant, `ha-setup`, the reader and the

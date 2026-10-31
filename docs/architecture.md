@@ -3,9 +3,11 @@
 Home Keeper has three running parts: a reader that reads Home Assistant when
 asked, an API that decides what to show, and a dashboard that shows it. Device
 history stays in Home Assistant's recorder; Home Keeper keeps no copy of it.
-They run as two containers from one image, next to one Postgres. The default
-stack adds a bundled Home Assistant and a one-shot `ha-setup` container that
-onboards it and stores the reader's and the controller's tokens.
+The reader and the API run as two containers from one image, next to one
+Postgres; a third container, `web`, serves the dashboard and forwards `/api` to
+the API. The default stack adds a bundled Home Assistant and a one-shot
+`ha-setup` container that onboards it and stores the reader's and the
+controller's tokens.
 A one-shot `db-setup` container gives the API, the agent and the Telegram worker
 each a database, a login role and a password file of their own in that Postgres
 (`compose.postgres.yaml`). Each role can connect only to its own database.
@@ -42,7 +44,8 @@ flowchart LR
 
     reader -- "registry, state<br/>and history reads" --> ha
     controller -- "light.turn_on, light.turn_off,<br/>switch.turn_on, switch.turn_off" --> ha
-    browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> api
+    browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> web["web<br/><i>Caddy</i>"]
+    web -- "/api" --> api
 
     subgraph agentprofile["Optional agent (profile agent)"]
         direction LR
@@ -70,7 +73,7 @@ flowchart LR
 | Commands  | `commands.py`                          | Checks, forwards and records commands to monitored lights, plugs and switches, then reads the device's state every 0.5 s for up to 5 s to confirm the outcome. |
 | Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo reader. Publishes no port. |
 | Store     | `store.py`                             | Postgres: the selection, the command log and a few metadata values. Command retention. |
-| Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline and the command log.               |
+| Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline and the command log. The `web` container (Caddy) serves it on the published port and forwards `/api` to the API. |
 | Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
 | Chat      | `apps/chat`                            | Optional. Builds the unmodified Agent Chat UI. Your browser talks to the agent directly.    |
 | Telegram  | `apps/agent/src/home_keeper_agent/telegram.py` | Optional. Polls private messages from allowed users and forwards questions and approvals to the agent. Publishes no port. |

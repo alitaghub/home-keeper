@@ -24,8 +24,8 @@ def main() -> None:
         token.chmod(0o444)
         override = root / "proof.yaml"
         override.write_text(f"""services:
-  api:
-    ports: !override ["127.0.0.1:18001:8000"]
+  web:
+    ports: !override ["127.0.0.1:18001:8080"]
   reader:
     depends_on:
       fake-ha:

@@ -1,0 +1,27 @@
+# The dashboard's front door: serves the web app and forwards /api to the keeper.
+# compose.yaml and compose.demo.yaml include this file. It is the only service the
+# browser reaches; the API publishes no port of its own.
+services:
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HOME_KEEPER_PORT:-8000}:8080"
+    environment:
+      # Where the API listens inside the `dashboard` network.
+      HOME_KEEPER_PORT: ${HOME_KEEPER_PORT:-8000}
+    networks: [dashboard]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1:8080/]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+    depends_on:
+      api:
+        condition: service_healthy

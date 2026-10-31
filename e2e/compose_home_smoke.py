@@ -267,7 +267,7 @@ def main() -> None:
             for name, service in config["services"].items()
             if service.get("ports")
         }
-        assert published == {"api": ["127.0.0.1"], "homeassistant": ["127.0.0.1"]}, published
+        assert published == {"web": ["127.0.0.1"], "homeassistant": ["127.0.0.1"]}, published
         services = config["services"]
         assert "home-assistant" not in services["api"]["networks"]
         # The controller reaches Home Assistant and, over an internal network, only the API.
