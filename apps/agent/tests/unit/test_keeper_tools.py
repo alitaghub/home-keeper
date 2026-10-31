@@ -13,6 +13,7 @@ from agent_support import (
     control_response,
     lights_response,
     snapshot,
+    state_device_response,
 )
 
 START = "2026-10-12T09:59:00Z"
@@ -135,7 +136,7 @@ def test_monitored_list_shows_each_entity_device_kind() -> None:
             for key, value in light["state"].items()
             if key not in {"brightness", "color_mode"}
         }
-        | {"device_kind": "switch", "state": "off"},
+        | {"device_kind": "switch", "state": "off", "label": "Off"},
     }
     keeper = FakeKeeper({"/api/monitored": (status, body), "/api/control": control_response("on")})
 
@@ -146,8 +147,67 @@ def test_monitored_list_shows_each_entity_device_kind() -> None:
     [plug_line] = [line for line in lines if line.startswith("- plug ")]
     assert "kind=light" in light_line
     assert "kind=switch" in plug_line
-    assert "off" in plug_line
+    assert '"Off"' in plug_line
     assert "brightness" not in plug_line
+
+
+def test_monitored_list_shows_the_label_of_a_state_device_and_of_every_other_kind() -> None:
+    _, recorded = state_device_response("heat_cool", "Heat/Cool")
+    thermostat: dict[str, Any] = json.loads(json.dumps(recorded))["entities"][0]
+    status, lights = lights_response("on", 50)
+    body: dict[str, Any] = json.loads(json.dumps(lights))
+    # Home Assistant words `on` in its own language.
+    body["entities"][0]["state"] |= {"label": "Aan"}
+    body["entities"] = [body["entities"][0], thermostat]
+    keeper = FakeKeeper({"/api/monitored": (status, body), "/api/control": control_response("on")})
+
+    lines = call(keeper.tools(), "list_monitored", {}).splitlines()
+
+    [light_line] = [line for line in lines if line.startswith("- bulb-a ")]
+    [thermostat_line] = [line for line in lines if line.startswith("- climate-a ")]
+    assert "kind=state" in thermostat_line
+    assert "Heat/Cool" in thermostat_line
+    assert "heat_cool" not in thermostat_line
+    assert "brightness" not in thermostat_line
+    assert "Aan" in light_line
+    assert not re.search(r": on\b", light_line)
+
+
+def test_device_list_says_a_state_device_can_be_monitored() -> None:
+    status, recorded = snapshot("catalog")
+    body: dict[str, Any] = json.loads(json.dumps(recorded))
+    body["entities"].append(
+        {
+            "id": "climate-a",
+            "name": "Hall heating",
+            "device_name": "Hall thermostat",
+            "device_kind": "state",
+            "supported": True,
+            "reason": None,
+        }
+    )
+    keeper = FakeKeeper({"/api/catalog": (status, body)})
+
+    lines = call(keeper.tools(), "list_devices", {}).splitlines()
+
+    [line] = [line for line in lines if line.startswith("- climate-a ")]
+    assert "kind=state" in line
+    assert "can be monitored" in line
+
+
+def test_turn_on_for_a_state_device_returns_the_keepers_refusal() -> None:
+    refusal = {"detail": {"code": "not_supported", "message": "This device cannot be switched."}}
+    keeper = FakeKeeper(
+        {
+            "/api/monitored": state_device_response(),
+            "/api/control": control_response("on"),
+            "/api/devices/climate-a/command": (409, refusal),
+        }
+    )
+
+    result = call(keeper.tools(), "turn_on", {"entity_id": "climate-a"})
+
+    assert result.startswith("Keeper error: HTTP 409: This device cannot be switched")
 
 
 @pytest.mark.parametrize("name", ["list_monitored", "monitor", "turn_on", "turn_off"])
@@ -210,7 +270,7 @@ def test_reading_brightness_is_a_rounded_percent(brightness: int, percent: int) 
 
     result = call(keeper.tools(), "list_monitored", {})
 
-    assert f"on (brightness {percent}%)" in result, result
+    assert f'"On" (brightness {percent}%)' in result, result
     assert "/255" not in result
 
 
@@ -232,8 +292,8 @@ def change(time: str, old: dict[str, object], new: dict[str, object]) -> dict[st
         "source_entity_id": "light.bulb_a",
         "device_kind": "light",
         "time": time,
-        "old": {"device_kind": "light", "availability": "available"} | old,
-        "new": {"device_kind": "light", "availability": "available"} | new,
+        "old": {"device_kind": "light", "availability": "available", "label": "Old"} | old,
+        "new": {"device_kind": "light", "availability": "available", "label": "New"} | new,
     }
 
 
@@ -303,7 +363,7 @@ def test_usage_average_brightness_is_a_rounded_percent(average: float, percent: 
     ("name", "fixture", "expected"),
     [
         # bulb-b is still monitored but gone from Home Assistant.
-        ("list_monitored", "monitored", ["bulb-a", "off", "bulb-b", "missing"]),
+        ("list_monitored", "monitored", ["bulb-a", '"Off"', "bulb-b", "missing"]),
         ("list_monitored", "monitored_unreachable", ["bulb-a", "bulb-b", "unknown"]),
         ("get_health", "health", ["healthy"]),
         ("get_health", "health_unreachable", ["unreachable", "connection"]),

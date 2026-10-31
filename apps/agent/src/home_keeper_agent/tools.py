@@ -52,6 +52,8 @@ COLOR_FIELDS = (
 )
 COMMAND_TOOLS = ("turn_on", "turn_off")
 NOT_ALLOWED = "Not sent: you are not allowed to control lights."
+# The keeper's refusal text for a device that is not a light, plug or switch.
+NOT_SWITCHABLE = "This device cannot be switched."
 
 
 def _name(value: str) -> str:
@@ -84,7 +86,8 @@ def percent(brightness: float) -> int:
 
 
 def _reading(reading: Reading | None, colors: Sequence[str] = ()) -> str:
-    """The state and brightness, then each of the `colors` fields."""
+    """The state, in Home Assistant's words, and brightness, then each of the `colors`
+    fields. The words come from Home Assistant, so they are quoted like names."""
     if reading is None:
         return "state unknown"
     details = [] if reading.brightness is None else [f"brightness {percent(reading.brightness)}%"]
@@ -93,7 +96,8 @@ def _reading(reading: Reading | None, colors: Sequence[str] = ()) -> str:
         if isinstance(value, tuple):
             value = ", ".join(number(float(part)) for part in value)  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType] -- color tuples hold numbers
         details.append(f"{field.replace('_', ' ')} {'none' if value is None else value}")
-    return f"{reading.state} ({', '.join(details)})" if details else reading.state
+    label = _name(reading.label)
+    return f"{label} ({', '.join(details)})" if details else label
 
 
 def _change(old: Reading, new: Reading) -> str:
@@ -124,7 +128,7 @@ def _kind(device_kind: str | None) -> str:
 
 def format_monitored(monitored: Monitored) -> str:
     if not monitored.entities:
-        return "No lights, plugs or switches are monitored."
+        return "No devices are monitored."
     lines = [f"{len(monitored.entities)} monitored device(s):"]
     for device in monitored.entities:
         line = f"- {device.id}{_kind(device.device_kind)} name={_name(device.name)}"
@@ -283,17 +287,20 @@ def _command_refusal(
     brightness = call.brightness_percent if action == "on" else None
     entity_id = call.entity_id
 
-    def check() -> str | None:
+    def check() -> str | None:  # noqa: PLR0911 -- one return per ordered check
         if not context.may_control:
             return NOT_ALLOWED
+        device = next((device for device in monitored().entities if device.id == entity_id), None)
+        # The keeper refuses these too, but only after the user approved it. A device that
+        # can never be switched says so before whether control is on.
+        if device is not None and device.device_kind not in (None, "light", "switch"):
+            return f"Not sent: {NOT_SWITCHABLE}"
         if control().state == "off":
             return "Not sent: light control is off."
         if brightness is not None and brightness not in range(1, 101):
             return "Not sent: brightness must be 1 to 100 percent."
-        device = next((device for device in monitored().entities if device.id == entity_id), None)
         if device is None:
             return f"Not sent: {entity_id} is not monitored. Offer to start monitoring it first."
-        # The keeper refuses this too, but only after the user approved it.
         if brightness is not None and device.device_kind == "switch":
             return f"Not sent: {entity_id} is a plug or switch and has no brightness."
         return _state_refusal(entity_id, device.state, action, brightness)
@@ -331,8 +338,9 @@ def format_outcome(entity_id: str, command: LightOn | LightOff, record: CommandR
 def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_monitored() -> str:
-        """List the lights, plugs and switches the keeper monitors, with each one's kind and
-        the state Home Assistant reports now. The first line says whether control is on."""
+        """List the devices the keeper monitors (lights, plugs, switches and any other
+        device), with each one's kind and the state Home Assistant reports now, in its words.
+        The first line says whether control is on."""
 
         def render() -> str:
             monitored = client.request("GET", "/api/monitored", Monitored)
@@ -365,8 +373,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def get_events(start: str, end: str, entity_id: str | None = None) -> str:
-        """List changes Home Assistant recorded for monitored lights, plugs and switches in a
-        time range, newest first, at most 100.
+        """List changes Home Assistant recorded for monitored devices in a time range, newest
+        first, at most 100.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset.
@@ -387,8 +395,9 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def list_devices() -> str:
-        """List the devices in Home Assistant, with each one's kind (light or switch, which
-        covers plugs) and whether it can be monitored."""
+        """List the devices in Home Assistant, with each one's kind and whether it can be
+        monitored. Kinds: light; switch, which covers plugs; state, any other device, such as
+        a thermostat or a cover, which reports a state but cannot be switched."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:
@@ -400,8 +409,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def monitor(entity_id: str) -> str:
-        """Start recording a light, plug or switch. The user must approve this; it never
-        changes the device.
+        """Start recording a device: a light, plug or switch, or any other device. The user
+        must approve this; it never changes the device.
 
         Args:
             entity_id: An entity ID from list_devices that can be monitored, such as
@@ -411,8 +420,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def stop_monitoring(entity_id: str) -> str:
-        """Stop recording a light, plug or switch. The user must approve this; it never changes
-        the device.
+        """Stop recording a device: a light, plug or switch, or any other device. The user
+        must approve this; it never changes the device.
 
         Args:
             entity_id: A monitored entity ID, such as light.kitchen.
@@ -435,7 +444,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         entity_id: str, config: RunnableConfig, brightness_percent: int | None = None
     ) -> str:
         """Turn a monitored light, plug or switch on, a light optionally at a brightness. The
-        user must approve this.
+        user must approve this. No other kind of device can be switched.
 
         Args:
             entity_id: A monitored device's ID as list_monitored prints it.
@@ -447,7 +456,8 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
 
     @tool
     def turn_off(entity_id: str, config: RunnableConfig) -> str:
-        """Turn a monitored light, plug or switch off. The user must approve this.
+        """Turn a monitored light, plug or switch off. The user must approve this. No other
+        kind of device can be switched.
 
         Args:
             entity_id: A monitored device's ID as list_monitored prints it.

@@ -4,18 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { components } from "./api/schema";
 import { createFakeAegra, type FakeAegra, installFakeAegra } from "./test/fake-aegra";
-import {
-  type ApiCall,
-  type FakeApi,
-  installFakeApi,
-  type Replies,
-  type ResponseBody,
-} from "./test/fake-api";
+import { type ApiCall, type FakeApi, installFakeApi, type Replies } from "./test/fake-api";
 import * as fixtures from "./test/fixtures";
 import { localTime } from "./test/fixtures";
 
 type Schemas = components["schemas"];
-type Reading = NonNullable<ResponseBody<"GET /api/monitored">["entities"][number]["state"]>;
 
 const UNREACHABLE = "Cannot reach Home Keeper. States are unknown until the connection returns.";
 const HISTORY_FAILED =
@@ -226,7 +219,7 @@ describe("dashboard behavior", () => {
     await waitFor(() =>
       expect(
         monitored.getByText(
-          "No lights monitored yet. Choose the lights Home Keeper should look after.",
+          "No devices monitored yet. Choose the devices Home Keeper should look after.",
         ),
       ).toBeInTheDocument(),
     );
@@ -274,11 +267,9 @@ describe("dashboard behavior", () => {
     expect(link).toHaveTextContent("Connect your devices in Home Assistant");
     expect(link).toHaveAttribute("href", "http://127.0.0.1:8123/config/integrations/dashboard");
     expect(byId("catalog")).toHaveTextContent(
-      ". They appear here within seconds. Home Keeper monitors single lights, plugs and switches, not groups or rooms.",
+      ". They appear here within seconds. Home Keeper monitors single devices, not groups or rooms.",
     );
-    expect(byId("count").parentElement).toHaveTextContent(
-      "Single lights, plugs and switches, without groups or rooms",
-    );
+    expect(byId("count").parentElement).toHaveTextContent("Devices Home Keeper can monitor");
   });
 
   it("pages through older timeline history, dedupes by id, and refreshes back to the newest page", async () => {
@@ -606,7 +597,7 @@ describe("light control from the dashboard", () => {
     await monitored().findByRole("button", { name: "Turn on Desk lamp" });
 
     expect(byId("source-notice")).toHaveTextContent(
-      "Home Assistant discovery. Home Keeper shows only the lights, plugs and switches you select. Light control is on for monitored lights.",
+      "Home Assistant discovery. Home Keeper shows only the devices you select. Light control is on for monitored lights.",
     );
     expect(byId("source-notice")).not.toHaveTextContent("Light control is off");
   });
@@ -1282,7 +1273,7 @@ describe("tabs, brightness and plain history", () => {
 
   /** The desk lamp, monitored and recorded `state`, with control on unless told otherwise. */
   function renderLamp(
-    state: Reading["state"] = "on",
+    state: Schemas["LightReading"]["state"] = "on",
     control: Schemas["ControlStatus"] = fixtures.controlOn,
   ) {
     return renderDashboard({
@@ -1301,13 +1292,13 @@ describe("tabs, brightness and plain history", () => {
     await within(byId("monitored")).findByRole("heading", { name: "Desk lamp" });
 
     expect(tab("Home")).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("heading", { name: "Choose lights to monitor" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Choose devices to monitor" })).toBeNull();
 
     openTab("Setup");
 
     expect(tab("Setup")).toHaveAttribute("aria-selected", "true");
     expect(window.location.hash).toBe("#setup");
-    expect(screen.getByRole("heading", { name: "Choose lights to monitor" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose devices to monitor" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Desk lamp" })).toBeNull();
   });
 
@@ -1394,7 +1385,7 @@ describe("tabs, brightness and plain history", () => {
   it("leads from an empty Home to Setup", async () => {
     const { user } = renderDashboard({ "GET /api/monitored": fixtures.emptyMonitored });
 
-    await user.click(await screen.findByRole("button", { name: "Choose lights" }));
+    await user.click(await screen.findByRole("button", { name: "Choose devices" }));
 
     expect(tab("Setup")).toHaveAttribute("aria-selected", "true");
   });

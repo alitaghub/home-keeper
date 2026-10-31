@@ -1,0 +1,54 @@
+{
+  "status": 200,
+  "body": {
+    "events": [
+      {
+        "device_kind": "state",
+        "entity_id": "thermostat",
+        "id": "thermostat@2026-10-12T09:59:50+00:00",
+        "new": {
+          "availability": "available",
+          "device_kind": "state",
+          "label": "Off",
+          "last_changed": "2026-10-12T09:59:50+00:00",
+          "last_updated": "2026-10-12T09:59:50+00:00",
+          "state": "off"
+        },
+        "old": {
+          "availability": "available",
+          "device_kind": "state",
+          "label": "Heat",
+          "last_changed": "2026-10-12T09:59:30+00:00",
+          "last_updated": "2026-10-12T09:59:30+00:00",
+          "state": "heat"
+        },
+        "source_entity_id": "climate.hall",
+        "time": "2026-10-12T09:59:50+00:00"
+      },
+      {
+        "device_kind": "state",
+        "entity_id": "thermostat",
+        "id": "thermostat@2026-10-12T09:59:30+00:00",
+        "new": {
+          "availability": "available",
+          "device_kind": "state",
+          "label": "Heat",
+          "last_changed": "2026-10-12T09:59:30+00:00",
+          "last_updated": "2026-10-12T09:59:30+00:00",
+          "state": "heat"
+        },
+        "old": {
+          "availability": "available",
+          "device_kind": "state",
+          "label": "Off",
+          "last_changed": "2026-10-12T09:59:10+00:00",
+          "last_updated": "2026-10-12T09:59:10+00:00",
+          "state": "off"
+        },
+        "source_entity_id": "climate.hall",
+        "time": "2026-10-12T09:59:30+00:00"
+      }
+    ],
+    "next_cursor": null
+  }
+}

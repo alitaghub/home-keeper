@@ -27,6 +27,7 @@ EXPECTED = {
     "light.hue_reading",
     "light.hue_room",
     "switch.smart_plug",
+    "cover.garage_door",
     "sensor.ungrouped",
 }
 
@@ -114,12 +115,13 @@ def main() -> None:
         catalog = get("/api/catalog")["entities"]
         return (
             {entry["id"] for entry in catalog} == EXPECTED
-            # Two single lights and the smart plug; the room group and the sensor are not.
-            and sum(entry["supported"] for entry in catalog) == 3
+            # Two single lights, the smart plug and the garage door (a generic `state` device);
+            # the room group and the sensor, which has no device, are not.
+            and sum(entry["supported"] for entry in catalog) == 4
             and get("/api/health")["status"] == "healthy"
         )
 
-    wait_until("five-entity catalog and healthy reader", ready)
+    wait_until("six-entity catalog and healthy reader", ready)
     page, page_headers = fetch("/")
     assert "<html" in page.lower(), "Dashboard HTML not served"
     script = re.search(r'<script[^>]+src="(/assets/[^"]+\.js)"', page)

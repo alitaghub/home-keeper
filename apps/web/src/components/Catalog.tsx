@@ -10,12 +10,26 @@ type Entity = Schemas["Entity"];
 export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
   entity.device_name || entity.name;
 
+/**
+ * A catalog row's name. A light or plug is named by its device, as today; one device can
+ * have several other entities, such as a temperature and a humidity sensor, so those add the
+ * entity's own name when it differs.
+ */
+const rowName = (entity: Entity) =>
+  entity.device_kind === "state" && entity.device_name && entity.name !== entity.device_name
+    ? `${entity.device_name} · ${entity.name}`
+    : lightName(entity);
+
 const UNGROUPED = "__ungrouped";
 
 // A supported entity without a kind counts as a light, as the API does.
 const KINDS = [
-  { heading: "Lights", has: (entity: Entity) => entity.device_kind !== "switch" },
+  {
+    heading: "Lights",
+    has: (entity: Entity) => entity.device_kind !== "switch" && entity.device_kind !== "state",
+  },
   { heading: "Plugs and switches", has: (entity: Entity) => entity.device_kind === "switch" },
+  { heading: "Other", has: (entity: Entity) => entity.device_kind === "state" },
 ];
 
 // Case-insensitive substring match on the entity's or its device's name.
@@ -82,11 +96,11 @@ export function Catalog({
                 >
                   Connect your devices in Home Assistant
                 </a>
-                . They appear here within seconds. Home Keeper monitors single lights, plugs and
-                switches, not groups or rooms.
+                . They appear here within seconds. Home Keeper monitors single devices, not groups
+                or rooms.
               </>
             ) : entities.length ? (
-              "No supported lamps found. Check your integrations in Home Assistant."
+              "No supported devices found. Check your integrations in Home Assistant."
             ) : (
               "Home Assistant lists no devices."
             )}
@@ -102,7 +116,7 @@ export function Catalog({
             <h4 className="text-sm font-semibold">{group.heading}</h4>
             <div className="grid gap-2 sm:grid-cols-2">
               {group.entities.map((entity) => {
-                const name = lightName(entity);
+                const name = rowName(entity);
                 const checked = selected.includes(entity.id);
                 const action = checked ? "Stop monitoring" : "Monitor";
                 return (
@@ -139,8 +153,8 @@ export function Catalog({
           />
         </summary>
         <p className="mt-2 text-sm text-muted-foreground">
-          Home Assistant also exposes room groups, scenes, sensors and settings. These are not
-          additional lamps and cannot be monitored here yet.
+          Home Assistant also exposes groups and rooms, people, settings and entities that belong to
+          no device. Home Keeper does not monitor these.
         </p>
         <div id="other-catalog" className="mt-3 grid gap-4">
           {[...groupByDevice(others)].map(([key, group]) => (

@@ -1,9 +1,9 @@
-"""Parses a Home Assistant state into a light's or switch's state, keeping only the approved
-light attributes."""
+"""Parses a Home Assistant state into a device's state, keeping only the approved light
+attributes."""
 
 from typing import Any, TypeIs
 
-from home_keeper.models import LightState, SwitchState, device_kind_of
+from home_keeper.models import DeviceState, GenericState, LightState, SwitchState, device_kind_of
 
 COLOR_FIELDS = (
     "brightness",
@@ -23,8 +23,8 @@ def is_json_object(value: object) -> TypeIs[dict[str, Any]]:
     return isinstance(value, dict)
 
 
-def device_state(payload: object, source_entity_id: str) -> LightState | SwitchState | None:
-    """A light or switch state, by the entity's domain. A switch keeps no light attributes."""
+def device_state(payload: object, source_entity_id: str) -> DeviceState | None:
+    """A device's state, by the entity's domain. Only a light keeps attributes."""
     if payload is None:
         return None
     if not is_json_object(payload) or payload.get("entity_id") != source_entity_id:
@@ -36,8 +36,15 @@ def device_state(payload: object, source_entity_id: str) -> LightState | SwitchS
         "state": payload.get("state"),
         **{key: payload[key] for key in SOURCE_TIMES if payload.get(key) is not None},
     }
-    if device_kind_of(source_entity_id) == "switch":
-        return SwitchState.model_validate(state | {"device_kind": "switch"})
-    return LightState.model_validate(
-        state | {key: attributes[key] for key in COLOR_FIELDS if attributes.get(key) is not None}
-    )
+    match device_kind_of(source_entity_id):
+        case "switch":
+            return SwitchState.model_validate(state | {"device_kind": "switch"})
+        case "state":
+            return GenericState.model_validate(state | {"device_kind": "state"})
+        case "light":
+            return LightState.model_validate(
+                state
+                | {key: attributes[key] for key in COLOR_FIELDS if attributes.get(key) is not None}
+            )
+        case None:
+            raise ValueError("Not a device")

@@ -3,6 +3,7 @@
 import json
 import logging
 from collections.abc import Callable, Iterable, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -11,6 +12,7 @@ from support.home_assistant import (
     FakeSocket,
     Frame,
     StateServer,
+    entity_state,
     hue_room,
     install_socket,
     light_state,
@@ -21,6 +23,7 @@ from support.home_assistant import (
 )
 
 from home_keeper.home_assistant import (
+    HISTORY_MAX_PAYLOAD,
     MAX_PAYLOAD,
     STATES_MAX_PAYLOAD,
     ConnectorError,
@@ -34,7 +37,10 @@ type Connector = tuple[HomeAssistantConnector, Install, StateServer]
 
 GROUP = "Groups and rooms are not recorded"
 DISABLED = "Disabled in Home Assistant"
-NOT_SUPPORTED = "Only lights, plugs and switches are supported"
+PRESENCE = "Presence is not recorded"
+CATEGORY = "Settings and diagnostic entities are not recorded"
+HIDDEN = "Hidden in Home Assistant"
+NO_DEVICE_ENTITY = "Only entities of a device are recorded"
 SETTING = "Settings and diagnostic switches are not recorded"
 NO_DEVICE = "Switches without a device are not recorded"
 
@@ -47,9 +53,25 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
     server = StateServer()
 
     def install(
-        entities: list[Frame], devices: Iterable[Frame] = (), states: Iterable[Frame] = ()
+        entities: list[Frame],
+        devices: Iterable[Frame] = (),
+        states: Iterable[Frame] = (),
+        *,
+        history: dict[str, list[Frame]] | None = None,
+        language: str = "en",
+        translations: dict[str, str] | None = None,
+        failing: Iterable[str] = (),
+        silent: Iterable[str] = (),
     ) -> FakeSocket:
-        socket = FakeSocket(entities, devices)
+        socket = FakeSocket(
+            entities,
+            devices,
+            history,
+            language=language,
+            translations=translations,
+            failing=failing,
+            silent=silent,
+        )
         install_socket(monkeypatch, socket)
         server.states = {state["entity_id"]: state for state in states}
         return socket
@@ -96,15 +118,24 @@ def test_projection_keeps_device_names_and_drops_private_registry_fields(
     assert "PRIVATE_SENTINEL" not in catalog.model_dump_json()
 
 
-def test_discovery_sends_only_the_two_registry_reads(connector: Connector) -> None:
+def test_discovery_sends_only_the_registry_reads_the_language_and_the_translations(
+    connector: Connector,
+) -> None:
     client, install, _ = connector
-    socket = install([registry_entry()], states=[light_state()])
+    socket = install([registry_entry()], states=[light_state()], language="de")
     client.discover()
     assert socket.sent[0]["type"] == "auth"
-    assert socket.sent[1:] == [
-        {"id": 1, "type": "config/entity_registry/list"},
-        {"id": 2, "type": "config/device_registry/list"},
+    reads = socket.sent[1:]
+    assert sorted(read["type"] for read in reads) == [
+        "config/device_registry/list",
+        "config/entity_registry/list",
+        "frontend/get_translations",
+        "get_config",
     ]
+    [translations] = [read for read in reads if read["type"] == "frontend/get_translations"]
+    # The language is Home Assistant's own, from get_config.
+    assert translations["language"] == "de"
+    assert translations["category"] == "entity_component"
 
 
 def test_cold_discovery_reads_every_state_in_one_request_and_no_single_entity(
@@ -141,7 +172,8 @@ def test_cold_discovery_reads_every_state_in_one_request_and_no_single_entity(
         "ha:room": GROUP,
         "ha:flagged": GROUP,
         "ha:plug": None,
-        "ha:sensor": NOT_SUPPORTED,
+        # A sensor on a device is a generic state device, so it is supported.
+        "ha:sensor": None,
         "ha:helper": GROUP,
     }
 
@@ -191,7 +223,7 @@ def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_n
         "ha:members": (False, GROUP, "light"),
         "ha:deconz": (False, GROUP, "light"),
         "ha:disabled": (False, DISABLED, "light"),
-        "ha:sensor": (False, NOT_SUPPORTED, None),
+        "ha:sensor": (True, None, "state"),
     }
 
 
@@ -246,7 +278,7 @@ def test_a_plug_or_switch_on_a_device_is_supported_and_settings_groups_and_loose
         "ha:disabled": (False, DISABLED, "switch"),
         "ha:disabled_loose": (False, DISABLED, "switch"),
         "ha:group_setting": (False, SETTING, "switch"),
-        "ha:sensor": (False, NOT_SUPPORTED, None),
+        "ha:sensor": (True, None, "state"),
     }
 
 
@@ -361,7 +393,16 @@ def test_a_malformed_entity_id_is_refused_without_a_request(connector: Connector
         return httpx.Response(200, json={"entity_id": "light.bulb", "state": "on"})
 
     use_transport(client, handle)
-    for entity_id in ("light.bulb/../../api/services", "sensor.power", "light.bulb?x=1"):
+    malformed = (
+        "light.bulb/../../api/services",
+        "light.bulb?x=1",
+        "climate.hall/../../api/services",
+        "Sensor.power",
+        "sensor",
+        "sensor.",
+        ".power",
+    )
+    for entity_id in malformed:
         with pytest.raises(ConnectorError) as error:
             client.read_states(["light.bulb", entity_id])
         assert error.value.code == "configuration"
@@ -514,8 +555,10 @@ def test_registry_payload_limit_before_projection(
     with pytest.raises(ConnectorError) as error:
         adapter.discover()
     assert error.value.code == "invalid_data"
-    assert len(socket.sent) == 2
-    assert json.loads(json.dumps(socket.sent[1]))["type"] == "config/entity_registry/list"
+    sent = [frame["type"] for frame in socket.sent]
+    assert "config/entity_registry/list" in sent
+    # The oversized registry list ended discovery before the device list was asked for.
+    assert "config/device_registry/list" not in sent
 
 
 def registry_of(entities: int, devices: int) -> tuple[list[Frame], list[Frame]]:
@@ -578,3 +621,383 @@ def test_a_malformed_bulk_states_body_fails_discovery_with_invalid_data(
         client.discover()
 
     assert failure.value.code == "invalid_data"
+
+
+def test_an_entity_of_any_other_domain_on_a_device_is_a_state_device_unless_a_rule_excludes_it(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    demo = {"platform": "demo", "translation_key": None}
+    install(
+        [
+            registry_entry("climate", "climate.hall", **demo),
+            registry_entry("cover", "cover.garage", **demo),
+            registry_entry("text", "sensor.note", **demo),
+            registry_entry("diagnostic", "sensor.rssi", entity_category="diagnostic", **demo),
+            registry_entry("config", "number.offset", entity_category="config", **demo),
+            registry_entry("hidden", "climate.spare", hidden_by="user", **demo),
+            registry_entry("integration_hidden", "climate.old", hidden_by="integration", **demo),
+            registry_entry("loose", "sensor.template", device_id=None, **demo),
+            registry_entry("dangling", "sensor.dangling", device_id="gone", **demo),
+            registry_entry("person", "person.ali", **demo),
+            registry_entry("tracker", "device_tracker.phone", **demo),
+            registry_entry("disabled", "climate.off", disabled_by="user", **demo),
+            registry_entry("helper", "climate.helper", platform="group"),
+            registry_entry("members", "climate.zones", **demo),
+            registry_entry("flagged", "climate.flagged", **demo),
+            # Each rule's reason comes first in the fixed order: disabled, presence,
+            # category, hidden, device, group.
+            registry_entry("disabled_person", "person.gone", disabled_by="user", **demo),
+            registry_entry("person_category", "person.setting", entity_category="config", **demo),
+            registry_entry(
+                "category_hidden", "sensor.both", entity_category="config", hidden_by="user", **demo
+            ),
+            registry_entry(
+                "hidden_loose", "sensor.both_two", hidden_by="user", device_id=None, **demo
+            ),
+            registry_entry("loose_group", "climate.loose_group", device_id=None, platform="group"),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        states=[
+            entity_state("climate.hall", "heat"),
+            entity_state("cover.garage", "closed"),
+            entity_state("sensor.note", "Back in five minutes"),
+            entity_state("climate.zones", "heat", entity_id=["climate.hall", "climate.spare"]),
+            entity_state("climate.flagged", "heat", is_demo_group=True),
+        ],
+    )
+    catalog = client.discover()
+    by_id = {entity.id: entity for entity in catalog.entities}
+    assert {key: (entity.supported, entity.reason) for key, entity in by_id.items()} == {
+        "ha:climate": (True, None),
+        "ha:cover": (True, None),
+        "ha:text": (True, None),
+        "ha:diagnostic": (False, CATEGORY),
+        "ha:config": (False, CATEGORY),
+        "ha:hidden": (False, HIDDEN),
+        "ha:integration_hidden": (False, HIDDEN),
+        "ha:loose": (False, NO_DEVICE_ENTITY),
+        "ha:dangling": (False, NO_DEVICE_ENTITY),
+        "ha:person": (False, PRESENCE),
+        "ha:tracker": (False, PRESENCE),
+        "ha:disabled": (False, DISABLED),
+        "ha:helper": (False, GROUP),
+        "ha:members": (False, GROUP),
+        "ha:flagged": (False, GROUP),
+        "ha:disabled_person": (False, DISABLED),
+        "ha:person_category": (False, PRESENCE),
+        "ha:category_hidden": (False, CATEGORY),
+        "ha:hidden_loose": (False, HIDDEN),
+        "ha:loose_group": (False, NO_DEVICE_ENTITY),
+    }
+    for supported in ("climate", "cover", "text"):
+        assert by_id[f"ha:{supported}"].model_dump()["device_kind"] == "state"
+
+
+def test_lights_and_switches_keep_their_own_rules_beside_state_devices(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    zha = {"platform": "zha", "translation_key": None}
+    install(
+        [
+            # A light needs no device; a switch does. A state device needs one too.
+            registry_entry("light", "light.loose", device_id=None, **zha),
+            registry_entry("switch", "switch.loose", device_id=None, **zha),
+            registry_entry("climate", "climate.loose", device_id=None, **zha),
+            # A light with an entity category and a hidden light stay supported as today.
+            registry_entry("setting_light", "light.setting", entity_category="config", **zha),
+            registry_entry("hidden_light", "light.hidden", hidden_by="user", **zha),
+            registry_entry("hidden_switch", "switch.hidden", hidden_by="user", **zha),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        states=[
+            light_state("light.loose"),
+            light_state("switch.loose"),
+            light_state("light.setting"),
+            light_state("light.hidden"),
+            light_state("switch.hidden"),
+        ],
+    )
+    catalog = client.discover()
+    assert {
+        entity.id: (entity.supported, entity.reason, entity.model_dump().get("device_kind"))
+        for entity in catalog.entities
+    } == {
+        "ha:light": (True, None, "light"),
+        "ha:switch": (False, NO_DEVICE, "switch"),
+        "ha:climate": (False, NO_DEVICE_ENTITY, "state"),
+        "ha:setting_light": (True, None, "light"),
+        "ha:hidden_light": (True, None, "light"),
+        "ha:hidden_switch": (True, None, "switch"),
+    }
+
+
+TRANSLATIONS = {
+    "component.climate.entity_component._.state.heat": "Heat",
+    "component.climate.entity_component._.state.off": "Off",
+    "component.light.entity_component._.state.on": "On",
+    "component.binary_sensor.entity_component._.state.on": "Detected",
+    "component.binary_sensor.entity_component.door.state.on": "Open",
+}
+TRANSLATED_ENTITIES = [
+    registry_entry("climate", "climate.hall", platform="demo", translation_key=None),
+    registry_entry("untranslated", "climate.attic", platform="demo", translation_key=None),
+    registry_entry("door", "binary_sensor.front", platform="demo", translation_key=None),
+    registry_entry("motion", "binary_sensor.hall", platform="demo", translation_key=None),
+    registry_entry("light", "light.desk", platform="demo", translation_key=None),
+]
+TRANSLATED_STATES = [
+    entity_state("climate.hall", "heat", temperature=21),
+    entity_state("climate.attic", "frost_guard"),
+    entity_state("binary_sensor.front", "on", device_class="door"),
+    entity_state("binary_sensor.hall", "on", device_class="motion"),
+    entity_state("light.desk", "on"),
+]
+TRANSLATED_IDS = [state["entity_id"] for state in TRANSLATED_STATES]
+
+
+def labels(client: HomeAssistantConnector) -> dict[str, str]:
+    readings = client.read_states(TRANSLATED_IDS)
+    return {
+        entity_id: reading.model_dump()["label"]
+        for entity_id, reading in readings.items()
+        if reading is not None
+    }
+
+
+def test_a_reading_is_labeled_with_homeassistants_translation_of_its_state(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    socket = install(
+        TRANSLATED_ENTITIES,
+        [{"id": "device1", "name": "Hall"}],
+        TRANSLATED_STATES,
+        translations=TRANSLATIONS,
+    )
+    client.discover()
+    sent = len(socket.sent)
+
+    assert labels(client) == {
+        "climate.hall": "Heat",
+        # No translation for this state: the label is the raw state.
+        "climate.attic": "frost_guard",
+        # The device class's translation wins over the domain's.
+        "binary_sensor.front": "Open",
+        # No `motion` translation: the domain's own comes next.
+        "binary_sensor.hall": "Detected",
+        # Lights and switches carry a label too.
+        "light.desk": "On",
+    }
+    # The translations were read once with the catalog, not again for each state read.
+    assert len(socket.sent) == sent
+
+
+@pytest.mark.parametrize("failing", ["frontend/get_translations", "get_config"])
+def test_a_failed_translations_or_language_read_does_not_fail_discovery(
+    connector: Connector, failing: str
+) -> None:
+    client, install, _ = connector
+    socket = install(
+        TRANSLATED_ENTITIES,
+        [{"id": "device1", "name": "Hall"}],
+        TRANSLATED_STATES,
+        translations=TRANSLATIONS,
+        failing=[failing],
+    )
+
+    catalog = client.discover()
+
+    assert all(entity.supported for entity in catalog.entities)
+    [request] = [r for r in socket.sent if r["type"] == "frontend/get_translations"]
+    assert request["language"] == "en"
+    if failing == "frontend/get_translations":
+        # Every label falls back to the raw state.
+        assert labels(client) == {
+            "climate.hall": "heat",
+            "climate.attic": "frost_guard",
+            "binary_sensor.front": "on",
+            "binary_sensor.hall": "on",
+            "light.desk": "on",
+        }
+    else:
+        # Home Assistant's language is unknown, so English is asked for.
+        assert labels(client)["climate.hall"] == "Heat"
+
+
+def test_a_state_device_reading_keeps_its_state_and_times_and_no_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    install(
+        [registry_entry("climate", "climate.hall", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Hall"}],
+        [
+            entity_state(
+                "climate.hall",
+                "heat",
+                temperature=21,
+                hvac_modes=["heat"],
+                secret="PRIVATE_SENTINEL",
+            )
+        ],
+    )
+    client.discover()
+
+    reading = client.read_states(["climate.hall"])["climate.hall"]
+
+    assert reading is not None
+    encoded = reading.model_dump(exclude_none=True)
+    assert encoded["device_kind"] == "state"
+    assert encoded["state"] == "heat"
+    assert encoded["availability"] == "available"
+    assert set(encoded) <= {
+        "device_kind",
+        "state",
+        "availability",
+        "label",
+        "last_changed",
+        "last_updated",
+        "last_reported",
+    }
+    assert "PRIVATE_SENTINEL" not in reading.model_dump_json()
+
+
+@pytest.mark.parametrize("word", ["unavailable", "unknown"])
+def test_a_state_device_that_reports_unavailable_or_unknown_is_not_available(
+    connector: Connector, word: str
+) -> None:
+    client, install, _ = connector
+    install([], states=[entity_state("climate.hall", word)])
+
+    reading = client.read_states(["climate.hall"])["climate.hall"]
+
+    assert reading is not None
+    assert reading.model_dump()["availability"] == word
+
+
+def test_a_state_of_255_characters_is_read_and_one_of_256_is_invalid_data(
+    connector: Connector,
+) -> None:
+    client, install, server = connector
+    install([], states=[entity_state("sensor.note", "x" * 255)])
+    reading = client.read_states(["sensor.note"])["sensor.note"]
+    assert reading is not None
+    assert reading.state == "x" * 255
+
+    server.states = {"sensor.note": entity_state("sensor.note", "y" * 256)}
+    with pytest.raises(ConnectorError) as error:
+        client.read_states(["sensor.note"])
+    assert error.value.code == "invalid_data"
+    assert "y" * 256 not in str(error.value)
+
+
+def test_history_of_a_state_device_is_read_without_attributes_and_a_light_keeps_them(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    end = datetime(2026, 10, 13, 10, tzinfo=UTC)
+    at = start.timestamp()
+    socket = install(
+        [],
+        history={
+            "climate.hall": [
+                {"s": "heat", "lu": at},
+                {"s": "off", "lu": at + 60},
+            ],
+            "light.desk": [{"s": "on", "a": {"brightness": 120}, "lu": at}],
+        },
+    )
+
+    history = client.history(["climate.hall", "light.desk"], start, end)
+
+    assert [reading.state for reading in history["climate.hall"]] == ["heat", "off"]
+    assert {reading.device_kind for reading in history["climate.hall"]} == {"state"}
+    assert history["light.desk"][0].model_dump()["brightness"] == 120
+    requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    # One request may not mix the two, so Home Assistant may be asked twice.
+    for request in requests:
+        assert request["no_attributes"] is ("climate.hall" in request["entity_ids"])
+        assert not {"climate.hall", "light.desk"} <= set(request["entity_ids"])
+
+
+def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    rows = 43_000
+    # Home Assistant sends Unix seconds as floats with microseconds.
+    busy = {
+        f"sensor.busy_{number}": [
+            {"s": f"{20 + index % 7}.5", "lu": start.timestamp() + index * 2 + 0.123456}
+            for index in range(rows)
+        ]
+        for number in range(10)
+    }
+    light: list[Frame] = [
+        {"s": "on", "a": {"brightness": 120}, "lu": start.timestamp() + 1.654321},
+        {"s": "off", "a": {}, "lu": start.timestamp() + 90.5},
+    ]
+    # Together the sensors outgrow one answer, so one request for all of them cannot work.
+    assert len(json.dumps(busy)) > HISTORY_MAX_PAYLOAD
+    assert all(len(json.dumps(one)) < HISTORY_MAX_PAYLOAD for one in busy.values())
+    socket = install([], history={**busy, "light.desk": light})
+
+    history = client.history([*busy, "light.desk"], start, end)
+
+    assert {entity_id: len(readings) for entity_id, readings in history.items()} == {
+        **dict.fromkeys(busy, rows),
+        "light.desk": 2,
+    }
+    assert history["light.desk"][0].model_dump()["brightness"] == 120
+    requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    for request in requests:
+        sensors = [i for i in request["entity_ids"] if i.startswith("sensor.")]
+        if sensors:
+            # Each non-light device is read on its own, without attributes.
+            assert request["entity_ids"] == sensors
+            assert len(sensors) == 1
+            assert request["no_attributes"] is True
+        else:
+            assert request["entity_ids"] == ["light.desk"]
+            assert request["no_attributes"] is False
+    assert len(requests) == 11
+
+
+def test_discovery_gives_up_on_unanswered_language_and_translation_reads_within_a_budget(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    socket = install(
+        [
+            registry_entry("climate", "climate.hall", platform="demo", translation_key=None),
+            registry_entry("light", "light.desk", platform="demo", translation_key=None),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        [entity_state("climate.hall", "heat"), entity_state("light.desk", "on")],
+        translations=TRANSLATIONS,
+        silent=["get_config", "frontend/get_translations"],
+    )
+
+    catalog = client.discover()
+
+    # The registry answers that follow, or come before, are not mistaken for the late ones.
+    assert {entity.id: entity.supported for entity in catalog.entities} == {
+        "ha:climate": True,
+        "ha:light": True,
+    }
+    assert catalog.entities[0].device_name == "Hall"
+    # Every wait on Home Assistant's silence is bounded, and together they stay short.
+    assert socket.waits
+    assert all(wait is not None for wait in socket.waits)
+    assert sum(wait for wait in socket.waits if wait is not None) <= 2.5
+    # Without translations the label is the raw state.
+    readings = client.read_states(["climate.hall", "light.desk"])
+    assert [reading.model_dump()["label"] for reading in readings.values() if reading] == [
+        "heat",
+        "on",
+    ]

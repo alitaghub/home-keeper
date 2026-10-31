@@ -3,7 +3,7 @@ controller. `now` is a test clock that `sleep` moves, so no test waits in real t
 
 import threading
 from collections.abc import Callable, Generator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import Literal
@@ -65,6 +65,7 @@ class Device:
 
 LIGHT = Device("bulb-a", "light.desk", "light", "light")
 PLUG = Device("plug-a", "switch.kettle", "switch", "device")
+THERMOSTAT = Device("state-a", "climate.hall", "state", "device")
 OTHER_LIGHT = Device("bulb-b", "light.other", "light", "light")
 DEVICES = [pytest.param(LIGHT, id="light"), pytest.param(PLUG, id="plug")]
 
@@ -122,7 +123,7 @@ class ScriptedController:
 
 
 def kind_of(device: Device) -> Payload:
-    return {"device_kind": "switch"} if device.kind == "switch" else {}
+    return {} if device.kind == "light" else {"device_kind": device.kind}
 
 
 @dataclass
@@ -488,6 +489,91 @@ async def test_brightness_is_refused_for_a_switch_reading_even_when_the_catalog_
     assert house.commands.heartbeat(NOW)
     assert await switch(house, LIGHT, on(30)) == refused("not_supported")
     assert house.controller.sent == []
+
+
+@pytest.mark.parametrize(
+    ("heartbeat", "reported", "action"),
+    [
+        pytest.param(True, IS_ON, OFF, id="control on, device on, turn off"),
+        pytest.param(True, IS_OFF, ON, id="control on, device off, turn on"),
+        pytest.param(True, IS_ON, ON, id="control on, already on"),
+        pytest.param(True, {"state": "heat"}, ON, id="control on, any other state"),
+        pytest.param(True, IS_UNAVAILABLE, ON, id="control on, unavailable"),
+        pytest.param(True, IS_UNKNOWN, ON, id="control on, unknown state"),
+        pytest.param(True, None, ON, id="control on, no state"),
+        pytest.param(False, IS_ON, OFF, id="control off"),
+        pytest.param(True, IS_OFF, on(30), id="control on, brightness"),
+    ],
+)
+@pytest.mark.parametrize("selected_as", ["state", "switch"])
+async def test_a_command_for_a_state_device_is_refused_before_every_other_check_and_sends_nothing(
+    store: Store,
+    *,
+    heartbeat: bool,
+    reported: Payload | None,
+    action: Payload,
+    selected_as: DeviceKind,
+) -> None:
+    house = home(store)
+    # The catalog says what the device is now, whatever it was monitored as.
+    house.reader.entities.append(
+        Entity(
+            id=THERMOSTAT.entity_id,
+            device_id="device-d",
+            name="Hall",
+            device_kind="state",
+            supported=True,
+        )
+    )
+    house.select(replace(THERMOSTAT, kind=selected_as))
+    if reported is not None:
+        house.report(THERMOSTAT, reported)
+    if heartbeat:
+        assert house.commands.heartbeat(NOW)
+
+    result = await switch(house, THERMOSTAT, action)
+
+    assert result == Refusal("not_supported", "This device cannot be switched.")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+@pytest.mark.parametrize(
+    ("selected", "refusal"),
+    [
+        pytest.param(
+            True, Refusal("not_supported", "This device cannot be switched."), id="monitored"
+        ),
+        pytest.param(
+            False,
+            Refusal("not_monitored", "Monitor this device before switching it"),
+            id="unmonitored",
+        ),
+    ],
+)
+async def test_a_state_device_the_catalog_now_calls_unsupported_gets_the_state_device_refusal(
+    store: Store, *, selected: bool, refusal: Refusal
+) -> None:
+    house = home(store)
+    house.reader.entities.append(
+        Entity(
+            id=THERMOSTAT.entity_id,
+            name="Hall",
+            device_kind="state",
+            supported=False,
+            reason="Hidden in Home Assistant",
+        )
+    )
+    if selected:
+        house.select(THERMOSTAT)
+    house.report(THERMOSTAT, {"state": "heat"})
+    assert house.commands.heartbeat(NOW)
+
+    result = await switch(house, THERMOSTAT, ON)
+
+    assert result == refusal
+    assert house.controller.sent == []
+    assert house.audit() == []
 
 
 async def test_state_from_outside_the_device_domain_makes_the_entity_unsupported(

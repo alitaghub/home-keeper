@@ -30,9 +30,10 @@ const colorFields = new Set<string>([
 ]);
 
 type Field = (typeof changeFields)[number];
-type Value = LightReading[Field];
+// Any other device's state is Home Assistant's own text.
+type Value = LightReading[Field] | string;
 
-/** A field of an event's state. A plug or switch has no light attributes to show. */
+/** A field of an event's state. Only a light has light attributes to show. */
 function fieldValue(reading: Reading, field: Field): Value {
   if (reading.device_kind === "light") return reading[field];
   return field === "state" || field === "availability" ? reading[field] : undefined;
@@ -51,9 +52,13 @@ function changedFields(event: ChangeRecord): Field[] {
   );
 }
 
-/** One plain sentence for the change, such as "turned on at 40%". */
+/**
+ * One plain sentence for the change, such as "turned on at 40%". Any other device shows Home
+ * Assistant's words for its old and new state.
+ */
 function summary(event: ChangeRecord, fields: Field[]) {
   const reading = event.new;
+  if (reading.device_kind === "state") return `${event.old.label} → ${reading.label}`;
   const brightness = fieldValue(reading, "brightness");
   const percent = typeof brightness === "number" ? ` at ${brightnessPercent(brightness)}%` : "";
   if (fields.includes("availability") && reading.availability !== "available") {
@@ -82,8 +87,8 @@ export function Timeline({
     <div id="timeline" className="grid">
       {events && !events.length && (
         <p className="text-sm text-muted-foreground">
-          Home Assistant has no changes of monitored devices in the last 30 days. Select a light and
-          wait for a change.
+          Home Assistant has no changes of monitored devices in the last 30 days. Monitor a device
+          and wait for a change.
         </p>
       )}
       {events?.map((event) => {

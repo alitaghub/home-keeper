@@ -6,6 +6,7 @@ Nothing runs between requests: each response comes from the reader at request ti
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -16,7 +17,7 @@ from support.control import ON, FakeController, beat, command
 from support.reader import FakeReader, live
 
 from home_keeper.api import create_app
-from home_keeper.models import Entity
+from home_keeper.models import DeviceKind, Entity
 from home_keeper.reader import ReaderError
 
 DESK = Entity(
@@ -221,3 +222,70 @@ def test_a_device_home_assistant_no_longer_has_is_missing_and_can_be_stopped(
         stopped = home.select(DESK.id, selected=False)
         assert stopped.status_code == 200, stopped.text
         assert stopped.json() == {"entity_ids": [KETTLE.id]}
+
+
+def reclassified(entity: Entity, kind: DeviceKind) -> Entity:
+    """The device as the catalog lists it once Home Assistant sorts it as another kind."""
+    return entity.model_copy(update={"device_kind": kind})
+
+
+def test_a_monitored_device_follows_the_kind_the_catalog_gives_it_even_while_the_reader_is_down(
+    database: str,
+) -> None:
+    with house(database) as home:
+        # Monitored as a light.
+        assert home.select(DESK.id).is_success
+        assert home.monitored()[DESK.id]["device_kind"] == "light"
+
+        # Home Assistant now sorts it as another kind; nobody selects it again.
+        home.reader.entities = [reclassified(DESK, "switch"), KETTLE, ROOM]
+        home.reader.set(DESK.id, "switch.desk", {"device_kind": "switch", "state": "on"})
+        assert home.monitored()[DESK.id]["device_kind"] == "switch"
+
+        # The kind kept for when Home Assistant cannot be read is the new one, not the old.
+        home.reader.error = "connection"
+        assert home.monitored()[DESK.id]["device_kind"] == "switch"
+
+
+def test_a_device_the_catalog_reclassifies_as_a_state_device_leaves_usage_and_commands(
+    database: str,
+) -> None:
+    with house(database) as home:
+        assert home.select(DESK.id).is_success
+        assert home.select(KETTLE.id).is_success
+        beat(home.client, NOW)
+        window = {"start": (NOW - timedelta(hours=1)).isoformat(), "end": NOW.isoformat()}
+        used = home.client.get("/api/usage", params=window).json()["devices"]
+        assert {device["entity_id"] for device in used} == {DESK.id, KETTLE.id}
+
+        home.reader.entities = [reclassified(DESK, "state"), KETTLE, ROOM]
+        home.reader.set(DESK.id, "climate.desk", {"device_kind": "state", "state": "heat"})
+
+        # Usage is read first, before anything else could refresh the stored kind.
+        used = home.client.get("/api/usage", params=window).json()["devices"]
+        assert {device["entity_id"] for device in used} == {KETTLE.id}
+        assert home.monitored()[DESK.id]["device_kind"] == "state"
+        refused = command(home.client, ON, entity=DESK.id)
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"]["code"] == "not_supported"
+        assert home.controller.sent == []
+
+
+def test_a_new_kind_is_kept_when_the_catalog_answers_but_the_live_state_read_fails(
+    database: str,
+) -> None:
+    with house(database) as home:
+        assert home.select(DESK.id).is_success
+        assert home.monitored()[DESK.id]["device_kind"] == "light"
+
+        home.reader.entities = [reclassified(DESK, "state"), KETTLE, ROOM]
+        home.reader.states_error = "timeout"
+
+        # The catalog answered, so the device is listed with its new kind, and no state.
+        shown = home.monitored()[DESK.id]
+        assert (shown["device_kind"], shown["state"]) == ("state", None)
+
+        # With the catalog down too, what was kept is the new kind, not the selected one.
+        home.reader.states_error = None
+        home.reader.error = "connection"
+        assert home.monitored()[DESK.id]["device_kind"] == "state"

@@ -1,0 +1,9 @@
+{
+  "status": 409,
+  "body": {
+    "detail": {
+      "code": "not_supported",
+      "message": "This device cannot be switched."
+    }
+  }
+}

@@ -51,14 +51,22 @@ Assistant's recorder stored for the monitored devices. Each request reads Home
 Assistant's history through the reader with
 [`history/history_during_period`](https://developers.home-assistant.io/docs/api/websocket/),
 with `significant_changes_only` off so brightness and color changes are included.
+Lights, plugs and switches are read with their attributes; every other device is
+read with `no_attributes`, each in a request of its own on the same connection,
+so one busy device cannot fill the answer for the others.
+[History retention](home-assistant.md#history-retention) gives the size limit.
 A change is two consecutive history rows whose state, availability, brightness or
 color differ. Each row says the change in words, such as "Desk lamp turned on at
-40%", at Home Assistant's time. Its **Details** show the source entity, the stable
+40%", at Home Assistant's time. A change of any other device shows Home
+Assistant's words for the old and new state, such as "Thermostat Heat → Off". Its **Details** show the source entity, the stable
 registry identity, the old and new values and that time.
 
 The reader keeps only approved light fields. For a plug or switch it keeps only
 the on/off state and availability, so a plug that reports a brightness never shows
-one. It drops unrelated attributes, account identifiers and raw logs.
+one. For any other device it keeps only the state text, at most 255 characters,
+and availability. It drops unrelated attributes, account identifiers and raw logs.
+Every reading also carries a `label`, Home Assistant's translated word for the
+state; see [State words](home-assistant.md#state-words).
 
 Allowed color fields are `color_mode`, `color_temp_kelvin`, `hs_color`, `xy_color`,
 `rgb_color`, `rgbw_color` and `rgbww_color`. Brightness uses integers from 0 to
@@ -83,7 +91,8 @@ nothing happened.
 
 The read-only `GET /api/usage` endpoint reports, per monitored light, plug or
 switch, how long it was on and how often it was switched on, split by local day
-and local hour of day. Each entry in `devices` names its `device_kind`. A light
+and local hour of day. Other devices, which report a state but no on or off,
+have no entry. Each entry in `devices` names its `device_kind`. A light
 also carries its average brightness while on; a plug or switch has no
 brightness field. The endpoint needs timezone-aware `start` and `end`
 timestamps. Repeat `entity_id` to limit the report to some devices; without it,

@@ -170,8 +170,8 @@ export interface paths {
         };
         /**
          * Usage
-         * @description On-time, switch-ons and brightness of selected devices in `[start, end)`, from
-         *     Home Assistant's history.
+         * @description On-time, switch-ons and brightness of selected lights, plugs and switches in
+         *     `[start, end)`, from Home Assistant's history. Other devices have no entry.
          */
         get: operations["usage_api_usage_get"];
         put?: never;
@@ -212,19 +212,16 @@ export interface components {
          *     whose state, availability, brightness or color differ.
          */
         ChangeRecord: {
-            /**
-             * Device Kind
-             * @enum {string}
-             */
-            device_kind: "light" | "switch";
+            /** Device Kind */
+            device_kind: ("light" | "switch") | "state";
             /** Entity Id */
             entity_id: string;
             /** Id */
             id: string;
             /** New */
-            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"];
+            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["StateReading"];
             /** Old */
-            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"];
+            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["StateReading"];
             /** Source Entity Id */
             source_entity_id: string;
             /**
@@ -301,7 +298,7 @@ export interface components {
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
-            device_kind?: ("light" | "switch") | null;
+            device_kind?: ("light" | "switch") | "state" | null;
             /** Device Name */
             device_name?: string | null;
             /** Id */
@@ -439,6 +436,8 @@ export interface components {
                 number,
                 number
             ] | null;
+            /** Label */
+            label: string;
             /** Last Changed */
             last_changed?: string | null;
             /** Last Reported */
@@ -513,7 +512,7 @@ export interface components {
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
-            device_kind?: ("light" | "switch") | null;
+            device_kind?: ("light" | "switch") | "state" | null;
             /** Device Name */
             device_name?: string | null;
             /** Id */
@@ -527,7 +526,7 @@ export interface components {
             /** Source Entity Id */
             source_entity_id: string | null;
             /** State */
-            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"]) | null;
+            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["StateReading"]) | null;
             /** Supported */
             supported: boolean;
         };
@@ -543,6 +542,32 @@ export interface components {
         SelectionChange: {
             /** Selected */
             selected: boolean;
+        };
+        /**
+         * StateReading
+         * @description Any other device's state as Home Assistant reports it: its text, with no attributes.
+         */
+        StateReading: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "state";
+            /** Label */
+            label: string;
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /** State */
+            state: string;
         };
         /** SwitchCommandRecord */
         SwitchCommandRecord: {
@@ -625,6 +650,8 @@ export interface components {
              * @constant
              */
             device_kind: "switch";
+            /** Label */
+            label: string;
             /** Last Changed */
             last_changed?: string | null;
             /** Last Reported */

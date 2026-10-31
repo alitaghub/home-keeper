@@ -117,7 +117,11 @@ def lights_response(
     if state is None:
         light["state"] = None
     else:
-        light["state"] |= {"state": state, "brightness": brightness}
+        light["state"] |= {
+            "state": state,
+            "label": state.capitalize(),
+            "brightness": brightness,
+        }
     light |= {"id": entity_id, "name": entity_id}
     others = [missing | {"id": other, "name": other} for other in extra_ids]
     return 200, {"entities": [light, *others]}
@@ -152,6 +156,19 @@ def switch_response(state: str | None = "off", *, entity_id: str = "plug-a") -> 
             key: value for key, value in switch["state"].items() if key not in LIGHT_ATTRIBUTES
         }
         switch["state"] = reading | {"device_kind": "switch"}
+    return status, body
+
+
+def state_device_response(
+    state: str = "heat", label: str = "Heat", *, entity_id: str = "climate-a"
+) -> tuple[int, object]:
+    """A /api/monitored response with one monitored thermostat, a `state` device, in `state`."""
+    status, recorded = lights_response("on", entity_id=entity_id)
+    body: dict[str, Any] = json.loads(json.dumps(recorded))
+    [device] = body["entities"]
+    device["device_kind"] = "state"
+    reading = {key: value for key, value in device["state"].items() if key not in LIGHT_ATTRIBUTES}
+    device["state"] = reading | {"device_kind": "state", "state": state, "label": label}
     return status, body
 
 

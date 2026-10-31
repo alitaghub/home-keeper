@@ -97,8 +97,9 @@ times out. Check it with `docker compose logs ha-setup`.
 4. Open <http://127.0.0.1:8000>. The **Setup** tab lists the devices Home Assistant has now.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
-supports. Home Keeper can monitor any single light, smart plug or switch from any
-brand. Groups, rooms and other entities appear under **Show other entities**. When no supported device exists
+supports. Home Keeper can monitor any single device from any brand: lights, smart
+plugs and switches, and any other device, such as a thermostat. Groups, rooms,
+people, settings and other entities appear under **Show other entities**. When no supported device exists
 yet, the dashboard links to the Home Assistant integrations page.
 
 ### Limits
@@ -155,6 +156,13 @@ example `docker compose exec homeassistant vi /config/configuration.yaml`, then
 Home Keeper keeps no copy of device history, so this one setting decides how far
 back History and usage go.
 
+Each history read asks Home Assistant for the lights, plugs and switches in one
+request, and for every other device in a request of its own. One answer can be at
+most 16 MiB. A device that changes very often, such as a busy power sensor, can
+exceed that over a long range. Then the whole read fails with `invalid_data`, and
+History and usage cannot load for that range. Choose a shorter range or stop
+monitoring that device.
+
 ## Use your own Home Assistant
 
 `compose.external.yaml` replaces the bundled Home Assistant and `ha-setup` with
@@ -168,7 +176,9 @@ registries and selected entities, then generate a long-lived access token from
 that user's profile. Home Assistant tokens do not provide a per-token read-only
 entity scope. Treat the token as a powerful credential. The reader restricts
 its own operations to fixed discovery, state reads and history reads of the
-devices the API asks for, and a reachability check.
+devices the API asks for, and a reachability check. Its WebSocket requests are
+limited to `config/entity_registry/list`, `config/device_registry/list`,
+`get_config`, `frontend/get_translations` and `history/history_during_period`.
 
 Save the token alone in a local file outside this repository. Do not put it in
 `.env`, a URL, a shell command argument, the dashboard, or a Compose environment
@@ -230,53 +240,86 @@ Keep `HOME_KEEPER_HA_URL` and `HOME_KEEPER_HA_TOKEN_FILE` set as above. When
 `HOME_KEEPER_HA_CONTROL_TOKEN_FILE` is missing, the controller cannot start and
 Docker reports the placeholder path `/nonexistent/set-HOME_KEEPER_HA_CONTROL_TOKEN_FILE`.
 
-## Discover and select lights
+## Discover and select devices
 
 Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
-shows supported devices by default, using their device names, under **Lights** and
-**Plugs and switches**. Room groups, scenes, sensors and other entities stay in the
-collapsed **Show other entities** section on the **Setup** tab. Type in **Search
-devices** to show only entities whose name or device name contains the text, in
-every section. Clear the search to see the full list again.
-Discovery retains minimal device/entity metadata exposed by Home Assistant. Any
-enabled `light.*` entity that is not a group can be monitored, whatever
-integration provides it. Smart plugs and switches are `switch.*` entities. One
-can be monitored when it is enabled, belongs to a device, has no entity category
-and is not a group. Integrations also expose settings as switches, such as a
-plug's child lock or LED indicator. Home Assistant gives those an entity
-category of `config` or `diagnostic`, so they are left out.
+shows supported devices by default, using their device names, under **Lights**,
+**Plugs and switches** and **Other**. Room groups, people, settings and other
+entities stay in the collapsed **Show other entities** section on the **Setup**
+tab. Type in **Search devices** to show only entities whose name or device name
+contains the text, in every section. Clear the search to see the full list again.
+Discovery retains minimal device/entity metadata exposed by Home Assistant.
 
-Discovery reads every state once (`GET /api/states`) to detect groups, and keeps
-only which candidates are groups. A light or switch is a group when it comes from the
+The catalog marks each entity with its `device_kind`:
+
+- `light`: any enabled `light.*` entity that is not a group, whatever integration
+  provides it.
+- `switch`: a smart plug or switch, a `switch.*` entity. One can be monitored
+  when it is enabled, belongs to a device, has no entity category and is not a
+  group. Integrations also expose settings as switches, such as a plug's child
+  lock or LED indicator. Home Assistant gives those an entity category of
+  `config` or `diagnostic`, so they are left out.
+- `state`: any other device, such as a thermostat (`climate.*`), a cover or a
+  text sensor. Home Keeper shows its state, in Home Assistant's own words, and
+  its history of changes. It cannot switch it, and it has no usage numbers.
+
+An entity of any other domain is a `state` device when Home Assistant's
+registry shows that it is a device the household uses: it is enabled, belongs to
+a device, has no entity category, is not hidden and is not a group. People
+(`person.*`) and trackers (`device_tracker.*`) are never monitored.
+
+Discovery reads every state once (`GET /api/states`) to detect groups and to
+read each device's `device_class`, which picks its translated state words. It
+keeps only which candidates are groups and the device classes. A device is a
+group when it comes from the
 [`group` integration](https://www.home-assistant.io/integrations/group/), when its
 state lists member entities in an `entity_id` attribute, or when an attribute such
-as `is_hue_group` or `is_deconz_group` is true. A Hue room is one example. The
-catalog marks each light and switch with its `device_kind`: `light` or `switch`.
+as `is_hue_group` or `is_deconz_group` is true. A Hue room is one example.
 The dashboard gives the reason for each entity it cannot monitor:
 
-- **Groups and rooms are not recorded**: a group or room light or switch.
+- **Groups and rooms are not recorded**: a group or room.
 - **Disabled in Home Assistant**: the entity is disabled there.
 - **Settings and diagnostic switches are not recorded**: a switch with an
   entity category.
 - **Switches without a device are not recorded**: a switch that belongs to no
   device, such as a helper.
-- **Only lights, plugs and switches are supported**: any other entity, such as a
-  sensor.
+- **Presence is not recorded**: a person or device tracker.
+- **Settings and diagnostic entities are not recorded**: any other entity with
+  an entity category.
+- **Hidden in Home Assistant**: the entity is hidden there.
+- **Only entities of a device are recorded**: any other entity that belongs to
+  no device, such as a helper or a template sensor.
 
 For a plug or switch, Home Keeper shows its on/off state and availability only,
 with no light attributes. With the `control` profile it can switch it
-on or off.
+on or off. For a `state` device it keeps the state text, at most 255 characters,
+and no attributes.
 
 A candidate with no state yet is not a group. If the state read fails or returns
 malformed data, discovery fails rather than guessing, and the next read tries
 again.
 
+### State words
+
+Every reading carries a `label`: Home Assistant's own word for the state, such
+as "Heat" for a thermostat in `heat`, else the raw state. Discovery reads Home
+Assistant's language with `get_config`, then its translated state words with
+`frontend/get_translations` (category `entity_component`). It looks up the
+device's `device_class` first, then the words its domain uses for every device
+class. The words are cached with the device list. If Home Assistant refuses the
+language read, Home Keeper asks for English. Both reads together get at most 2
+seconds, so a slow answer cannot delay the device list. If the translations
+cannot be read in that time, discovery still succeeds and every label is the raw
+state.
+
 Discovery reads up to 5000 entity registry rows and 5000 device registry rows.
 A home with more of either cannot load its device list: discovery fails with
-`invalid_data`. You can monitor up to 500 devices at once.
+`invalid_data`. You can monitor up to 500 devices at once. Selecting one more is
+refused with `422 Selection is full`, and nothing is stored; stop monitoring a
+device first.
 
-Select a light, plug or switch to monitor it. Its current state and all the
-history Home Assistant has for it appear at once. Devices you add to Home Assistant
+Select a device to monitor it. Its current state and all the history Home
+Assistant has for it appear at once. Devices you add to Home Assistant
 appear on the **Setup** tab within seconds, without changing configuration or
 restarting. Stable entity registry identity keeps selection and history across
 an entity name change. A new registry entry reusing an old entity ID does not

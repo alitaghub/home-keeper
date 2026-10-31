@@ -1,0 +1,36 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "device_id": "device-t",
+        "device_kind": "state",
+        "device_name": "Hall thermostat",
+        "id": "thermostat",
+        "name": "Hall heating",
+        "reason": null,
+        "supported": true
+      },
+      {
+        "device_id": "device-n",
+        "device_kind": "state",
+        "device_name": "Hall thermostat",
+        "id": "note",
+        "name": "Note",
+        "reason": null,
+        "supported": true
+      },
+      {
+        "device_id": null,
+        "device_kind": null,
+        "device_name": null,
+        "id": "ali",
+        "name": "Ali",
+        "reason": "Presence is not recorded",
+        "supported": false
+      }
+    ],
+    "home_assistant_url": null,
+    "source_id": "demo"
+  }
+}

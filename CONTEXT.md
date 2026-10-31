@@ -9,11 +9,11 @@ devices with a fixed command set.
 ### Seeing
 
 **Device**:
-A single light, plug or switch that Home Assistant exposes as one entity.
-_Avoid_: entity (for the thing in the home), light (when plugs and switches count too)
+A single thing in the home that Home Assistant exposes as one entity of a device: a light, a plug or switch, or any other device such as a thermostat or a cover. Groups, rooms, people and settings are not devices.
+_Avoid_: entity (for the thing in the home), light (when other devices count too)
 
 **Device kind**:
-What a device is: a light, which can also have a brightness, or a switch, which is only on or off. A plug is a switch.
+What a device is, which decides its shape: a light, which is on or off and can also have a brightness and color; a switch, which is only on or off (a plug is a switch); or `state`, any other device, which has only a state text in Home Assistant's words and cannot be switched.
 _Avoid_: domain, type
 
 **Monitored device**:
@@ -33,8 +33,12 @@ The past states of a device, as Home Assistant's recorder keeps them. Home Keepe
 _Avoid_: recording, log, timeline (for the data)
 
 **Reading**:
-One state of a device as Home Assistant reports it, now or in its history, with Home Assistant's times.
+One state of a device as Home Assistant reports it, now or in its history, with Home Assistant's times and its label.
 _Avoid_: sample, state update
+
+**Label**:
+Home Assistant's translated word for a reading's state, such as "Heat", else the raw state.
+_Avoid_: display state, friendly state
 
 ### Control
 
@@ -51,7 +55,7 @@ The controller's periodic statement that it can switch devices.
 _Avoid_: ping, keepalive
 
 **Command**:
-A request to turn one device on or off. A light can also be turned on at a brightness.
+A request to turn one light, plug or switch on or off. A light can also be turned on at a brightness. No other device kind takes a command.
 _Avoid_: action, instruction, light command
 
 **Sender**:
