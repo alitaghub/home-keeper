@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from home_keeper.models import (
+    MAX_SELECTION,
     DeviceKind,
     Entity,
     MonitoredEntities,
@@ -30,6 +31,11 @@ class UnsupportedEntity:
     pass
 
 
+@dataclass(frozen=True)
+class SelectionFull:
+    """Already MAX_SELECTION devices are monitored."""
+
+
 class Monitoring:
     def __init__(self, store: Store, reader: Reader) -> None:
         self.store = store
@@ -41,7 +47,7 @@ class Monitoring:
 
     def select(
         self, entity_id: str, *, selected: bool
-    ) -> Selection | UnknownEntity | UnsupportedEntity:
+    ) -> Selection | UnknownEntity | UnsupportedEntity | SelectionFull:
         """Start or stop monitoring a device. Starting checks Home Assistant's catalog and
         raises ReaderUnavailable when it cannot be read; stopping needs no reader, so a
         device that left Home Assistant can still be stopped."""
@@ -56,6 +62,11 @@ class Monitoring:
         store = self.store
         with store.transaction() as db:
             if selected:
+                # Held to the commit, so two selections at once cannot both take the last place.
+                db.execute("LOCK TABLE selection IN SHARE ROW EXCLUSIVE MODE")
+                current = store.selected(db)
+                if entity_id not in current and len(current) >= MAX_SELECTION:
+                    return SelectionFull()
                 db.execute(
                     "INSERT INTO selection(id, device_kind) VALUES(%s, %s) ON CONFLICT DO NOTHING",
                     (entity_id, kind),

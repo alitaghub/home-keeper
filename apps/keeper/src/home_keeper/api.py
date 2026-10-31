@@ -37,7 +37,7 @@ from home_keeper.models import (
     UsageReport,
     to_utc,
 )
-from home_keeper.monitoring import Monitoring, UnknownEntity, UnsupportedEntity
+from home_keeper.monitoring import Monitoring, SelectionFull, UnknownEntity, UnsupportedEntity
 from home_keeper.reader import Reader, ReaderUnavailable
 from home_keeper.store import Store
 from home_keeper.usage import device_usage
@@ -214,6 +214,8 @@ def create_app(
             raise HTTPException(404, "Unknown entity")
         if isinstance(result, UnsupportedEntity):
             raise HTTPException(422, "Entity is unsupported")
+        if isinstance(result, SelectionFull):
+            raise HTTPException(422, "Selection is full")
         return result
 
     # Readings omit unset light attributes; excluding unset fields keeps them absent.

@@ -261,9 +261,10 @@ def test_a_device_the_catalog_reclassifies_as_a_state_device_leaves_usage_and_co
         home.reader.entities = [reclassified(DESK, "state"), KETTLE, ROOM]
         home.reader.set(DESK.id, "climate.desk", {"device_kind": "state", "state": "heat"})
 
-        assert home.monitored()[DESK.id]["device_kind"] == "state"
+        # Usage is read first, before anything else could refresh the stored kind.
         used = home.client.get("/api/usage", params=window).json()["devices"]
         assert {device["entity_id"] for device in used} == {KETTLE.id}
+        assert home.monitored()[DESK.id]["device_kind"] == "state"
         refused = command(home.client, ON, entity=DESK.id)
         assert refused.status_code == 409, refused.text
         assert refused.json()["detail"]["code"] == "not_supported"

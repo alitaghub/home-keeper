@@ -23,6 +23,7 @@ from websockets.sync.client import connect
 from home_keeper.events import device_state, is_json_object
 from home_keeper.models import (
     MAX_CATALOG_ENTITIES,
+    MAX_STATE_LENGTH,
     PRESENCE_DOMAINS,
     Catalog,
     DeviceState,
@@ -39,8 +40,9 @@ HISTORY_MAX_PAYLOAD = 16 * 1024 * 1024
 STATES_MAX_PAYLOAD = 16 * 1024 * 1024
 MAX_REGISTRY_ROWS = MAX_CATALOG_ENTITIES
 MAX_SOURCE_ENTITY_ID_LENGTH = 128
-# Home Assistant's own cap on a state; a translated word is held to it too.
-MAX_STATE_LENGTH = 255
+# The language and translation reads are optional: together they may take this long, so a
+# stalled answer cannot push discovery past the API's wait for the reader.
+OPTIONAL_READS_SECONDS = 2
 MAX_TOKEN_LENGTH = 4096
 MAX_TIMEOUT_SECONDS = 30
 # Visible ASCII only: no spaces, control characters or non-ASCII in origins and credentials.
@@ -200,16 +202,21 @@ class HomeAssistantConnector:
             raise ConnectorError("configuration")
         if not source_entity_ids:
             return {}
-        # Home Assistant takes one `no_attributes` per request: lights need their attributes,
-        # and every other device's are never kept, so those are read without them.
+        # Home Assistant takes one `no_attributes` per request: lights and switches are read
+        # together with their attributes. Every other device's attributes are never kept, so
+        # each is read without them, in its own request: one busy sensor's history fills the
+        # payload cap alone, and must not take the other devices' history with it.
         attributed = ("light", "switch")
         with_attributes = [i for i in source_entity_ids if device_kind_of(i) in attributed]
-        without = [i for i in source_entity_ids if device_kind_of(i) not in attributed]
+        requests = [(with_attributes, False)] if with_attributes else []
+        requests += [
+            ([entity_id], True)
+            for entity_id in source_entity_ids
+            if device_kind_of(entity_id) not in attributed
+        ]
         history: dict[str, list[DeviceState]] = {}
         with self._session(HISTORY_MAX_PAYLOAD) as session:
-            for entity_ids, no_attributes in ((with_attributes, False), (without, True)):
-                if not entity_ids:
-                    continue
+            for entity_ids, no_attributes in requests:
                 result = session.request(
                     "history/history_during_period",
                     # Home Assistant answers a malformed history request with an error result.
@@ -260,8 +267,11 @@ class HomeAssistantConnector:
         except Exception as error:
             _raise_safe(error)
 
-    def _receive(self, socket: WebSocket, max_size: int = MAX_PAYLOAD) -> dict[str, Any]:
-        raw = socket.recv(timeout=self._timeout)
+    def _receive(
+        self, socket: WebSocket, max_size: int = MAX_PAYLOAD, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """One message, waiting at most `timeout`, else the connector's timeout."""
+        raw = socket.recv(timeout=self._timeout if timeout is None else timeout)
         if len(raw) > max_size:
             raise ConnectorError("invalid_data")
         data = json.loads(raw)
@@ -486,16 +496,33 @@ class Session:
         self._max_size = max_size
         self._ids = itertools.count(1)
 
-    def request(self, command: str, *, failure: str, **fields: object) -> object:
-        """Send one allowlisted read and return its result. A refusal raises `failure`."""
+    def request(
+        self, command: str, *, failure: str, deadline: float | None = None, **fields: object
+    ) -> object:
+        """Send one allowlisted read and return its result. A refusal raises `failure`; no
+        answer by `deadline`, a `time.monotonic()` value, raises TimeoutError."""
         # Guarded here too: no caller can add a write command.
         if command not in _READ_COMMANDS:
             raise ConnectorError("configuration")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError
         request_id = next(self._ids)
         self._socket.send(json.dumps({**fields, "id": request_id, "type": command}))
-        # The session is the connector's companion and shares its size-checked receive.
-        response = self._connector._receive(self._socket, self._max_size)  # pyright: ignore[reportPrivateUsage]
-        if response.get("type") != "result" or response.get("id") != request_id:
+        while True:
+            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            # The session is the connector's companion and shares its size-checked receive.
+            response = self._connector._receive(self._socket, self._max_size, timeout)  # pyright: ignore[reportPrivateUsage]
+            answered = response.get("id")
+            # A late answer to an earlier request that timed out is not this one's.
+            if (
+                response.get("type") == "result"
+                and isinstance(answered, int)
+                and not isinstance(answered, bool)
+                and answered < request_id
+            ):
+                continue
+            break
+        if response.get("type") != "result" or answered != request_id:
             raise ConnectorError("invalid_data")
         if response.get("success") is not True:
             raise ConnectorError(failure)
@@ -539,24 +566,29 @@ def _other_reason(  # noqa: PLR0911 -- one return per ordered check
 
 
 def _state_words(session: "Session") -> dict[tuple[str, str, str], str]:
-    """Home Assistant's translated state words in its own language, else English. A failed
-    translations read leaves no words, so every label falls back to the raw state.
+    """Home Assistant's translated state words in its own language, else English. A failed or
+    late translations read leaves no words, so every label falls back to the raw state.
 
-    Unverified against a live Home Assistant: the result is read as `{"resources": {key:
-    word}}`, with keys `component.<domain>.entity_component.<device class or _>.state.<state>`.
+    The result is `{"resources": {key: word}}`, with keys
+    `component.<domain>.entity_component.<device class or _>.state.<state>`.
     """
     # The same failures `_session` turns into codes; here they only cost the language or the
-    # words. An unknown language asks for English.
+    # words. An unknown language asks for English. TimeoutError is an OSError.
     failures = (ConnectorError, OSError, WebSocketException, ValueError)
+    deadline = time.monotonic() + OPTIONAL_READS_SECONDS
     try:
-        config = session.request("get_config", failure="discovery")
+        config = session.request("get_config", failure="discovery", deadline=deadline)
         language = config.get("language") if is_json_object(config) else None
+    # A Home Assistant too slow to say its language would not answer the translations in time.
+    except TimeoutError:
+        return {}
     except failures:
         language = None
     try:
         result = session.request(
             "frontend/get_translations",
             failure="discovery",
+            deadline=deadline,
             language=language
             if isinstance(language, str) and _LANGUAGE.fullmatch(language)
             else "en",

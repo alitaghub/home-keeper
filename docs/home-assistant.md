@@ -156,6 +156,13 @@ example `docker compose exec homeassistant vi /config/configuration.yaml`, then
 Home Keeper keeps no copy of device history, so this one setting decides how far
 back History and usage go.
 
+Each history read asks Home Assistant for the lights, plugs and switches in one
+request, and for every other device in a request of its own. One answer can be at
+most 16 MiB. A device that changes very often, such as a busy power sensor, can
+exceed that over a long range. Then the whole read fails with `invalid_data`, and
+History and usage cannot load for that range. Choose a shorter range or stop
+monitoring that device.
+
 ## Use your own Home Assistant
 
 `compose.external.yaml` replaces the bundled Home Assistant and `ha-setup` with
@@ -299,12 +306,17 @@ as "Heat" for a thermostat in `heat`, else the raw state. Discovery reads Home
 Assistant's language with `get_config`, then its translated state words with
 `frontend/get_translations` (category `entity_component`). It looks up the
 device's `device_class` first, then the words its domain uses for every device
-class. The words are cached with the device list. If the translations cannot be
-read, discovery still succeeds and every label is the raw state.
+class. The words are cached with the device list. If Home Assistant refuses the
+language read, Home Keeper asks for English. Both reads together get at most 2
+seconds, so a slow answer cannot delay the device list. If the translations
+cannot be read in that time, discovery still succeeds and every label is the raw
+state.
 
 Discovery reads up to 5000 entity registry rows and 5000 device registry rows.
 A home with more of either cannot load its device list: discovery fails with
-`invalid_data`. You can monitor up to 500 devices at once.
+`invalid_data`. You can monitor up to 500 devices at once. Selecting one more is
+refused with `422 Selection is full`, and nothing is stored; stop monitoring a
+device first.
 
 Select a device to monitor it. Its current state and all the history Home
 Assistant has for it appear at once. Devices you add to Home Assistant

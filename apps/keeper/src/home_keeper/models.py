@@ -94,10 +94,14 @@ class Catalog(WireModel):
         return self
 
 
+# The most devices one can monitor at once.
+MAX_SELECTION = 500
+
+
 class Selection(WireModel):
     """The devices the user monitors."""
 
-    entity_ids: list[Identity] = Field(max_length=500)
+    entity_ids: list[Identity] = Field(max_length=MAX_SELECTION)
 
 
 class SelectionChange(WireModel):
@@ -111,8 +115,9 @@ ColorMode = Literal[
 ]
 LightStateValue = Literal["on", "off", "unavailable", "unknown"]
 Availability = Literal["available", "unavailable", "unknown"]
-# Home Assistant caps a state at 255 characters; a translated state word fits the same bound.
-StateText = Annotated[str, StringConstraints(max_length=255)]
+# Home Assistant caps a state at 255 characters; a translated state word is held to the same.
+MAX_STATE_LENGTH = 255
+StateText = Annotated[str, StringConstraints(max_length=MAX_STATE_LENGTH)]
 
 
 def availability_of(state: str) -> Availability:

@@ -10,6 +10,16 @@ type Entity = Schemas["Entity"];
 export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
   entity.device_name || entity.name;
 
+/**
+ * A catalog row's name. A light or plug is named by its device, as today; one device can
+ * have several other entities, such as a temperature and a humidity sensor, so those add the
+ * entity's own name when it differs.
+ */
+const rowName = (entity: Entity) =>
+  entity.device_kind === "state" && entity.device_name && entity.name !== entity.device_name
+    ? `${entity.device_name} · ${entity.name}`
+    : lightName(entity);
+
 const UNGROUPED = "__ungrouped";
 
 // A supported entity without a kind counts as a light, as the API does.
@@ -106,7 +116,7 @@ export function Catalog({
             <h4 className="text-sm font-semibold">{group.heading}</h4>
             <div className="grid gap-2 sm:grid-cols-2">
               {group.entities.map((entity) => {
-                const name = lightName(entity);
+                const name = rowName(entity);
                 const checked = selected.includes(entity.id);
                 const action = checked ? "Stop monitoring" : "Monitor";
                 return (

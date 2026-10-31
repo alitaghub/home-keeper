@@ -761,24 +761,21 @@ def test_plug_command_is_refused_when_control_is_off() -> None:
     assert command_requests(keeper) == []
 
 
-@pytest.mark.parametrize("name", ["turn_on", "turn_off"])
-def test_a_command_for_a_state_device_never_reaches_the_device_and_ends_with_the_refusal(
-    name: str,
+@pytest.mark.parametrize(("name", "state"), [("turn_on", "off"), ("turn_off", "on")])
+def test_a_command_for_a_state_device_is_refused_before_any_approval_and_sends_nothing(
+    name: str, state: str
 ) -> None:
-    refusal = {"detail": {"code": "not_supported", "message": "This device cannot be switched."}}
     keeper = FakeKeeper(
         {
-            # A text-like device whose state is `on` would pass every on/off check.
-            "/api/monitored": state_device_response("on", "Detected"),
+            # On or off, so every on/off check would pass for a switch.
+            "/api/monitored": state_device_response(state, state.capitalize()),
             "/api/control": control_response("on"),
-            "/api/devices/climate-a/command": (409, refusal),
         }
     )
     call: ToolCall = {"name": name, "args": {"entity_id": "climate-a"}, "id": "call-state"}
+
     agent, config = agent_after_light_call(keeper, call)
 
-    # The agent may refuse before an approval card or pass the keeper's refusal on after it.
-    if agent.get_state(config).interrupts:
-        resume(agent, config, "approve")
-
+    assert agent.get_state(config).interrupts == ()
     assert "cannot be switched" in tool_result(agent.get_state(config))
+    assert command_requests(keeper) == []

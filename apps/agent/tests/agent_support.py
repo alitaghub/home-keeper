@@ -162,11 +162,7 @@ def switch_response(state: str | None = "off", *, entity_id: str = "plug-a") -> 
 def state_device_response(
     state: str = "heat", label: str = "Heat", *, entity_id: str = "climate-a"
 ) -> tuple[int, object]:
-    """A /api/monitored response with one monitored generic device (a thermostat) in `state`,
-    which Home Assistant words as `label`.
-
-    The recorded light's shape with `device_kind` "state", the `label` and no light attributes.
-    """
+    """A /api/monitored response with one monitored thermostat, a `state` device, in `state`."""
     status, recorded = lights_response("on", entity_id=entity_id)
     body: dict[str, Any] = json.loads(json.dumps(recorded))
     [device] = body["entities"]

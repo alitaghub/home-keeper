@@ -118,4 +118,28 @@ describe("catalog on the Setup tab", () => {
     expect(screen.getByText(/^No devices match “zzz”/)).toBeInTheDocument();
     expect(screen.queryByText(/No supported devices match/)).toBeNull();
   });
+
+  it("tells apart two entities of one device by name in the card and the button", () => {
+    const hall = { ...fixtures.thermostat, device_id: "hall-sensor", device_name: "Hall sensor" };
+    render(
+      <Catalog
+        entities={[
+          { ...hall, id: "sensor.hall_temperature", name: "Temperature" },
+          { ...hall, id: "sensor.hall_humidity", name: "Humidity" },
+        ]}
+        homeAssistantUrl={null}
+        selected={[]}
+        onToggle={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Hall sensor · Temperature")).toBeInTheDocument();
+    expect(screen.getByText("Hall sensor · Humidity")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Monitor Hall sensor · Temperature" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Monitor Hall sensor · Humidity" }),
+    ).toBeInTheDocument();
+  });
 });

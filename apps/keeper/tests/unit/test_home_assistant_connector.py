@@ -3,9 +3,8 @@
 import json
 import logging
 from collections.abc import Callable, Iterable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -24,6 +23,7 @@ from support.home_assistant import (
 )
 
 from home_keeper.home_assistant import (
+    HISTORY_MAX_PAYLOAD,
     MAX_PAYLOAD,
     STATES_MAX_PAYLOAD,
     ConnectorError,
@@ -56,9 +56,22 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
         entities: list[Frame],
         devices: Iterable[Frame] = (),
         states: Iterable[Frame] = (),
-        **socket_options: Any,
+        *,
+        history: dict[str, list[Frame]] | None = None,
+        language: str = "en",
+        translations: dict[str, str] | None = None,
+        failing: Iterable[str] = (),
+        silent: Iterable[str] = (),
     ) -> FakeSocket:
-        socket = FakeSocket(entities, devices, **socket_options)
+        socket = FakeSocket(
+            entities,
+            devices,
+            history,
+            language=language,
+            translations=translations,
+            failing=failing,
+            silent=silent,
+        )
         install_socket(monkeypatch, socket)
         server.states = {state["entity_id"]: state for state in states}
         return socket
@@ -908,3 +921,83 @@ def test_history_of_a_state_device_is_read_without_attributes_and_a_light_keeps_
     for request in requests:
         assert request["no_attributes"] is ("climate.hall" in request["entity_ids"])
         assert not {"climate.hall", "light.desk"} <= set(request["entity_ids"])
+
+
+def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    rows = 43_000
+    # Home Assistant sends Unix seconds as floats with microseconds.
+    busy = {
+        f"sensor.busy_{number}": [
+            {"s": f"{20 + index % 7}.5", "lu": start.timestamp() + index * 2 + 0.123456}
+            for index in range(rows)
+        ]
+        for number in range(10)
+    }
+    light: list[Frame] = [
+        {"s": "on", "a": {"brightness": 120}, "lu": start.timestamp() + 1.654321},
+        {"s": "off", "a": {}, "lu": start.timestamp() + 90.5},
+    ]
+    # Together the sensors outgrow one answer, so one request for all of them cannot work.
+    assert len(json.dumps(busy)) > HISTORY_MAX_PAYLOAD
+    assert all(len(json.dumps(one)) < HISTORY_MAX_PAYLOAD for one in busy.values())
+    socket = install([], history={**busy, "light.desk": light})
+
+    history = client.history([*busy, "light.desk"], start, end)
+
+    assert {entity_id: len(readings) for entity_id, readings in history.items()} == {
+        **dict.fromkeys(busy, rows),
+        "light.desk": 2,
+    }
+    assert history["light.desk"][0].model_dump()["brightness"] == 120
+    requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    for request in requests:
+        sensors = [i for i in request["entity_ids"] if i.startswith("sensor.")]
+        if sensors:
+            # Each non-light device is read on its own, without attributes.
+            assert request["entity_ids"] == sensors
+            assert len(sensors) == 1
+            assert request["no_attributes"] is True
+        else:
+            assert request["entity_ids"] == ["light.desk"]
+            assert request["no_attributes"] is False
+    assert len(requests) == 11
+
+
+def test_discovery_gives_up_on_unanswered_language_and_translation_reads_within_a_budget(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    socket = install(
+        [
+            registry_entry("climate", "climate.hall", platform="demo", translation_key=None),
+            registry_entry("light", "light.desk", platform="demo", translation_key=None),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        [entity_state("climate.hall", "heat"), entity_state("light.desk", "on")],
+        translations=TRANSLATIONS,
+        silent=["get_config", "frontend/get_translations"],
+    )
+
+    catalog = client.discover()
+
+    # The registry answers that follow, or come before, are not mistaken for the late ones.
+    assert {entity.id: entity.supported for entity in catalog.entities} == {
+        "ha:climate": True,
+        "ha:light": True,
+    }
+    assert catalog.entities[0].device_name == "Hall"
+    # Every wait on Home Assistant's silence is bounded, and together they stay short.
+    assert socket.waits
+    assert all(wait is not None for wait in socket.waits)
+    assert sum(wait for wait in socket.waits if wait is not None) <= 2.5
+    # Without translations the label is the raw state.
+    readings = client.read_states(["climate.hall", "light.desk"])
+    assert [reading.model_dump()["label"] for reading in readings.values() if reading] == [
+        "heat",
+        "on",
+    ]

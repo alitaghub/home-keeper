@@ -52,7 +52,9 @@ Assistant's history through the reader with
 [`history/history_during_period`](https://developers.home-assistant.io/docs/api/websocket/),
 with `significant_changes_only` off so brightness and color changes are included.
 Lights, plugs and switches are read with their attributes; every other device is
-read with `no_attributes`, in a second request on the same connection.
+read with `no_attributes`, each in a request of its own on the same connection,
+so one busy device cannot fill the answer for the others.
+[History retention](home-assistant.md#history-retention) gives the size limit.
 A change is two consecutive history rows whose state, availability, brightness or
 color differ. Each row says the change in words, such as "Desk lamp turned on at
 40%", at Home Assistant's time. A change of any other device shows Home

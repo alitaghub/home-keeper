@@ -506,7 +506,7 @@ CLIMATE_TRANSLATIONS = {
 
 @pytest.fixture
 def state_home(home: Home) -> Home:
-    """The home plus two thermostats on a device: one with translated states, one without."""
+    """The home plus two thermostats, one with translated states."""
     home.entities = [*ENTITIES, CLIMATE, ATTIC]
     home.translations = CLIMATE_TRANSLATIONS
     home.server.states["climate.hall"] = entity_state(

@@ -271,8 +271,7 @@ def heating(state: str) -> Payload:
 
 
 def state_device_responses(database: str) -> dict[str, Recorded]:
-    """A generic state device: its catalog entry, reading, changes, absence from usage and
-    the refusal of a command."""
+    """A generic state device through every route it touches."""
     clock = [NOW]
     controller = FakeController(clock)
     reader = FakeReader([Entity.model_validate(entry) for entry in (THERMOSTAT, NOTE, PERSON)])
