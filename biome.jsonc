@@ -38,6 +38,15 @@
       },
       // Upstream orders imports its own way and sorts its export lists unalphabetically.
       "assist": { "actions": { "source": { "organizeImports": "off" } } }
+    },
+    {
+      "includes": ["apps/web/src/components/ui/chart.tsx"],
+      "linter": {
+        "rules": {
+          // Upstream keys tooltip and legend rows by position; Recharts gives no stable ID.
+          "suspicious": { "noArrayIndexKey": "off" }
+        }
+      }
     }
   ],
   "assist": { "actions": { "source": { "organizeImports": "on" } } }

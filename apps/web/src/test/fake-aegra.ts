@@ -24,8 +24,8 @@ export type Step =
   | { say: string }
   /** Asks for approval of these calls: the run ends interrupted. */
   | { propose: ToolCall[] }
-  /** A tool the agent calls without approval, with its result. */
-  | { tool: ToolCall; result: string }
+  /** A tool the agent calls without approval, with its result, marked an error if asked. */
+  | { tool: ToolCall; result: string; status?: "success" | "error" }
   /** Tool results for the calls the resumed interrupt asked about, in order. */
   | { results: string[] };
 
@@ -251,6 +251,9 @@ export function createFakeAegra({
         const calls = proposed.map((call) => ({ ...call, id: nextId("call"), type: "tool_call" }));
         const id = nextId("resp");
         if (tuples) {
+          // Arguments stream in two halves, as a model writes them; a gated stream waits
+          // between them, so a test sees the call while its arguments are incomplete.
+          const args = calls.map((call) => JSON.stringify(call.args));
           emit("messages", [
             {
               type: "AIMessageChunk",
@@ -259,7 +262,23 @@ export function createFakeAegra({
               tool_call_chunks: calls.map((call, index) => ({
                 id: call.id,
                 name: call.name,
-                args: JSON.stringify(call.args),
+                args: args[index]?.slice(0, Math.ceil((args[index]?.length ?? 0) / 2)),
+                index,
+                type: "tool_call_chunk",
+              })),
+            },
+            meta("model"),
+          ]);
+          pauseAt ??= events.length;
+          emit("messages", [
+            {
+              type: "AIMessageChunk",
+              id: `lc_run--${id}`,
+              content: "",
+              tool_call_chunks: calls.map((_call, index) => ({
+                id: null,
+                name: null,
+                args: args[index]?.slice(Math.ceil((args[index]?.length ?? 0) / 2)),
                 index,
                 type: "tool_call_chunk",
               })),
@@ -279,7 +298,7 @@ export function createFakeAegra({
         }
         step += 1;
         const [call] = calls;
-        if (call) addTool(call, action.result);
+        if (call) addTool(call, action.result, action.status);
       } else {
         action.results.forEach((result, index) => {
           const call = pending[index];
@@ -290,14 +309,18 @@ export function createFakeAegra({
     thread.updated_at = now();
     emit("end", { status: thread.interrupt ? "interrupted" : "success" });
 
-    function addTool(call: { id: string; name: string }, content: string) {
+    function addTool(
+      call: { id: string; name: string },
+      content: string,
+      status: "success" | "error" = "success",
+    ) {
       const message: Message = {
         id: nextId("tool"),
         type: "tool",
         content,
         tool_call_id: call.id,
         name: call.name,
-        status: "success",
+        status,
       };
       if (tuples) emit("messages", [{ ...message, type: "ToolMessageChunk" }, meta("tools")]);
       add("tools", message);
@@ -465,7 +488,10 @@ export function createFakeAegra({
       holds.push({ method, path, held });
       return release;
     },
-    /** Pauses the next run after its first text chunk until the returned function runs. */
+    /**
+     * Pauses the next run after its first text chunk, or halfway through its first tool
+     * call's arguments, until the returned function runs.
+     */
     pauseNextStream: (): (() => void) => {
       let release = () => {};
       streamGate = new Promise<void>((resolve) => {

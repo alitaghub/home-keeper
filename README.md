@@ -210,9 +210,9 @@ docker compose --profile agent up --build --wait
 ```
 
 Open the dashboard at <http://localhost:8000> and select **Ask** in the header.
-The agent panel opens beside the current tab: answers stream in, you approve or
-reject each proposed device change there, and **Recent chats** brings back
-earlier conversations. The demo works too: add `--profile agent` to its command.
+The agent panel opens beside the current tab: answers stream in, with a bar,
+line or per-day usage chart when one helps, you approve or reject each proposed
+device change there, and **Recent chats** brings back earlier conversations. The demo works too: add `--profile agent` to its command.
 [docs/agent.md](docs/agent.md) covers models, ports and limits.
 
 ## Telegram

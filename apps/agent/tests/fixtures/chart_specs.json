@@ -1,0 +1,692 @@
+{
+  "$comment": "show_chart specs that the agent's schema and the panel's parser must judge alike. {\"$float\": \"NaN\"} stands for a float JSON cannot write.",
+  "valid": [
+    {
+      "case": "bar with unit and axis labels",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "bar with only the required fields",
+      "spec": {
+        "kind": "bar",
+        "title": "Plugs",
+        "categories": ["Kettle"],
+        "series": [
+          {
+            "name": "On",
+            "values": [2]
+          }
+        ]
+      }
+    },
+    {
+      "case": "bar with null optional fields",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": null,
+        "x_label": null,
+        "y_label": null,
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "line over 24 hours",
+      "spec": {
+        "kind": "line",
+        "title": "Desk lamp on-time by hour",
+        "categories": ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"],
+        "series": [
+          {
+            "name": "Desk lamp",
+            "values": [0, 0, 0, 0, 0, 0, 5, 30, 45, 20, 10, 5, 0, 0, 0, 10, 25, 40, 60, 60, 55, 45, 20, 5]
+          }
+        ]
+      }
+    },
+    {
+      "case": "five series, the most the app has colors for",
+      "spec": {
+        "kind": "line",
+        "title": "Five",
+        "categories": ["a", "b"],
+        "series": [
+          {
+            "name": "Series 1",
+            "values": [0.0, 0.0]
+          },
+          {
+            "name": "Series 2",
+            "values": [1.0, 1.0]
+          },
+          {
+            "name": "Series 3",
+            "values": [2.0, 2.0]
+          },
+          {
+            "name": "Series 4",
+            "values": [3.0, 3.0]
+          },
+          {
+            "name": "Series 5",
+            "values": [4.0, 4.0]
+          }
+        ]
+      }
+    },
+    {
+      "case": "zero, negative and fractional values",
+      "spec": {
+        "kind": "bar",
+        "title": "Change",
+        "categories": ["a", "b", "c"],
+        "series": [
+          {
+            "name": "Delta",
+            "values": [-1.5, 0, 2.25]
+          }
+        ]
+      }
+    },
+    {
+      "case": "markup in names is plain text",
+      "spec": {
+        "kind": "bar",
+        "title": "<i>Lamps</i>",
+        "categories": ["<b>x</b>"],
+        "series": [
+          {
+            "name": "<b>x</b>",
+            "values": [1]
+          }
+        ]
+      }
+    },
+    {
+      "case": "usage_by_day for one device in UTC",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00Z",
+        "end": "2026-10-12T00:00:00Z"
+      }
+    },
+    {
+      "case": "usage_by_day for five devices with an offset",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.l0", "light.l1", "light.l2", "light.l3", "light.l4"],
+        "start": "2026-10-05T00:00:00+02:00",
+        "end": "2026-10-12T00:00:00+02:00"
+      }
+    },
+    {
+      "case": "usage_by_day over exactly 366 days, the longest /api/usage serves",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2025-10-12T00:00:00Z",
+        "end": "2026-10-13T00:00:00Z"
+      }
+    },
+    {
+      "case": "offset without a colon",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00+0200",
+        "end": "2026-10-12T00:00:00+0200"
+      }
+    },
+    {
+      "case": "space instead of T",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05 00:00:00Z",
+        "end": "2026-10-12 00:00:00Z"
+      }
+    },
+    {
+      "case": "lowercase z",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00z",
+        "end": "2026-10-12T00:00:00z"
+      }
+    },
+    {
+      "case": "range one microsecond long",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-25T00:00:00.000001Z",
+        "end": "2026-10-25T00:00:00.000002Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "case": "extra color field on the chart",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ],
+        "color": "#ff0000"
+      }
+    },
+    {
+      "case": "extra color field on a series",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9],
+            "color": "red"
+          }
+        ]
+      }
+    },
+    {
+      "case": "extra color field on usage_by_day",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00Z",
+        "end": "2026-10-12T00:00:00Z",
+        "color": "red"
+      }
+    },
+    {
+      "case": "series with more values than categories",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9, 3]
+          }
+        ]
+      }
+    },
+    {
+      "case": "series with fewer values than categories",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6]
+          }
+        ]
+      }
+    },
+    {
+      "case": "reversed range",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-12T00:00:00Z",
+        "end": "2026-10-05T00:00:00Z"
+      }
+    },
+    {
+      "case": "empty range",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00Z",
+        "end": "2026-10-05T00:00:00Z"
+      }
+    },
+    {
+      "case": "NaN value",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [
+              14,
+              {
+                "$float": "NaN"
+              },
+              21,
+              9
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "infinite value",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [
+              14,
+              {
+                "$float": "Infinity"
+              },
+              21,
+              9
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "unknown kind",
+      "spec": {
+        "kind": "pie",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "missing kind",
+      "spec": {
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "six series",
+      "spec": {
+        "kind": "bar",
+        "title": "Six",
+        "categories": ["a"],
+        "series": [
+          {
+            "name": "Series 1",
+            "values": [0.0]
+          },
+          {
+            "name": "Series 2",
+            "values": [1.0]
+          },
+          {
+            "name": "Series 3",
+            "values": [2.0]
+          },
+          {
+            "name": "Series 4",
+            "values": [3.0]
+          },
+          {
+            "name": "Series 5",
+            "values": [4.0]
+          },
+          {
+            "name": "Series 6",
+            "values": [5.0]
+          }
+        ]
+      }
+    },
+    {
+      "case": "no series",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": []
+      }
+    },
+    {
+      "case": "no categories",
+      "spec": {
+        "kind": "bar",
+        "title": "None",
+        "categories": [],
+        "series": [
+          {
+            "name": "s",
+            "values": []
+          }
+        ]
+      }
+    },
+    {
+      "case": "61 categories",
+      "spec": {
+        "kind": "bar",
+        "title": "Many",
+        "categories": ["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10", "c11", "c12", "c13", "c14", "c15", "c16", "c17", "c18", "c19", "c20", "c21", "c22", "c23", "c24", "c25", "c26", "c27", "c28", "c29", "c30", "c31", "c32", "c33", "c34", "c35", "c36", "c37", "c38", "c39", "c40", "c41", "c42", "c43", "c44", "c45", "c46", "c47", "c48", "c49", "c50", "c51", "c52", "c53", "c54", "c55", "c56", "c57", "c58", "c59", "c60"],
+        "series": [
+          {
+            "name": "s",
+            "values": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+          }
+        ]
+      }
+    },
+    {
+      "case": "empty title",
+      "spec": {
+        "kind": "bar",
+        "title": "",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "title over 120 characters",
+      "spec": {
+        "kind": "bar",
+        "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "empty category",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "category over 40 characters",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, 6, 21, 9]
+          },
+          {
+            "name": "Last week",
+            "values": [11, 8, 19, 12]
+          }
+        ]
+      }
+    },
+    {
+      "case": "series name over 60 characters",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+            "values": [14, 6, 21, 9]
+          }
+        ]
+      }
+    },
+    {
+      "case": "empty series name",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "",
+            "values": [14, 6, 21, 9]
+          }
+        ]
+      }
+    },
+    {
+      "case": "numeric string value",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, "6", 21, 9]
+          }
+        ]
+      }
+    },
+    {
+      "case": "boolean value",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, true, 21, 9]
+          }
+        ]
+      }
+    },
+    {
+      "case": "null value",
+      "spec": {
+        "kind": "bar",
+        "title": "Switch-ons this week",
+        "unit": "times",
+        "x_label": "Device",
+        "y_label": "Switch-ons",
+        "categories": ["Desk lamp", "Reading light", "Kettle plug", "Hall"],
+        "series": [
+          {
+            "name": "This week",
+            "values": [14, null, 21, 9]
+          }
+        ]
+      }
+    },
+    {
+      "case": "usage_by_day without devices",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": [],
+        "start": "2026-10-05T00:00:00Z",
+        "end": "2026-10-12T00:00:00Z"
+      }
+    },
+    {
+      "case": "usage_by_day with six devices",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.l0", "light.l1", "light.l2", "light.l3", "light.l4", "light.l5"],
+        "start": "2026-10-05T00:00:00Z",
+        "end": "2026-10-12T00:00:00Z"
+      }
+    },
+    {
+      "case": "usage_by_day with numbers",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00Z",
+        "end": "2026-10-12T00:00:00Z",
+        "series": [
+          {
+            "name": "On",
+            "values": [1]
+          }
+        ]
+      }
+    },
+    {
+      "case": "start without a UTC offset",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-05T00:00:00",
+        "end": "2026-10-12T00:00:00Z"
+      }
+    },
+    {
+      "case": "start as a Unix timestamp",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": 1791158400,
+        "end": "2026-10-12T00:00:00Z"
+      }
+    },
+    {
+      "case": "usage_by_day over 367 days",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2025-10-12T00:00:00Z",
+        "end": "2026-10-14T00:00:00Z"
+      }
+    }
+  ]
+}
