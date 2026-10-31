@@ -10,10 +10,11 @@ import re
 import subprocess
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from email.message import Message
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 # Only the dashboard's own scripts and styles run, and no other site can frame it.
@@ -30,15 +31,68 @@ EXPECTED = {
     "cover.garage_door",
     "fan.ceiling_fan",
     "binary_sensor.front_door",
+    "sensor.desk_plug_power",
     "sensor.ungrouped",
 }
 # The demo home's kinds beyond lights: the garage door is a generic `state` device, the fan and
-# the door sensor are on/off devices.
+# the door sensor are on/off devices, the desk plug's power is a measurement.
 OTHER_KINDS = {
     "cover.garage_door": "state",
     "fan.ceiling_fan": "on_off",
     "binary_sensor.front_door": "on_off",
+    "sensor.desk_plug_power": "measurement",
 }
+POWER_METER = "sensor.desk_plug_power"
+
+
+def prove_demo_power_meter_statistics(
+    get: Callable[[str], Any],
+    request: Callable[..., str],
+    wait_until: Callable[[str, Callable[[], Any]], Any],
+) -> None:
+    """The demo home's power meter, once monitored, has a number and a unit, 5-minute buckets
+    for a day and hourly buckets for a week, with the overall numbers inside the buckets."""
+    initially_selected = POWER_METER in get("/api/selection")["entity_ids"]
+    try:
+        request(f"/api/selection/{POWER_METER}", {"selected": True})
+        end = datetime.now(UTC)
+
+        def report(span: timedelta) -> dict[str, Any]:
+            query = urlencode(
+                {
+                    "entity_id": POWER_METER,
+                    "start": (end - span).isoformat(),
+                    "end": end.isoformat(),
+                }
+            )
+            body: dict[str, Any] = get(f"/api/measurements?{query}")
+            [series] = body["devices"]
+            assert series["entity_id"] == POWER_METER, series
+            return dict(series)
+
+        for span, period, minutes in (
+            (timedelta(hours=24), "5minute", 5),
+            (timedelta(days=7), "hour", 60),
+        ):
+            series = wait_until(
+                f"{period} statistics of the demo power meter", lambda s=span: report(s)
+            )
+            assert series["period"] == period, series
+            assert series["unit"] == "W", series
+            assert series["buckets"], f"The demo power meter has no {period} statistics"
+            for bucket in series["buckets"]:
+                start = datetime.fromisoformat(bucket["start"])
+                assert datetime.fromisoformat(bucket["end"]) - start == timedelta(minutes=minutes)
+                assert bucket["min"] <= bucket["mean"] <= bucket["max"], bucket
+            assert series["min"] == min(b["min"] for b in series["buckets"]), series
+            assert series["max"] == max(b["max"] for b in series["buckets"]), series
+            assert series["min"] <= series["mean"] <= series["max"], series
+            assert isinstance(series["latest"], float), series
+        reading = next(e for e in get("/api/monitored")["entities"] if e["id"] == POWER_METER)
+        assert reading["device_kind"] == "measurement", reading
+        assert reading["state"]["unit"] == "W", reading
+    finally:
+        request(f"/api/selection/{POWER_METER}", {"selected": initially_selected})
 
 
 def main() -> None:
@@ -125,9 +179,9 @@ def main() -> None:
         return (
             {entry["id"] for entry in catalog} == EXPECTED
             # Two single lights, the smart plug, the garage door (a generic `state` device), the
-            # ceiling fan and the front door sensor (on/off devices); the room group and the
-            # sensor, which has no device, are not.
-            and sum(entry["supported"] for entry in catalog) == 6
+            # ceiling fan and the front door sensor (on/off devices) and the desk plug's power
+            # (a measurement); the room group and the sensor, which has no device, are not.
+            and sum(entry["supported"] for entry in catalog) == 7
             and {
                 entry["id"]: entry["device_kind"] for entry in catalog if entry["id"] in OTHER_KINDS
             }
@@ -135,7 +189,7 @@ def main() -> None:
             and get("/api/health")["status"] == "healthy"
         )
 
-    wait_until("eight-entity catalog and healthy reader", ready)
+    wait_until("nine-entity catalog and healthy reader", ready)
     page, page_headers = fetch("/")
     assert "<html" in page.lower(), "Dashboard HTML not served"
     script = re.search(r'<script[^>]+src="(/assets/[^"]+\.js)"', page)
@@ -156,6 +210,7 @@ def main() -> None:
             check=True,
             timeout=30,
         )
+    prove_demo_power_meter_statistics(get, request, wait_until)
     entity = "light.hue_desk"
     initially_selected = entity in get("/api/selection")["entity_ids"]
     try:
@@ -209,9 +264,9 @@ def main() -> None:
         request(f"/api/selection/{entity}", {"selected": initially_selected})
     print(
         "Compose smoke passed: only the web container published, healthy reader, five "
-        "discoveries, dashboard assets with security headers, no dashboard in the API "
-        "image, foreign-origin write refused, the selected light's current state and its removal, "
-        "/agent failing without the agent"
+        "discoveries, the demo power meter's statistics, dashboard assets with security headers, "
+        "no dashboard in the API image, foreign-origin write refused, the selected light's "
+        "current state and its removal, /agent failing without the agent"
     )
 
 

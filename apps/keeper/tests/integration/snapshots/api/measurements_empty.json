@@ -1,0 +1,19 @@
+{
+  "status": 200,
+  "body": {
+    "devices": [
+      {
+        "buckets": [],
+        "entity_id": "power",
+        "latest": 412.0,
+        "max": null,
+        "mean": null,
+        "min": null,
+        "period": "hour",
+        "unit": "W"
+      }
+    ],
+    "end": "2026-10-08T06:00:00+00:00",
+    "start": "2026-09-12T10:00:00+00:00"
+  }
+}

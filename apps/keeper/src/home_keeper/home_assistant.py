@@ -286,8 +286,9 @@ class HomeAssistantConnector:
             raise ConnectorError("configuration")
         if not source_entity_ids:
             return {}
+        # The whole read, connecting included, ends within HISTORY_SECONDS, as a history read.
         deadline = time.monotonic() + HISTORY_SECONDS
-        with self._session(HISTORY_MAX_PAYLOAD) as session:
+        with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL, deadline) as session:
             result = session.request(
                 "recorder/statistics_during_period",
                 # Home Assistant answers a malformed statistics request with an error result.

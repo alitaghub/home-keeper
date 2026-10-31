@@ -43,6 +43,7 @@ const defaults: Replies = {
   "GET /api/events": fixtures.emptyEvents,
   "GET /api/commands": fixtures.emptyCommands,
   "GET /api/usage": fixtures.emptyUsage,
+  "GET /api/measurements": fixtures.emptyMeasurements,
   "PUT /api/selection/{entity_id}": fixtures.emptySelection,
 };
 

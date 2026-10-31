@@ -1,7 +1,8 @@
+import contextlib
 import json
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -27,6 +28,7 @@ CALLS: dict[str, tuple[Mapping[str, object], str]] = {
     "get_events": (RANGE, "/api/events"),
     "get_health": ({}, "/api/health"),
     "list_devices": ({}, "/api/catalog"),
+    "get_measurements": ({"range": "7d"}, "/api/measurements"),
 }
 
 
@@ -736,3 +738,112 @@ def test_unicode_line_separators_in_a_name_are_escaped(name: str, fixture: str) 
     assert "\u2028" not in result
     assert "\u2029" not in result
     assert json.dumps(LINE_SEPARATOR_NAME) in result
+
+
+def measurement_keeper(measurements: str = "measurements") -> FakeKeeper:
+    """A keeper with one monitored power meter, `power` ("Desk plug power", in watts), and the
+    recorded statistics answer `measurements`."""
+    return FakeKeeper(
+        {
+            "/api/measurements": snapshot(measurements),
+            "/api/monitored": snapshot("measurement_monitored"),
+            # Where a tool may take names from.
+            "/api/catalog": snapshot("measurement_catalog"),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("range_", "span"),
+    [("24h", timedelta(hours=24)), ("7d", timedelta(days=7)), ("30d", timedelta(days=30))],
+)
+def test_measurements_report_min_mean_max_and_latest_with_the_unit_for_the_range_asked(
+    range_: str, span: timedelta
+) -> None:
+    keeper = measurement_keeper()
+    before = datetime.now(UTC)
+
+    result = call(keeper.tools(), "get_measurements", {"range": range_})
+
+    after = datetime.now(UTC)
+    assert not result.startswith("Keeper error:"), result
+    [line] = [line for line in result.splitlines() if line.startswith("- power")]
+    # The keeper's numbers: minimum 1, mean 30, maximum 90, and 412 now, in watts (quoted).
+    assert re.fullmatch(
+        r'- power "Desk plug power": min 1(\.0)?, mean 30(\.0)?, max 90(\.0)?, '
+        r'latest 412(\.0)? "W"',
+        line,
+    ), line
+    [request] = [r for r in keeper.requests if r.url.path == "/api/measurements"]
+    assert request.method == "GET"
+    assert request.headers["X-Home-Keeper"] == "1"
+    params = normalized(request.url.params.multi_items())
+    [start], [end] = params["start"], params["end"]
+    assert isinstance(start, datetime)
+    assert isinstance(end, datetime)
+    # The range ends now and starts `span` before it.
+    assert before - timedelta(seconds=1) <= end <= after + timedelta(seconds=1)
+    assert end - start == span
+    assert "entity_id" not in params
+
+
+def test_measurements_for_named_devices_ask_the_keeper_for_exactly_those() -> None:
+    keeper = measurement_keeper()
+
+    call(keeper.tools(), "get_measurements", {"range": "24h", "entity_ids": ["power", "temp"]})
+
+    [request] = [r for r in keeper.requests if r.url.path == "/api/measurements"]
+    assert normalized(request.url.params.multi_items())["entity_id"] == ["power", "temp"]
+
+
+def test_a_measurement_without_statistics_says_so_and_states_no_numbers() -> None:
+    keeper = measurement_keeper("measurements_empty")
+
+    result = call(keeper.tools(), "get_measurements", {"range": "7d"})
+
+    assert not result.startswith("Keeper error:"), result
+    [line] = [line for line in result.splitlines() if line.startswith("- power")]
+    assert line == '- power "Desk plug power": no statistics'
+
+
+@pytest.mark.parametrize("range_", ["1h", "90d", ""])
+def test_measurements_refuse_a_range_other_than_24h_7d_or_30d_without_asking_the_keeper(
+    range_: str,
+) -> None:
+    keeper = measurement_keeper()
+
+    # The tool may reject the arguments or answer with text; either way no range is read.
+    with contextlib.suppress(Exception):
+        keeper.tools()["get_measurements"].invoke({"range": range_})
+
+    assert [r for r in keeper.requests if r.url.path == "/api/measurements"] == []
+
+
+def test_hostile_measurement_name_stays_one_quoted_value() -> None:
+    keeper = measurement_keeper()
+    for path in ("/api/monitored", "/api/catalog"):
+        status, body = keeper.responses[path]
+        entities: dict[str, Any] = json.loads(json.dumps(body))
+        entities["entities"][0]["name"] = HOSTILE_NAME
+        keeper.responses[path] = (status, entities)
+
+    result = call(keeper.tools(), "get_measurements", {"range": "7d"})
+
+    assert json.dumps(HOSTILE_NAME, ensure_ascii=False) in result
+    assert not any(
+        line.lstrip().startswith(("Ignore", "- light.fake")) for line in result.splitlines()
+    )
+
+
+def test_a_measurement_shows_in_the_monitored_and_device_lists_with_its_kind() -> None:
+    keeper = measurement_keeper()
+    keeper.responses["/api/control"] = control_response("on")
+
+    monitored = call(keeper.tools(), "list_monitored", {})
+    devices = call(keeper.tools(), "list_devices", {})
+
+    for result in (monitored, devices):
+        assert not result.startswith("Keeper error:"), result
+        [line] = [line for line in result.splitlines() if line.startswith("- power ")]
+        assert "kind=measurement" in line, line
+        assert '"Desk plug power"' in line, line

@@ -130,3 +130,67 @@ test("monitors a demo lamp and keeps its untrusted name inert", async ({ page, r
   await page.getByRole("tab", { name: "Setup" }).click();
   await expect(lamps.getByRole("button", { name: `Monitor ${LAMP}` })).toBeVisible();
 });
+
+// The demo home's power meter: a measurement with a value in watts and synthetic statistics.
+const POWER_METER_ID = "sensor.desk_plug_power";
+const POWER_METER = /Desk plug power/;
+
+test("monitors the demo power meter and opens its history with Min, Mean and Max", async ({
+  page,
+  request,
+}) => {
+  // A reused Compose volume can still hold the selection from an earlier run.
+  const reset = await request.put(`/api/selection/${POWER_METER_ID}`, {
+    headers: { "X-Home-Keeper": "1" },
+    data: { selected: false },
+  });
+  expect(reset.ok()).toBe(true);
+
+  await page.goto("/#setup");
+  const measurements = page.locator("#catalog section", {
+    has: page.getByRole("heading", { name: "Measurements" }),
+  });
+  await measurements.getByRole("button", { name: /^Monitor .*Desk plug power$/ }).click();
+
+  await page.getByRole("tab", { name: "Home" }).click();
+  const section = page.locator("section", {
+    has: page.getByRole("heading", { level: 2, name: "Measurements" }),
+  });
+  const card = section
+    .locator("#monitored-measurements article")
+    .filter({ has: page.getByRole("heading", { name: POWER_METER }) });
+  await expect(card).toBeVisible(COLLECTION);
+  // A value with its unit, and the day's line.
+  await expect(card.getByText(/^-?\d+(\.\d+)? W$/)).toBeVisible(COLLECTION);
+  await expect(card.getByRole("img", { name: /^Last 24 hours/ })).toBeVisible(COLLECTION);
+  // A measurement cannot be switched, even with control on.
+  await expect(card.getByRole("button", { name: /^Turn (on|off)/ })).toHaveCount(0);
+
+  await card.getByRole("button", { name: /history/i }).click();
+  const history = page.getByRole("dialog", { name: POWER_METER });
+  const totals = history.getByText(/^(Min|Mean|Max)$/);
+  await expect(totals).toHaveCount(3);
+  const range = async () => history.getByText(/^Min$/).locator("xpath=..").textContent();
+  // Each range shows numbers with the unit, never a dash: the demo has 30 days of statistics.
+  for (const label of ["24 hours", "7 days", "30 days"]) {
+    await history.getByRole("button", { name: label }).click();
+    await expect(history.getByRole("button", { name: label })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(history.getByRole("img", { name: new RegExp(label) })).toBeVisible(COLLECTION);
+    await expect.poll(range, COLLECTION).toMatch(/Min\s*-?\d+(\.\d+)? W/);
+    for (const total of ["Min", "Mean", "Max"]) {
+      const text = await history
+        .getByText(new RegExp(`^${total}$`))
+        .locator("xpath=..")
+        .textContent();
+      expect(text, `${label} ${total}`).toMatch(new RegExp(`${total}\\s*-?\\d+(\\.\\d+)? W`));
+    }
+  }
+  await history.getByRole("button", { name: "Close" }).click();
+  await expect(history).toHaveCount(0);
+
+  await card.getByRole("button", { name: /^Stop monitoring/ }).click();
+  await expect(card).toHaveCount(0);
+});

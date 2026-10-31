@@ -11,7 +11,7 @@ from typing import Literal
 import anyio
 import anyio.to_thread
 import pytest
-from support.reader import FakeReader, Payload
+from support.reader import FakeReader, Payload, measuring
 
 from home_keeper.commands import Commands, Refusal
 from home_keeper.control import ControllerUnreachable
@@ -67,6 +67,7 @@ LIGHT = Device("bulb-a", "light.desk", "light", "light")
 PLUG = Device("plug-a", "switch.kettle", "switch", "device")
 THERMOSTAT = Device("state-a", "climate.hall", "state", "device")
 DOOR = Device("door-a", "binary_sensor.front_door", "on_off", "device")
+POWER = Device("power-a", "sensor.desk_power", "measurement", "device")
 OTHER_LIGHT = Device("bulb-b", "light.other", "light", "light")
 DEVICES = [pytest.param(LIGHT, id="light"), pytest.param(PLUG, id="plug")]
 
@@ -562,6 +563,46 @@ async def test_a_command_for_an_on_off_device_is_not_supported_whatever_its_stat
     assert house.commands.heartbeat(NOW)
 
     result = await switch(house, DOOR, ON)
+
+    assert result == (
+        Refusal("not_supported", "This device cannot be switched.")
+        if selected_as
+        else Refusal("not_monitored", "Monitor this device before switching it")
+    )
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+@pytest.mark.parametrize(
+    "reported",
+    [
+        pytest.param(measuring(412), id="reading"),
+        pytest.param(measuring(None), id="unavailable"),
+        pytest.param(None, id="no state"),
+    ],
+)
+@pytest.mark.parametrize("selected_as", ["state", "measurement", None])
+async def test_a_command_for_a_measurement_is_not_supported_whatever_its_reading_and_sends_nothing(
+    store: Store, *, reported: Payload | None, selected_as: DeviceKind | None
+) -> None:
+    house = home(store)
+    # The catalog calls the device a measurement now, whatever it was monitored as.
+    house.reader.entities.append(
+        Entity(
+            id=POWER.entity_id,
+            device_id="device-p",
+            name="Desk plug power",
+            device_kind="measurement",
+            supported=True,
+        )
+    )
+    if selected_as:
+        house.select(replace(POWER, kind=selected_as))
+    if reported is not None:
+        house.report(POWER, reported)
+    assert house.commands.heartbeat(NOW)
+
+    result = await switch(house, POWER, ON)
 
     assert result == (
         Refusal("not_supported", "This device cannot be switched.")
