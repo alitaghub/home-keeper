@@ -1,4 +1,7 @@
+import { ChevronDown } from "lucide-react";
 import type { Schemas } from "../api/client";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
 
 type Entity = Schemas["Entity"];
 
@@ -31,9 +34,9 @@ export function Catalog({
   const others = entities?.filter((entity) => !entity.supported) ?? [];
   return (
     <>
-      <div id="catalog" className="light-grid">
+      <div id="catalog" className="grid gap-2 sm:grid-cols-2">
         {entities && !lights.length && (
-          <p className="empty">
+          <p className="col-span-full text-sm text-muted-foreground">
             {homeAssistantUrl ? (
               <>
                 No supported devices yet.{" "}
@@ -42,6 +45,7 @@ export function Catalog({
                   href={`${homeAssistantUrl}/config/integrations/dashboard`}
                   target="_blank"
                   rel="noreferrer"
+                  className="font-medium text-foreground underline underline-offset-4"
                 >
                   Connect your devices in Home Assistant
                 </a>
@@ -60,40 +64,56 @@ export function Catalog({
           const checked = selected.includes(entity.id);
           const action = checked ? "Stop monitoring" : "Monitor";
           return (
-            <div key={entity.id} className="entity-row lamp-card">
-              <strong>{name}</strong>
-              <button
+            <div
+              key={entity.id}
+              className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+            >
+              <strong className="min-w-0 text-sm font-medium break-words">{name}</strong>
+              <Button
                 type="button"
-                className={checked ? "secondary" : "primary"}
+                size="sm"
+                variant={checked ? "outline" : "default"}
                 aria-label={`${action} ${name}`}
                 onClick={() => onToggle(entity.id, !checked)}
               >
                 {action}
-              </button>
+              </Button>
             </div>
           );
         })}
       </div>
-      <details id="other-entities" className="other-entities" hidden={!others.length}>
-        <summary id="other-summary">
+      <details id="other-entities" className="group" hidden={!others.length}>
+        <summary
+          id="other-summary"
+          className="inline-flex cursor-pointer list-none items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden"
+        >
           {entities ? `Show other entities (${others.length})` : "Show other entities"}
+          <ChevronDown
+            className="size-4 transition-transform group-open:rotate-180"
+            aria-hidden="true"
+          />
         </summary>
-        <p className="history-status">
+        <p className="mt-2 text-sm text-muted-foreground">
           Home Assistant also exposes room groups, scenes, sensors and settings. These are not
           additional lamps and cannot be monitored here yet.
         </p>
-        <div id="other-catalog">
+        <div id="other-catalog" className="mt-3 grid gap-4">
           {[...groupByDevice(others)].map(([key, group]) => (
-            <div key={key} className="device">
-              <h3>{key === UNGROUPED ? "Ungrouped entities" : group[0]?.device_name || key}</h3>
+            <div key={key} className="grid gap-2">
+              <h3 className="text-sm font-semibold break-words">
+                {key === UNGROUPED ? "Ungrouped entities" : group[0]?.device_name || key}
+              </h3>
               {group.map((entity) => (
-                <div key={entity.id} className="entity-row">
-                  <div>
-                    <strong>{entity.name}</strong>
-                    <small>{entity.id}</small>
-                    <small className="unsupported">{entity.reason}</small>
+                <div
+                  key={entity.id}
+                  className="flex items-start justify-between gap-3 rounded-lg border px-3 py-2"
+                >
+                  <div className="grid min-w-0 gap-0.5">
+                    <strong className="text-sm font-medium break-words">{entity.name}</strong>
+                    <small className="text-xs text-muted-foreground break-all">{entity.id}</small>
+                    <small className="text-xs text-warning-foreground">{entity.reason}</small>
                   </div>
-                  <span className="tag">Unsupported</span>
+                  <Badge variant="outline">Unsupported</Badge>
                 </div>
               ))}
             </div>

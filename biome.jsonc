@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": [
+      "apps/web/**",
+      "e2e/playwright/**",
+      "!apps/web/src/api/schema.d.ts",
+      "!apps/web/coverage"
+    ]
+  },
+  "formatter": { "indentStyle": "space", "lineWidth": 100 },
+  "css": { "parser": { "tailwindDirectives": true } },
+  "linter": { "rules": { "preset": "recommended" } },
+  "overrides": [
+    {
+      // Vendored shadcn/ui components, kept as upstream ships them so updates diff cleanly.
+      "includes": ["apps/web/src/components/ui/**"],
+      "linter": {
+        "rules": {
+          // Upstream imports React as a value although it only uses React's types.
+          "style": { "useImportType": "off" }
+        }
+      },
+      // Upstream orders imports its own way and sorts its export lists unalphabetically.
+      "assist": { "actions": { "source": { "organizeImports": "off" } } }
+    }
+  ],
+  "assist": { "actions": { "source": { "organizeImports": "on" } } }
+}
