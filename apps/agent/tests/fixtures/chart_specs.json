@@ -182,6 +182,15 @@
         "start": "2026-10-05T00:00:00z",
         "end": "2026-10-12T00:00:00z"
       }
+    },
+    {
+      "case": "range one microsecond long",
+      "spec": {
+        "kind": "usage_by_day",
+        "entity_ids": ["light.hue_desk"],
+        "start": "2026-10-25T00:00:00.000001Z",
+        "end": "2026-10-25T00:00:00.000002Z"
+      }
     }
   ],
   "invalid": [

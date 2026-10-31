@@ -147,9 +147,10 @@ colors, in light and dark mode. The agent cannot set colors, sizes or fonts.
   - **Show as table** and **Show as chart**. The table lists the category, then
     one column per series, each value with its unit. For `usage_by_day` it
     lists the date, then the on and unknown time of each device.
-  - **Download PNG**: the chart with its title and legend, in the current
-    light or dark look, saved as `<title>-<YYYY-MM-DD>.png`. It is available
-    while the chart is shown.
+  - **Download PNG**: the chart with its title and legend, and for
+    `usage_by_day` each device's totals, in the current light or dark look,
+    saved as `<title>-<YYYY-MM-DD>.png`. It is available while the chart is
+    shown.
   - **Download CSV**: the table's columns with a header row and raw numbers
     (usage in hours, with 2 decimals), saved as `<title>-<YYYY-MM-DD>.csv`. A
     text cell that starts with `=`, `+`, `-` or `@` gets a leading `'`, so a

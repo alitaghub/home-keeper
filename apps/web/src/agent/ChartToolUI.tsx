@@ -244,7 +244,9 @@ function ChartCard({ drawing }: { drawing: Drawing }) {
         <ul className="grid gap-0.5 text-xs text-muted-foreground" aria-label="Totals">
           {drawing.totals.map((total, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: names may repeat; devices never reorder
-            <li key={index}>{`${total.name}: on ${total.on}, unknown ${total.unknown}`}</li>
+            <li key={index} data-chart-total>
+              {`${total.name}: on ${total.on}, unknown ${total.unknown}`}
+            </li>
           ))}
         </ul>
       )}
@@ -252,42 +254,55 @@ function ChartCard({ drawing }: { drawing: Drawing }) {
   );
 }
 
+/**
+ * `value`, or the one from an earlier render while it is equal as JSON: parsed arguments and
+ * the dashboard's names are new objects on every render, but equal ones must not reload.
+ */
+function useStable<T>(value: T): T {
+  const key = JSON.stringify(value);
+  const [kept, setKept] = useState({ key, value });
+  if (kept.key === key) return kept.value;
+  setKept({ key, value });
+  return value;
+}
+
 /** On and unknown time per day, which the panel loads itself; the agent passes no numbers. */
 function UsageByDayView({ chart }: { chart: UsageByDayChart }) {
   const names = useContext(DeviceNames);
   const [attempt, setAttempt] = useState(0);
   const { start, end } = chart;
-  // Parsed arguments are new arrays on every render; load again only when the IDs change.
-  const ids = chart.entityIds.join("\n");
-  const request = `${ids}\n${start}\n${end}\n${attempt}`;
+  const entityIds = useStable(chart.entityIds);
+  // Only these devices' names matter, each kept with its own ID.
+  const named = useStable(chart.entityIds.map((id) => [id, names.get(id) ?? id] as const));
   // Each answer remembers its request, so a retry never shows the old failure or numbers.
+  const request = useMemo(
+    () => ({ entityIds, start, end, attempt }),
+    [entityIds, start, end, attempt],
+  );
   const [loaded, setLoaded] = useState<
-    { request: string; usage: Usage } | { request: string; failed: true }
+    { request: typeof request; usage: Usage } | { request: typeof request; failed: true }
   >();
 
   useEffect(() => {
     // An unmount, a Retry or a new range cancels the load in flight.
     const controller = new AbortController();
-    const asked = `${ids}\n${start}\n${end}\n${attempt}`;
-    fetchUsageRange(start, end, ids.split("\n"), controller.signal).then(
-      (usage) => controller.signal.aborted || setLoaded({ request: asked, usage }),
-      () => controller.signal.aborted || setLoaded({ request: asked, failed: true }),
+    const { entityIds: ids, start: from, end: to } = request;
+    fetchUsageRange(from, to, ids, controller.signal).then(
+      (usage) => controller.signal.aborted || setLoaded({ request, usage }),
+      () => controller.signal.aborted || setLoaded({ request, failed: true }),
     );
     return () => controller.abort();
-  }, [ids, start, end, attempt]);
+  }, [request]);
 
   const shown = loaded?.request === request ? loaded : undefined;
   const usage = shown && "usage" in shown ? shown.usage : undefined;
-  // The dashboard rebuilds its names on every poll; only these devices' names matter here.
-  const labels = chart.entityIds.map((id) => names.get(id) ?? id).join("\n");
   // A year of days for five devices is a large table: build it once per answer.
   const drawing = useMemo(() => {
     if (!usage) return null;
-    const entityIds = ids.split("\n");
-    const byId = new Map(entityIds.map((id, index) => [id, labels.split("\n")[index] ?? id]));
-    const spec = { kind: "usage_by_day", entityIds, start, end } as const;
-    return usageDrawing(spec, usage, (id) => byId.get(id) ?? id);
-  }, [usage, ids, labels, start, end]);
+    const nameOf = new Map(named);
+    const spec: UsageByDayChart = { kind: "usage_by_day", entityIds: [...entityIds], start, end };
+    return usageDrawing(spec, usage, (id) => nameOf.get(id) ?? id);
+  }, [usage, entityIds, named, start, end]);
   if (!shown) return <ChartSkeleton label="Loading the chart data" />;
   if ("failed" in shown) {
     return (

@@ -106,8 +106,9 @@ function ChartTooltipContent({
     const [item] = payload;
     const key = `${labelKey ?? item?.dataKey ?? item?.name ?? "value"}`;
     const itemConfig = getPayloadConfigFromPayload(config, item, key);
-    const value =
-      !labelKey && typeof label === "string" ? (config[label]?.label ?? label) : itemConfig?.label;
+    // The label is the category as it is: the config names series, and a category may
+    // happen to equal a series key.
+    const value = !labelKey && typeof label === "string" ? label : itemConfig?.label;
 
     if (labelFormatter) {
       return (

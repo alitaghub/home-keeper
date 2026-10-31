@@ -1,6 +1,6 @@
 // The agent's show_chart calls as the panel draws them. Every test goes through the real
 // panel, so it also proves the renderer is registered for show_chart and loads on demand.
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -272,10 +272,12 @@ const getBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
 
 beforeEach(() => {
   localStorage.clear();
-  // jsdom does no layout: give Recharts' responsive container a size, so charts draw.
+  // jsdom does no layout: give Recharts' responsive container a size, so charts draw, and
+  // its wrapper the same box, so a mouse position maps to a category.
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function boundingClientRect(this: HTMLElement) {
-      return this.classList.contains("recharts-responsive-container")
+      return this.classList.contains("recharts-responsive-container") ||
+        this.classList.contains("recharts-wrapper")
         ? DOMRect.fromRect({ width: 480, height: 224 })
         : getBoundingClientRect.call(this);
     },
@@ -558,6 +560,62 @@ describe("show_chart in the agent panel", () => {
     await findChart("<b>x</b>");
     expect(innermost("<b>x</b>", "1h 0m", "30m")).toBeDefined();
     expect(panel().querySelector("b")).toBeNull();
+  });
+
+  it("keeps each device's name with its own numbers when a name has a line break", async () => {
+    const downloads = captureDownloads();
+    const names = new Map([
+      [DESK, "Desk\nlamp"],
+      [PLUG, "Kettle"],
+    ]);
+    const { user } = renderChat([chartCall(usageSpec([DESK, PLUG]))], { names });
+    await ask(user);
+
+    const { summary } = await findChart("Kettle");
+
+    // The plug keeps its name; no part of the desk lamp's name takes its place.
+    expect(summary).toMatch(/Kettle/);
+    expect(innermost("Desk\nlamp", "1h 0m", "30m")).toBeDefined();
+    expect(innermost("Kettle", "2h 0m", "45m")).toBeDefined();
+    const deviceColumns = (header: string[] | undefined) =>
+      header
+        ?.slice(1)
+        .map((cell) =>
+          cell.includes("Desk\nlamp") ? DESK : cell.includes("Kettle") ? PLUG : cell,
+        );
+    await choose(user, "Show as table");
+    const rows = tableRows();
+    expect(deviceColumns(rows.slice(0, -DATES.length).at(-1))).toEqual([DESK, DESK, PLUG, PLUG]);
+    await choose(user, "Download CSV");
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    const [header] = parseCsv((await downloads[0]?.text()) ?? "");
+    expect(deviceColumns(header)).toEqual([DESK, DESK, PLUG, PLUG]);
+  }, 15_000);
+
+  it("heads the tooltip with the hovered category, even one spelled like a series key", async () => {
+    // "s0" is a category here; the series is "Desk lamp".
+    const spec = {
+      kind: "bar",
+      title: "Readings",
+      categories: ["s0", "Hall"],
+      series: [{ name: "Desk lamp", values: [2, 3] }],
+    };
+    const { user } = renderChat([chartCall(spec)]);
+    await ask(user);
+    await findChart("Readings");
+    const wrapper = panel().querySelector(".recharts-wrapper");
+    if (!wrapper) throw new Error("No Recharts wrapper");
+
+    // The first of two categories across 480 px.
+    fireEvent.mouseMove(wrapper, { clientX: 100, clientY: 100 });
+
+    const tooltip = await waitFor(() => {
+      const shown = panel().querySelector<HTMLElement>(".recharts-tooltip-wrapper");
+      expect(shown).toHaveTextContent("2");
+      return shown as HTMLElement;
+    }, LOADED);
+    expect(within(tooltip).getByText("s0")).toBeInTheDocument();
+    expect(within(tooltip).getAllByText("Desk lamp")).toHaveLength(1);
   });
 
   it("still shows other tools' cards and approvals beside a chart", async () => {

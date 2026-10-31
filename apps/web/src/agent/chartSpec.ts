@@ -56,8 +56,11 @@ const isNumbers = (value: unknown): value is number[] =>
 const AWARE_TIME =
   /^(?<year>\d{4})-(?<month>\d\d)-(?<day>\d\d)[Tt _](?<hour>\d\d):(?<minute>\d\d)(?::(?<second>\d\d)(?:[.,](?<fraction>\d+))?)?(?:[Zz]|(?<sign>[+-])(?<offsetHour>\d\d):?(?<offsetMinute>\d\d))$/;
 
-/** Milliseconds since the epoch, or null when `value` is not such a time or no real date. */
-function awareTime(value: unknown): number | null {
+/**
+ * Microseconds since the epoch, or null when `value` is not such a time or no real date.
+ * Like Pydantic, it keeps six fraction digits and drops the rest.
+ */
+function awareTime(value: unknown): bigint | null {
   if (typeof value !== "string") return null;
   const parts = AWARE_TIME.exec(value)?.groups;
   if (!parts) return null;
@@ -74,14 +77,24 @@ function awareTime(value: unknown): number | null {
   }
   const moment = new Date(0);
   moment.setUTCFullYear(year, month - 1, day);
-  const milliseconds = Math.floor(Number(`0.${parts.fraction ?? "0"}`) * 1000);
-  moment.setUTCHours(hour, minute, second, milliseconds);
+  moment.setUTCHours(hour, minute, second);
+  const microseconds = BigInt((parts.fraction ?? "").slice(0, 6).padEnd(6, "0"));
   const offset = (parts.sign === "-" ? -1 : 1) * (offsetHour * 60 + offsetMinute) * 60_000;
-  return moment.getTime() - offset;
+  return (BigInt(moment.getTime()) - BigInt(offset)) * 1000n + microseconds;
 }
 
 // The longest range /api/usage answers, as the agent's schema allows.
-const MAX_USAGE_MS = 366 * 24 * 60 * 60 * 1000;
+const MAX_USAGE_MICROSECONDS = 366n * 24n * 60n * 60n * 1_000_000n;
+
+/** A time as ISO 8601 in UTC with microseconds, which /api/usage reads as it is. */
+function isoTime(microseconds: bigint) {
+  // BigInt division rounds toward zero; a time before 1970 needs the whole second below it.
+  let fraction = microseconds % 1_000_000n;
+  if (fraction < 0n) fraction += 1_000_000n;
+  const seconds = (microseconds - fraction) / 1_000_000n;
+  const iso = new Date(Number(seconds) * 1000).toISOString().replace(/\.\d{3}Z$/, "");
+  return `${iso}.${String(fraction).padStart(6, "0")}Z`;
+}
 
 function parseSeries(value: unknown, length: number): Series | null {
   if (!isRecord(value) || !onlyKeys(value, ["name", "values"])) return null;
@@ -125,13 +138,15 @@ function parseUsageByDay(spec: Record<string, unknown>): UsageByDayChart | null 
   if (!isTexts(entityIds) || !entityIds.length || entityIds.length > MAX_SERIES) return null;
   const from = awareTime(start);
   const to = awareTime(end);
-  if (from === null || to === null || to <= from || to - from > MAX_USAGE_MS) return null;
+  if (from === null || to === null || to <= from || to - from > MAX_USAGE_MICROSECONDS) {
+    return null;
+  }
   // The keeper reads these as plain ISO 8601 in UTC, whichever form the agent wrote.
   return {
     kind: "usage_by_day",
     entityIds,
-    start: new Date(from).toISOString(),
-    end: new Date(to).toISOString(),
+    start: isoTime(from),
+    end: isoTime(to),
   };
 }
 

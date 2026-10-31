@@ -136,6 +136,24 @@ function textBlock(pen: Pen, element: Element | null, width: number): Block | nu
   };
 }
 
+const lineHeight = (block: Block) => Math.ceil(block.size * 1.4);
+const blockHeight = (block: Block | null) => (block ? block.lines.length * lineHeight(block) : 0);
+
+/** Text blocks one under the other from `top`, at the left padding. */
+function paintBlocks(pen: Pen, blocks: readonly (Block | null)[], top: number) {
+  let y = top;
+  pen.textBaseline = "top";
+  for (const block of blocks) {
+    if (!block) continue;
+    pen.font = block.font;
+    pen.fillStyle = block.color;
+    for (const line of block.lines) {
+      pen.fillText(line, PAD, y);
+      y += lineHeight(block);
+    }
+  }
+}
+
 type LegendItem = { label: string; color: string; x: number; y: number };
 
 function legendLayout(pen: Pen, card: Element, width: number, font: string) {
@@ -159,7 +177,7 @@ function legendLayout(pen: Pen, card: Element, width: number, font: string) {
 }
 
 /**
- * The card's title, subtitle, chart and legend as a PNG at the screen's pixel density, or
+ * The card's title, subtitle, chart, legend and any per-device totals as a PNG at the screen's pixel density, or
  * null when the browser cannot paint one.
  */
 export async function chartPng(card: HTMLElement): Promise<Blob | null> {
@@ -177,14 +195,17 @@ export async function chartPng(card: HTMLElement): Promise<Blob | null> {
   const legendFont = legendStyle ? fontOf(legendStyle) : pen.font;
   const legendSize = legendStyle ? Number.parseFloat(legendStyle.fontSize) : 12;
   const legend = legendLayout(pen, card, inner, legendFont);
-  const lineHeight = (block: Block) => Math.ceil(block.size * 1.4);
-  const blockHeight = (block: Block | null) => (block ? block.lines.length * lineHeight(block) : 0);
   const legendRows = legend.length ? Math.max(...legend.map((item) => item.y)) + 1 : 0;
   const legendRow = Math.ceil(legendSize * 1.6);
-  const chartTop = PAD + blockHeight(title) + blockHeight(subtitle) + GAP;
-  const height = Math.round(
-    chartTop + box.height + (legendRows ? GAP + legendRows * legendRow : 0) + PAD,
+  // A usage chart names its devices only in its totals, so they go in the image too.
+  const totals = [...card.querySelectorAll("[data-chart-total]")].flatMap(
+    (element) => textBlock(pen, element, inner) ?? [],
   );
+  const totalsHeight = totals.reduce((sum, block) => sum + blockHeight(block), 0);
+  const chartTop = PAD + blockHeight(title) + blockHeight(subtitle) + GAP;
+  const legendTop = chartTop + box.height + GAP;
+  const totalsTop = legendTop + legendRows * legendRow + (totals.length ? GAP : 0);
+  const height = Math.round(totalsTop + totalsHeight + PAD);
 
   const scale = Math.max(1, window.devicePixelRatio || 1);
   canvas.width = Math.round(width * scale);
@@ -193,23 +214,12 @@ export async function chartPng(card: HTMLElement): Promise<Blob | null> {
   pen.fillStyle = getComputedStyle(card).backgroundColor;
   pen.fillRect(0, 0, width, height);
 
-  let y = PAD;
-  for (const block of [title, subtitle]) {
-    if (!block) continue;
-    pen.font = block.font;
-    pen.fillStyle = block.color;
-    pen.textBaseline = "top";
-    for (const line of block.lines) {
-      pen.fillText(line, PAD, y);
-      y += lineHeight(block);
-    }
-  }
+  paintBlocks(pen, [title, subtitle], PAD);
 
   const origin = new DOMMatrix().scale(scale).translate(PAD, chartTop);
   paintSvg(pen, svg, origin, 1);
   pen.setTransform(scale, 0, 0, scale, 0, 0);
 
-  const legendTop = chartTop + box.height + GAP;
   pen.font = legendFont;
   pen.textBaseline = "middle";
   for (const item of legend) {
@@ -219,6 +229,8 @@ export async function chartPng(card: HTMLElement): Promise<Blob | null> {
     pen.fillStyle = legendStyle?.color ?? pen.fillStyle;
     pen.fillText(item.label, PAD + item.x + SWATCH + 6, middle);
   }
+
+  paintBlocks(pen, totals, totalsTop);
 
   return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 }
