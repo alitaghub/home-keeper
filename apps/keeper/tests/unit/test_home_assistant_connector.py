@@ -929,9 +929,12 @@ def test_history_of_a_state_device_is_read_without_attributes_and_a_light_keeps_
 
 
 def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
-    connector: Connector,
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, install, _ = connector
+    # Parsing tens of MiB takes real time, more under coverage; only simulated time counts
+    # against the history deadline.
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
     start = datetime(2026, 10, 13, tzinfo=UTC)
     end = start + timedelta(days=1)
     rows = 43_000
@@ -1188,9 +1191,12 @@ def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all
 
 
 def test_history_answers_that_together_pass_64_mib_are_invalid_data(
-    connector: Connector,
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, install, _ = connector
+    # Parsing tens of MiB takes real time, more under coverage; only simulated time counts
+    # against the history deadline.
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
     # About 13.5 MiB of rows per device: each answer is under the 16 MiB cap, five are over 64.
     row = {"s": "x" * 250, "lu": 1_760_000_000.0}
     rows = [row] * (13_500_000 // len(json.dumps(row)))
