@@ -100,13 +100,11 @@ def use_transport(client: HomeAssistantConnector, handler: Handler) -> None:
 
 
 class StateServer:
-    """Answers `GET /api/states` and `GET /api/states/{entity_id}` from `states`, and
-    `GET /api/` with `api_status`. `reads` lists each single-entity read in order;
-    `requests` lists every request as (method, path)."""
+    """Answers `GET /api/states` from `states`, and `GET /api/` with `api_status`.
+    `requests` lists every request as (method, path). Any other path is a test failure."""
 
     def __init__(self, states: Iterable[Frame] = ()) -> None:
         self.states = {state["entity_id"]: state for state in states}
-        self.reads: list[str] = []
         self.requests: list[tuple[str, str]] = []
         self.api_status = 200
 
@@ -118,11 +116,7 @@ class StateServer:
             return httpx.Response(200, json={"message": "API running."})
         if request.url.path == "/api/states":
             return httpx.Response(200, json=list(self.states.values()))
-        entity_id = request.url.path.removeprefix("/api/states/")
-        self.reads.append(entity_id)
-        if entity_id not in self.states:
-            return httpx.Response(404, json={"message": "Entity not found."})
-        return httpx.Response(200, json=self.states[entity_id])
+        raise AssertionError(f"Unexpected request to {request.url.path}")
 
 
 def registry_entry(
@@ -138,8 +132,64 @@ def registry_entry(
     }
 
 
+def realistic_entity(number: int, entity_id: str | None = None, **fields: Any) -> Frame:
+    """One `config/entity_registry/list` row with the fields Home Assistant really sends, so
+    thousands of them weigh what a large home's registry weighs (about 500 bytes each).
+    Row `number` is a light on its own device unless `entity_id` says otherwise."""
+    row: Frame = {
+        "area_id": None,
+        "categories": {},
+        "config_entry_id": "01J5Z3Q8K2V7N4M9R6T1W0XY2B",
+        "config_subentry_id": None,
+        "device_id": f"{number:032x}",
+        "disabled_by": None,
+        "entity_category": None,
+        "entity_id": entity_id or f"light.lamp_{number}",
+        "has_entity_name": True,
+        "hidden_by": None,
+        "icon": None,
+        "id": f"{number + 2**64:032x}",
+        "labels": [],
+        "name": None,
+        "options": {"conversation": {"should_expose": False}},
+        "original_name": f"Lamp {number}",
+        "platform": "hue",
+        "translation_key": "hue_light",
+        "unique_id": f"00:17:88:01:0b:aa:{number:04x}-0b",
+    }
+    return row | fields
+
+
+def realistic_device(number: int, **fields: Any) -> Frame:
+    """One `config/device_registry/list` row with the fields Home Assistant really sends."""
+    return {
+        "area_id": None,
+        "configuration_url": "https://192.168.1.20/",
+        "config_entries": ["01J5Z3Q8K2V7N4M9R6T1W0XY2B"],
+        "config_entries_subentries": {"01J5Z3Q8K2V7N4M9R6T1W0XY2B": [None]},
+        "connections": [["mac", f"00:17:88:01:{number:08x}"]],
+        "created_at": 1724500000.123456,
+        "disabled_by": None,
+        "entry_type": None,
+        "hw_version": "1.2",
+        "id": f"{number:032x}",
+        "identifiers": [["hue", f"00178801{number:08x}"]],
+        "labels": [],
+        "manufacturer": "Signify Netherlands B.V.",
+        "model": "Hue color lamp",
+        "model_id": "LCT015",
+        "modified_at": 1727000000.654321,
+        "name_by_user": None,
+        "name": f"Lamp {number}",
+        "primary_config_entry": "01J5Z3Q8K2V7N4M9R6T1W0XY2B",
+        "serial_number": None,
+        "sw_version": "1.122.2",
+        "via_device_id": None,
+    } | fields
+
+
 def light_state(entity: str = "light.bulb", **attributes: Any) -> Frame:
-    """One entity state, as `GET /api/states/{entity_id}` reports a light."""
+    """One entity state, as `GET /api/states` reports a light."""
     return {
         "entity_id": entity,
         "state": "on",

@@ -95,8 +95,8 @@ Python code lives in `apps/keeper/src/home_keeper`.
   cover the devices monitored now, with all the history Home Assistant has for
   them.
 - **The reader is read-only toward the home.** The connector makes fixed
-  registry reads, one state read for each new light or switch candidate at
-  discovery to detect groups, state reads of the devices the API asks for,
+  registry reads, one read of every state at discovery to detect groups, state
+  reads of the devices the API asks for,
   `history/history_during_period` for their history, and `GET /api/` to check
   reachability. It has no service calls, no event subscription, no device writes
   and no database mount. The keeper image
