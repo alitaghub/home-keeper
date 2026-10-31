@@ -63,9 +63,12 @@ docker compose -f compose.demo.yaml --profile agent up --build --wait  # synthet
 
 Open the dashboard at <http://localhost:8000> and select **Ask** in the header.
 The agent panel opens beside the current tab, so the device cards stay in view
-while you talk about them. On a narrow screen it fills the screen; **Close agent
-panel** returns to the tab you were on. The panel stays open or closed across
-reloads in the same browser. Without the `agent` profile, the panel says the
+while you talk about them. It starts at 40% of the window. Drag its edge, or
+focus the edge and use the arrow keys, to make it between 360 pixels and 70% of
+the window wide; **Expand agent panel** jumps to 70% and back. On a narrow screen
+it fills the screen; **Close agent panel** returns to the tab you were on. The
+panel's width, and whether it is open, are remembered across reloads in the same
+browser. Without the `agent` profile, the panel says the
 agent isn't running and links here; the rest of the dashboard works as before.
 
 To use Telegram too, see [Telegram setup](telegram.md). It uses this same agent

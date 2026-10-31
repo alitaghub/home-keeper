@@ -29,6 +29,34 @@ async function openPanel(page: Page): Promise<Locator> {
   return panel;
 }
 
+const WIDE = { width: 1440, height: 900 };
+
+/** The panel's width, once it has one. */
+const widthOf = (panel: Locator) => async () => (await panel.boundingBox())?.width ?? 0;
+
+/** Opens the panel on a wide window with no remembered width. */
+async function openFresh(page: Page): Promise<Locator> {
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  const panel = await openPanel(page);
+  await expect(panel.getByRole("textbox")).toBeVisible();
+  return panel;
+}
+
+/** Drags the panel's resize handle sideways by `dx` pixels. */
+async function dragHandle(page: Page, dx: number) {
+  const box = await page.getByRole("separator", { name: "Resize agent panel" }).boundingBox();
+  expect(box).toBeTruthy();
+  if (!box) return;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + box.width / 2, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + dx, y, { steps: 10 });
+  await page.mouse.up();
+}
+
 async function ask(panel: Locator, question: string) {
   const input = panel.getByRole("textbox");
   await input.fill(question);
@@ -104,8 +132,9 @@ test("opens beside the cards from Ask and loads its code only then", async ({ pa
   const box = await panel.boundingBox();
   expect(main && box).toBeTruthy();
   if (main && box) {
-    expect(box.width).toBeGreaterThan(300);
-    expect(box.width).toBeLessThan(480);
+    // 40% of the window by default.
+    expect(box.width).toBeGreaterThan(1440 * 0.38);
+    expect(box.width).toBeLessThan(1440 * 0.42);
     // Beside the cards, never over them.
     expect(box.x >= main.x + main.width || box.x + box.width <= main.x).toBe(true);
   }
@@ -120,12 +149,63 @@ test("keeps Home's content right below the header on a phone", async ({ page }) 
   await expectCompactHome(page);
 });
 
+test("resizes by dragging or with the arrow keys, and remembers its width", async ({ page }) => {
+  const panel = await openFresh(page);
+  const width = widthOf(panel);
+  const start = await width();
+
+  await dragHandle(page, -200);
+
+  const dragged = await width();
+  expect(Math.abs(dragged - start - 200)).toBeLessThanOrEqual(10);
+  await page.reload();
+  await openPanel(page);
+  await expect.poll(width).toBeGreaterThan(dragged - 5);
+  expect(await width()).toBeLessThan(dragged + 5);
+  await page.getByRole("separator", { name: "Resize agent panel" }).focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(width).toBeGreaterThan(dragged + 5);
+});
+
+test("stays between 360 px and 70% of the window, beside the cards", async ({ page }) => {
+  const panel = await openFresh(page);
+  const width = widthOf(panel);
+
+  await dragHandle(page, 1000);
+  await expect.poll(width).toBeGreaterThanOrEqual(359);
+  expect(await width()).toBeLessThan(370);
+  await dragHandle(page, -2000);
+
+  await expect.poll(width).toBeGreaterThan(1440 * 0.7 - 5);
+  expect(await width()).toBeLessThanOrEqual(1440 * 0.7 + 2);
+  const home = await page.locator("#panel-home").boundingBox();
+  const box = await panel.boundingBox();
+  expect(home && box).toBeTruthy();
+  if (home && box) expect(home.x + home.width).toBeLessThanOrEqual(box.x);
+});
+
+test("expands to most of the window and goes back to the width you had", async ({ page }) => {
+  const panel = await openFresh(page);
+  const width = widthOf(panel);
+  const before = await width();
+
+  await panel.getByRole("button", { name: "Expand agent panel" }).click();
+
+  await expect.poll(width).toBeGreaterThan(1440 * 0.7 - 5);
+  await panel.getByRole("button", { name: "Restore agent panel width" }).click();
+  await expect.poll(width).toBeLessThan(before + 5);
+  expect(await width()).toBeGreaterThan(before - 5);
+});
+
 test("is a full-screen sheet on a phone that closes back to the tab", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await page.goto("/#history");
   const panel = await openPanel(page);
   const box = await panel.boundingBox();
   expect(box?.width).toBeGreaterThanOrEqual(370);
+  // The sheet already fills the phone: it has nothing to resize or expand.
+  await expect(page.getByRole("separator", { name: "Resize agent panel" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Expand agent panel" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Close agent panel" }).click();
 

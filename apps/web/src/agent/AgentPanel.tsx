@@ -13,13 +13,13 @@ import {
   useLangGraphRuntime,
 } from "@assistant-ui/react-langgraph";
 import { Client } from "@langchain/langgraph-sdk";
-import { History, Plus, Trash2, X } from "lucide-react";
+import { History, Maximize2, Minimize2, Plus, Trash2, X } from "lucide-react";
 import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApprovalScope, RunsContext, ToolCall } from "./Approvals";
-import { panelSlot } from "./layout";
+import { panelSlot, type WidthControl } from "./layout";
 import { parseMessages } from "./messages";
 import { createRunEvents, questionOf, type RunEvents } from "./runs";
 import { adaptAegraStream } from "./stream";
@@ -132,9 +132,12 @@ const HEALTH_TIMEOUT_MS = 5000;
 export default function AgentPanel({
   names,
   onClose,
+  width,
 }: {
   names: ReadonlyMap<string, string>;
   onClose: () => void;
+  /** Absent on a phone, where the panel is a full-screen sheet. */
+  width?: WidthControl | undefined;
 }) {
   const [reachable, setReachable] = useState<Reachability>("checking");
   const [attempt, setAttempt] = useState(0);
@@ -155,10 +158,24 @@ export default function AgentPanel({
     return () => controller.abort();
   }, [attempt]);
 
-  const close = (
-    <Button variant="ghost" size="icon-sm" aria-label="Close agent panel" onClick={onClose}>
-      <X aria-hidden="true" />
-    </Button>
+  const widthLabel = width?.expanded ? "Restore agent panel width" : "Expand agent panel";
+  const controls = (
+    <>
+      {width && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={widthLabel}
+          title={widthLabel}
+          onClick={width.toggle}
+        >
+          {width.expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+        </Button>
+      )}
+      <Button variant="ghost" size="icon-sm" aria-label="Close agent panel" onClick={onClose}>
+        <X aria-hidden="true" />
+      </Button>
+    </>
   );
 
   return (
@@ -167,12 +184,12 @@ export default function AgentPanel({
         <AgentChat
           key={session}
           names={names}
-          close={close}
+          controls={controls}
           onReload={() => setSession((n) => n + 1)}
         />
       ) : (
         <>
-          <PanelHeader>{close}</PanelHeader>
+          <PanelHeader>{controls}</PanelHeader>
           <div className="grid content-start gap-3 p-4 text-sm" role="status" aria-live="polite">
             {reachable === "checking" ? (
               <p className="text-muted-foreground">Connecting to the agent…</p>
@@ -218,11 +235,11 @@ function PanelHeader({ children }: { children: ReactNode }) {
 
 function AgentChat({
   names,
-  close,
+  controls,
   onReload,
 }: {
   names: ReadonlyMap<string, string>;
-  close: ReactNode;
+  controls: ReactNode;
   onReload: () => void;
 }) {
   const [agent] = useState(createAgent);
@@ -261,7 +278,7 @@ function AgentChat({
               <History aria-hidden="true" />
             </Button>
             <DeleteChat />
-            {close}
+            {controls}
           </PanelHeader>
           {recentOpen && <RecentChats onPick={() => setRecentOpen(false)} />}
           {/* Hidden, not unmounted, so a half-decided approval keeps its decisions. */}

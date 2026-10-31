@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense } from "react";
-import { panelSlot } from "../agent/layout";
+import { panelSlot, type WidthControl } from "../agent/layout";
 import { Button } from "./ui/button";
 
 // The panel's code, and the chat libraries with it, load when it first opens.
@@ -37,9 +37,11 @@ class LoadBoundary extends Component<{ fallback: ReactNode; children: ReactNode 
 export function AgentSlot({
   names,
   onClose,
+  width,
 }: {
   names: ReadonlyMap<string, string>;
   onClose: () => void;
+  width?: WidthControl | undefined;
 }) {
   return (
     <LoadBoundary
@@ -48,7 +50,7 @@ export function AgentSlot({
       }
     >
       <Suspense fallback={<Placeholder text="Loading the agent…" onClose={onClose} />}>
-        <AgentPanel names={names} onClose={onClose} />
+        <AgentPanel names={names} onClose={onClose} width={width} />
       </Suspense>
     </LoadBoundary>
   );
