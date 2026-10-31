@@ -20,6 +20,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from home_keeper.demo import ENTITIES, DemoReplay, demo_label, demo_statistics
 from home_keeper.home_assistant import VISIBLE_ASCII, ConnectorError, HomeAssistantConnector
 from home_keeper.models import (
+    MAX_SELECTION,
     Bucket,
     CollectorError,
     DeviceState,
@@ -54,7 +55,7 @@ CATALOG_SECONDS = 10
 DEMO_STEP_SECONDS = 10
 MAX_BODY_BYTES = 64 * 1024
 # A whole selection fits; see Selection.entity_ids.
-MAX_STATE_IDS = 500
+MAX_STATE_IDS = MAX_SELECTION
 # The demo starts with this much synthetic history, one replay phase per step.
 DEMO_HISTORY = timedelta(hours=24)
 DEMO_HISTORY_STEP = timedelta(minutes=10)

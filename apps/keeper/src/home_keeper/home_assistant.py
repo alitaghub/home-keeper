@@ -318,10 +318,9 @@ class HomeAssistantConnector:
         max_total: int | None = None,
         deadline: float | None = None,
     ) -> Generator["Session"]:
-        """An authenticated WebSocket for read requests, whose answers may total `max_total`
-        bytes. Connecting and authenticating end by `deadline`, a `time.monotonic()` value.
-        Every failure inside, including the caller's parsing, leaves as a safe ConnectorError
-        code."""
+        """An authenticated read-only WebSocket; answers may total `max_total` bytes and the whole
+        session, closing included, ends by `deadline` (a `time.monotonic()` value). Every
+        failure inside, the caller's parsing included, leaves as a safe ConnectorError code."""
         try:
             with connect(
                 self._websocket_url,
@@ -340,7 +339,12 @@ class HomeAssistantConnector:
                     raise ConnectorError("authentication")
                 if authentication != "auth_ok":
                     raise ConnectorError("invalid_data")
-                yield Session(self, socket, max_size, max_total)
+                try:
+                    yield Session(self, socket, max_size, max_total)
+                finally:
+                    # The closing handshake waits for the peer, so it too ends by `deadline`.
+                    if deadline is not None:
+                        socket.close_timeout = max(0.0, deadline - time.monotonic())
         except Exception as error:
             _raise_safe(error)
 
@@ -748,10 +752,9 @@ def _timestamp(value: object) -> datetime:
 
 
 def history_state(row: object, source_entity_id: str, *, measured: bool = False) -> DeviceState:
-    """One compressed history row, `{s, a, lc, lu}`, as a device's state, a measurement's
-    when `measured`. Times are Unix seconds; Home Assistant always sends `lu` and leaves out
-    `lc` when it equals `lu`. Only the approved light attributes are kept; every other device
-    keeps its state only."""
+    """One compressed history row, `{s, a, lc, lu}`, as a device's state. Times are Unix
+    seconds, and Home Assistant leaves out `lc` when it equals `lu`. Only lights keep
+    attributes, and only the approved ones."""
     if not is_json_object(row):
         raise ValueError("Invalid history row")
     updated = _timestamp(row.get("lu"))

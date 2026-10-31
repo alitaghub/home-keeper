@@ -29,10 +29,9 @@ CHANGED_AT = "2026-10-12T09:00:00+00:00"
 
 
 def live(source_entity_id: str, state: Payload) -> LiveState:
-    """What Home Assistant reports for `source_entity_id`: a light's state, or a switch's or a
-    generic device's when `state` names `device_kind` "switch" or "state". Availability follows
-    the state. The label is `state`'s own `label`, else the state with a capital letter, as
-    Home Assistant translates `on` to "On"."""
+    """What Home Assistant reports for `source_entity_id`, a light unless `state` names another
+    `device_kind`. The label is `state`'s own, else the state capitalized, as Home Assistant
+    translates `on` to "On"."""
     value = state["state"]
     return LiveState(
         source_entity_id=source_entity_id,

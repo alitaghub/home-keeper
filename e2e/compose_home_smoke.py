@@ -1,26 +1,6 @@
-"""Boot the default stack with the real pinned Home Assistant image and prove setup needs no human.
-
-Runs with the `control` profile, so setup also mints the controller's own token.
-
-Also proves that History reads Home Assistant's real recorder: the proof sets a template
-light's state a few times and reads the changes back through the reader and the API.
-
-Also proves generic state devices against the real integration: Home Assistant's `demo`
-integration registers device-backed climate entities, which the catalog must list as supported
-`state` devices, and a monitored climate reading carries Home Assistant's own translated word
-for its state (from the real `frontend/get_translations` payload).
-
-Also proves on/off devices: Home Assistant's `demo` integration registers device-backed binary
-sensors with a device class (moisture, motion), which the catalog must list as supported
-`on_off` devices, and a monitored reading carries Home Assistant's translated word for its
-device class ("Wet", "Detected").
-
-Also proves measurements: the `demo` outside temperature sensor has a `state_class`, so it is
-a supported `measurement`. Hourly statistics imported for it (one 20 days old, with a gap)
-come back through `/api/measurements` for 7 and 30 days with exact buckets and totals.
-
-Uses its own Compose project and ports, and deletes its volumes at the end.
-"""
+"""Boot the default stack on the real pinned Home Assistant image and prove setup needs no human.
+Also proves, against that real Home Assistant, history from the recorder, translated labels for
+state and on/off devices, and measurements read back from imported long-term statistics."""
 
 import json
 import os

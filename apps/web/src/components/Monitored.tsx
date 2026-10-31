@@ -1,7 +1,7 @@
 import { ChevronDown, History, Power } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Schemas } from "../api/client";
-import { KIND_GROUPS, type Kind, kindOf } from "../deviceKinds";
+import { HEADINGS, KIND_GROUPS, type Kind, kindOf } from "../deviceKinds";
 import { ago, brightnessPercent, date, measurement } from "../format";
 import { cn } from "../lib/utils";
 import type { Measurements, Series } from "../useMeasurements";
@@ -299,10 +299,7 @@ function Tile({
   );
 }
 
-/**
- * A device that only reports a state, such as a thermostat or a cover: Home Assistant's word
- * for its state and when it last changed. It cannot be switched and has no usage.
- */
+/** A device that only reports a state, such as a thermostat: its label and when it changed. */
 function OtherTile({
   entity,
   onStop,
@@ -491,7 +488,8 @@ export function Monitored({
     />
   );
   const card = (entity: Schemas["MonitoredEntity"]) => {
-    switch (kindOf(entity)) {
+    const kind = kindOf(entity);
+    switch (kind) {
       case "measurement":
         return (
           <MeasurementTile
@@ -504,8 +502,14 @@ export function Monitored({
         );
       case "state":
         return <OtherTile key={entity.id} entity={entity} onStop={onStop} />;
-      default:
+      case "light":
+      case "switch":
+      case "on_off":
         return tile(entity);
+      default: {
+        const unknown: never = kind;
+        return unknown;
+      }
     }
   };
   return (
@@ -519,7 +523,7 @@ export function Monitored({
       >
         {lights.length > 0 && (
           <h2 id={SECTIONS.light.headingId} className={sectionHeading}>
-            {KIND_GROUPS[0].heading}
+            {HEADINGS.light}
           </h2>
         )}
         <div id={SECTIONS.light.gridId} className={grid}>
@@ -534,7 +538,7 @@ export function Monitored({
           {lights.map(tile)}
         </div>
       </section>
-      {KIND_GROUPS.slice(1).map(({ kind, heading }) => (
+      {KIND_GROUPS.filter(({ kind }) => kind !== "light").map(({ kind, heading }) => (
         <Section key={kind} heading={heading} {...SECTIONS[kind]}>
           {ofKind(kind).map(card)}
         </Section>

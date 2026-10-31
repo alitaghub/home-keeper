@@ -125,10 +125,8 @@ class Reader(Protocol):
     def statistics(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
     ) -> dict[Identity, list[Bucket]]:
-        """One key per requested ID, buckets oldest first: Home Assistant's statistics from
-        `start` to `end`, in 5-minute buckets for a range up to 24 hours, else hourly ones. []
-        for an ID that is no measurement, has no statistics or Home Assistant no longer has; a
-        period with no statistics has no bucket. Raises ReaderUnavailable."""
+        """Home Assistant's statistics buckets per requested ID, oldest first; [] for an ID
+        with none. A period without statistics has no bucket. Raises ReaderUnavailable."""
         ...
 
 

@@ -19,6 +19,7 @@ from home_keeper.commands import Commands, Refusal
 from home_keeper.control import Controller
 from home_keeper.measurements import measurement_series
 from home_keeper.models import (
+    MAX_SELECTION,
     CatalogResponse,
     CommandRecord,
     CommandRefused,
@@ -271,7 +272,7 @@ def create_app(
         *,
         start: datetime,
         end: datetime,
-        entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
+        entity_id: Annotated[list[Identity] | None, Query(max_length=MAX_SELECTION)] = None,
     ):
         """On-time, switch-ons and brightness of monitored on/off devices in `[start, end)`,
         from Home Assistant's history. Other kinds have no entry."""
@@ -337,7 +338,7 @@ def create_app(
         *,
         start: datetime,
         end: datetime,
-        entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
+        entity_id: Annotated[list[Identity] | None, Query(max_length=MAX_SELECTION)] = None,
     ):
         """Statistics of monitored measurements in `[start, end)`: 5-minute buckets up to 24
         hours, else hourly. Periods without statistics are gaps. Other kinds have no entry."""

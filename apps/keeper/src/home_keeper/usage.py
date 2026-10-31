@@ -101,11 +101,8 @@ def device_usage(
     words: OnOffWords = RAW_WORDS,
 ) -> DeviceUsage:
     """Usage of one device from its Home Assistant history rows, oldest first. The first row
-    may be the state at `start`.
-
-    Plugs, switches and other on/off devices get the same numbers as lights, without
-    brightness. An on/off device also carries `words`, Home Assistant's words for its on and
-    off."""
+    may be the state at `start`. Only lights get brightness; an on/off device also carries
+    `words`, Home Assistant's words for its on and off."""
     evidence = sorted((row_evidence(row) for row in rows), key=lambda item: item.at)
     moments = [item.at for item in evidence]
 

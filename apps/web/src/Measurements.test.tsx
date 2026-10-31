@@ -458,3 +458,119 @@ describe("the cards' sparklines over time", () => {
     expect(within(card()).queryByRole("img", { name: SPARK })).toBeInTheDocument();
   });
 });
+
+describe("measurement series reach the right card", () => {
+  const thermometer = {
+    ...powerMeter,
+    id: "sensor.hall_temperature",
+    device_id: "hall-sensor",
+    name: "Hall temperature",
+  };
+  const cardOf = (name: string) => {
+    const found = within(section("Measurements")).getByRole("heading", { name }).closest("article");
+    if (!found) throw new Error(`${name} is not inside a card`);
+    return found;
+  };
+
+  it("gives each meter its own series and unit, whatever the report's order", async () => {
+    renderDashboard({
+      "GET /api/monitored": {
+        entities: [
+          fixtures.monitoredMeasurement(powerMeter, 412, "W"),
+          fixtures.monitoredMeasurement(thermometer, 21.5, "°C"),
+        ],
+      },
+      "GET /api/measurements": (call) => {
+        const range = rangeOf(call);
+        const series = (entity_id: string, unit: string, low: number, high: number) => ({
+          entity_id,
+          unit,
+          period: "5minute" as const,
+          buckets: fixtures.bucketsBefore(range.end, "5minute", [
+            [40, low, low, low],
+            [35, high, high, high],
+          ]),
+          min: low,
+          mean: (low + high) / 2,
+          max: high,
+          latest: high,
+        });
+        // The thermometer comes first, the reverse of the cards' order.
+        return fixtures.measurementReport(range, [
+          series(thermometer.id, "°C", 18, 22),
+          series(powerMeter.id, "W", 100, 300),
+        ]);
+      },
+    });
+
+    await screen.findByRole("heading", { level: 2, name: "Measurements" });
+    expect(
+      await within(cardOf(powerMeter.name)).findByRole("img", {
+        name: "Last 24 hours: 100–300 W",
+      }),
+    ).toBeVisible();
+    expect(
+      within(cardOf(thermometer.name)).getByRole("img", { name: "Last 24 hours: 18–22 °C" }),
+    ).toBeVisible();
+  });
+});
+
+describe("a sparkline after a failed refresh", () => {
+  it("is removed when the next minute's statistics cannot be read", async () => {
+    const { api } = renderDashboard({
+      "GET /api/monitored": monitored(),
+      "GET /api/measurements": powerReport,
+    });
+    const card = await waitForCard();
+    expect(await within(card).findByRole("img", { name: /^Last 24 hours/ })).toBeVisible();
+
+    api.fail("GET /api/measurements", 503);
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+    await waitFor(() =>
+      expect(within(card).queryByRole("img", { name: /^Last 24 hours/ })).not.toBeInTheDocument(),
+    );
+  });
+});
+
+describe("the sparkline's time axis", () => {
+  it("places each bucket by its own start and end, the last one ending at the right edge", async () => {
+    renderDashboard({
+      "GET /api/monitored": monitored(),
+      "GET /api/measurements": (call) => {
+        const range = rangeOf(call);
+        return fixtures.measurementReport(range, [
+          {
+            entity_id: powerMeter.id,
+            unit: "W",
+            period: "5minute",
+            // One bucket from 60 to 55 minutes before the end, one covering the last 5 minutes.
+            buckets: fixtures.bucketsBefore(range.end, "5minute", [
+              [60, 100, 100, 100],
+              [5, 200, 200, 200],
+            ]),
+            min: 100,
+            mean: 150,
+            max: 200,
+            latest: 200,
+          },
+        ]);
+      },
+    });
+    const sparkline = await within(await waitForCard()).findByRole("img", {
+      name: /^Last 24 hours/,
+    });
+
+    const xs = [...sparkline.querySelectorAll('polyline[data-segment="mean"]')].flatMap((line) =>
+      (line.getAttribute("points") ?? "")
+        .trim()
+        .split(/[\s,]+/)
+        .filter((_, index) => index % 2 === 0)
+        .map(Number),
+    );
+    // The chart is 1000 units wide for 24 hours: 60 minutes before the end is 1000 × 23/24.
+    const width = 1000;
+    expect(Math.min(...xs)).toBeCloseTo((width * (24 * 60 - 60)) / (24 * 60), 0);
+    expect(Math.max(...xs)).toBeCloseTo(width, 0);
+  });
+});

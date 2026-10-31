@@ -11,7 +11,7 @@ import {
   unwrap,
 } from "./api/client";
 import { AgentSlot } from "./components/AgentSlot";
-import { Catalog, deviceName, lightName } from "./components/Catalog";
+import { Catalog, deviceName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { HistoryDialog } from "./components/History";
 import { MeasurementDialog } from "./components/Measurements";
@@ -90,7 +90,7 @@ async function sendDeviceCommand(
   entity: Schemas["MonitoredEntity"],
   command: DeviceCommand,
 ): Promise<CommandResult> {
-  const name = lightName(entity);
+  const name = deviceName(entity);
   const { data, error, response } = await api.POST("/api/devices/{entity_id}/command", {
     params: { path: { entity_id: entity.id } },
     body: { command, sender: { kind: "dashboard" } },
@@ -304,7 +304,7 @@ export function App() {
     ) ?? null;
   const names = new Map(
     [...(snapshot?.catalog?.entities ?? []), ...(snapshot?.monitored.entities ?? [])].map(
-      (entity) => [entity.id, lightName(entity)],
+      (entity) => [entity.id, deviceName(entity)],
     ),
   );
 

@@ -38,13 +38,9 @@ class FakeClock:
 
 
 class FakeSocket:
-    """A scripted Home Assistant websocket that records every frame the adapter sends.
-
-    It answers each read by its command type, so request order does not matter. `failing`
-    names command types that get an error result; `silent` names those answered only after
-    the receive times out. Like Home Assistant, it refuses a request
-    whose ID does not exceed every earlier ID on the connection.
-    """
+    """A scripted Home Assistant websocket that records every frame the adapter sends and
+    answers by command type. `failing` types get an error result, `silent` types answer after
+    the receive times out; like Home Assistant, it refuses a non-increasing request ID."""
 
     def __init__(
         self,
