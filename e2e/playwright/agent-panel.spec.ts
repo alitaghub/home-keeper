@@ -199,6 +199,15 @@ test("changes nothing when you reject a proposal, and says so", async ({ page })
   await expect(deskCard(page)).toBeVisible();
 });
 
+/** The proof's Compose arguments, which it passes as a JSON list of strings. */
+function parseComposeArgs(raw: string): string[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed) || !parsed.every((arg): arg is string => typeof arg === "string")) {
+    throw new Error(`E2E_COMPOSE_ARGS is not a JSON list of strings: ${raw}`);
+  }
+  return parsed;
+}
+
 test("reports an unreachable controller after you approve, while the card keeps the real state", async ({
   page,
 }) => {
@@ -207,8 +216,9 @@ test("reports an unreachable controller after you approve, while the card keeps 
   // The proof's Compose command, so the test can stop the controller mid-approval.
   const composeArgs = process.env.E2E_COMPOSE_ARGS;
   test.skip(!composeArgs, "E2E_COMPOSE_ARGS is not set: run through compose_agent_panel_proof.py");
+  const composeBase = parseComposeArgs(composeArgs ?? "[]");
   const compose = (...args: string[]) =>
-    execFileSync("docker", ["compose", ...JSON.parse(composeArgs ?? "[]"), ...args], {
+    execFileSync("docker", ["compose", ...composeBase, ...args], {
       stdio: "inherit",
       timeout: 60_000,
     });

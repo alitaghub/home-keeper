@@ -90,7 +90,11 @@ export function createFakeAegra({
   let nextRunError: string | null = null;
   // Set, the next run pauses after its first text chunk until this promise settles.
   let streamGate: Promise<void> | null = null;
-  const holds: { method: string; path: string; held: Promise<void> }[] = [];
+  const holds: { method: string; path: string | RegExp; held: Promise<void> }[] = [];
+  // One-shot statuses for single requests, such as a chat's state.
+  const refusals: { method: string; path: string; status: number }[] = [];
+  const matches = (pattern: string | RegExp, path: string) =>
+    typeof pattern === "string" ? pattern === path : pattern.test(path);
   let clock = Date.parse("2026-10-30T09:00:00Z");
   let counter = 0;
   const now = () => {
@@ -403,7 +407,9 @@ export function createFakeAegra({
     const raw = await request.text();
     const body: unknown = raw ? JSON.parse(raw) : undefined;
     requests.push({ method: request.method, path, body });
-    const hold = holds.find((entry) => entry.method === request.method && entry.path === path);
+    const hold = holds.find(
+      (entry) => entry.method === request.method && matches(entry.path, path),
+    );
     if (hold) {
       // A held request still ends when its caller aborts it, as a real fetch does.
       const signal = init?.signal ?? request.signal;
@@ -417,6 +423,13 @@ export function createFakeAegra({
     }
     if (failure === "network") throw new TypeError("Failed to fetch");
     if (failure !== null) return new Response("Bad Gateway", { status: failure });
+    const refusal = refusals.find(
+      (entry) => entry.method === request.method && entry.path === path,
+    );
+    if (refusal) {
+      refusals.splice(refusals.indexOf(refusal), 1);
+      return json({ detail: "Refused" }, refusal.status);
+    }
     return route(request.method, path, body);
   };
 
@@ -439,8 +452,12 @@ export function createFakeAegra({
     errorNextRun: (message: string) => {
       nextRunError = message;
     },
+    /** Answers the next request to `path` with `status`. */
+    failNext: (method: string, path: string, status: number) => {
+      refusals.push({ method, path, status });
+    },
     /** Keeps requests to `path` unanswered until the returned function runs. */
-    hold: (method: string, path: string): (() => void) => {
+    hold: (method: string, path: string | RegExp): (() => void) => {
       let release = () => {};
       const held = new Promise<void>((resolve) => {
         release = resolve;

@@ -19,8 +19,6 @@
       "linter": {
         "rules": {
           "a11y": {
-            // The load-earlier slot is a `display: contents` wrapper that only tracks focus.
-            "noStaticElementInteractions": "off",
             // The streaming indicator is a labelled span, as upstream ships it.
             "useAriaPropsSupportedByRole": "off"
           }

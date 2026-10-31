@@ -60,7 +60,8 @@ export function ApprovalScope({
   const interrupt = useLangGraphInterruptState();
   const sendCommand = useLangGraphSendCommand();
   const lastParts = useAuiState((s) => s.thread.messages.at(-1)?.content);
-  const actions = useMemo(() => parseApproval(interrupt?.value), [interrupt]);
+  const approval = useMemo(() => parseApproval(interrupt?.value), [interrupt]);
+  const actions = approval?.kind === "actions" ? approval.actions : null;
   const [answers, setAnswers] = useState<Answers>({
     interrupt: undefined,
     decisions: [],
@@ -92,8 +93,20 @@ export function ApprovalScope({
     latest.current = { interrupt, decisions: next, error: null };
     setAnswers(latest.current);
     if (!next.every(isDecided)) return;
-    // assistant-ui types a resume as a string; the stream callback decodes it.
-    sendCommand({ resume: JSON.stringify(resumeFor(next)) }).catch(reopen);
+    send(next);
+  };
+
+  // assistant-ui types a resume as a string; the stream callback decodes it.
+  const send = (all: readonly Decision[]) =>
+    sendCommand({ resume: JSON.stringify(resumeFor(all)) }).catch(reopen);
+
+  const rejectAll = () => {
+    if (approval?.kind !== "unreadable") return;
+    if (latest.current.interrupt === interrupt && latest.current.decisions.length) return;
+    const all = Array.from({ length: approval.count }, (): Decision => "reject");
+    latest.current = { interrupt, decisions: all, error: null };
+    setAnswers(latest.current);
+    send(all);
   };
 
   // The interrupt is still open after a failed resume: its cards come back, undecided.
@@ -122,6 +135,9 @@ export function ApprovalScope({
   return (
     <ApprovalsContext.Provider value={value}>
       {children}
+      {approval?.kind === "unreadable" && !decisions.length && (
+        <UnreadableApproval error={current?.error ?? null} onReject={rejectAll} />
+      )}
       {unplaced.length > 0 && (
         <div className="grid gap-2 border-t p-3">
           {unplaced.map((entry) => (
@@ -166,6 +182,37 @@ function ApprovalCard({ entry }: { entry: Pending }) {
         </Button>
       </div>
     </fieldset>
+  );
+}
+
+/** A change the agent proposed in a form the panel cannot read; it can only be rejected. */
+function UnreadableApproval({ error, onReject }: { error: string | null; onReject: () => void }) {
+  return (
+    <div className="border-t p-3">
+      <fieldset
+        aria-label="Proposed changes"
+        className="grid min-w-0 gap-3 rounded-lg border bg-card p-3"
+      >
+        <p className="text-sm">
+          The agent proposed a change the dashboard cannot show. Reject it to continue.
+        </p>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label="Reject the proposed changes"
+            onClick={onReject}
+          >
+            Reject
+          </Button>
+        </div>
+      </fieldset>
+    </div>
   );
 }
 

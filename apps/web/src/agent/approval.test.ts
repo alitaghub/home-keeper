@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { describeAction, type ProposedAction, parseApproval, resumeFor } from "./approval";
+import {
+  type Approval,
+  describeAction,
+  type ProposedAction,
+  parseApproval,
+  resumeFor,
+} from "./approval";
 
 // The interrupt value HumanInTheLoopMiddleware raises for the agent's approval tools
 // (apps/agent/src/home_keeper_agent/graph.py), the shape the Telegram bot parses too.
@@ -27,13 +33,16 @@ describe("parseApproval", () => {
       { name: "turn_on", args: { entity_id: "switch.kettle", brightness_percent: null } },
     );
 
-    expect(parseApproval(value)).toEqual<ProposedAction[]>([
-      { name: "monitor", entityId: "light.hue_desk" },
-      { name: "stop_monitoring", entityId: "switch.kettle" },
-      { name: "turn_off", entityId: "light.hue_reading" },
-      { name: "turn_on", entityId: "light.hue_desk", brightnessPercent: 30 },
-      { name: "turn_on", entityId: "switch.kettle" },
-    ]);
+    expect(parseApproval(value)).toEqual<Approval>({
+      kind: "actions",
+      actions: [
+        { name: "monitor", entityId: "light.hue_desk" },
+        { name: "stop_monitoring", entityId: "switch.kettle" },
+        { name: "turn_off", entityId: "light.hue_reading" },
+        { name: "turn_on", entityId: "light.hue_desk", brightnessPercent: 30 },
+        { name: "turn_on", entityId: "switch.kettle" },
+      ],
+    });
   });
 
   const monitorDesk = request({ name: "monitor", args: { entity_id: "light.hue_desk" } });
@@ -44,6 +53,11 @@ describe("parseApproval", () => {
     ["a string", "approve?"],
     ["an empty object", {}],
     ["no actions", { action_requests: [], review_configs: [] }],
+  ])("reads %s as no approval", (_, value) => {
+    expect(parseApproval(value)).toBeNull();
+  });
+
+  it.each<[string, unknown]>([
     ["a tool the agent cannot get approved", request({ name: "execute", args: { command: "ls" } })],
     ["an action without an entity", request({ name: "monitor", args: {} })],
     ["a non-text entity", request({ name: "turn_off", args: { entity_id: 7 } })],
@@ -69,8 +83,8 @@ describe("parseApproval", () => {
         review_configs: [{ action_name: "monitor", allowed_decisions: ["approve"] }],
       },
     ],
-  ])("rejects %s", (_, value) => {
-    expect(parseApproval(value)).toBeNull();
+  ])("reads %s as an approval it cannot show, so it can still be rejected", (_, value) => {
+    expect(parseApproval(value)).toEqual<Approval>({ kind: "unreadable", count: 1 });
   });
 });
 

@@ -1,7 +1,4 @@
-"""Container entry point: write Aegra's config, pass on its database password, run `aegra serve`.
-
-The browser reaches Aegra on the dashboard's own origin, so CORS allows no origin.
-"""
+"""Container entry point: write Aegra's config, pass on its database password, run `aegra serve`."""
 
 import json
 import os

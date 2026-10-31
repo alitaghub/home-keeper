@@ -498,4 +498,126 @@ describe("AgentPanel", () => {
       expect(link.getAttribute("href")).toMatch(/docs\/agent\.md/);
     },
   );
+
+  it("restores a chat's tool calls with their results after a reload", async () => {
+    const result = "Control: on\n- light.hue_desk: on";
+    const first = renderPanel(({ question }) =>
+      question
+        ? [{ tool: { name: "list_monitored", args: {} }, result }, { say: "The desk lamp is on." }]
+        : [],
+    );
+    await ask(first.user, "Which lights are on?");
+    await within(panel()).findByText("The desk lamp is on.");
+    first.view.unmount();
+
+    const second = mountPanel();
+
+    await within(panel()).findByText("The desk lamp is on.");
+    await second.user.click(within(panel()).getByRole("button", { name: /list_monitored/ }));
+    expect(await within(panel()).findByText(/Control: on/)).toBeVisible();
+  });
+
+  it("stops a streaming answer without an error and takes the next question", async () => {
+    const { user } = renderPanel();
+    const release = aegra.pauseNextStream();
+    await ask(user, "Which lights are on?");
+    await waitFor(() => expect(panel()).toHaveTextContent("Reply: Which l"));
+
+    await user.click(within(panel()).getByRole("button", { name: "Stop generating" }));
+    release();
+    await settle();
+
+    expect(within(panel()).queryByRole("alert")).toBeNull();
+    expect(panel()).not.toHaveTextContent("Reply: Which lights are on?");
+    await ask(user, "Is the desk lamp on?");
+    expect(await within(panel()).findByText("Reply: Is the desk lamp on?")).toBeInTheDocument();
+  });
+
+  it("keeps a failed question and its error in its own chat when you switch chats", async () => {
+    const { user } = renderPanel();
+    await ask(user, "Which lights are on?");
+    await within(panel()).findByText("Reply: Which lights are on?");
+    const release = aegra.hold("POST", /\/runs\/stream$/);
+    await ask(user, "Is the desk lamp on?");
+    await waitFor(() => expect(aegra.requestsTo("POST", /\/runs\/stream$/)).toHaveLength(2));
+    const threadId = aegra.runs[0]?.threadId;
+
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(within(panel()).getByRole("textbox")).toHaveValue(""));
+    // The first chat's run fails while the new chat is open.
+    aegra.failNext("POST", `/threads/${threadId}/runs/stream`, 409);
+    release();
+    await settle();
+    await settle();
+
+    expect(within(panel()).queryByRole("alert")).toBeNull();
+    expect(within(panel()).getByRole("textbox")).toHaveValue("");
+
+    await openRecent(user, "Which lights are on?");
+    expect(await within(panel()).findByRole("alert")).toBeVisible();
+    await waitFor(() =>
+      expect(within(panel()).getByRole("textbox")).toHaveValue("Is the desk lamp on?"),
+    );
+  });
+
+  it("offers to reject a proposed change the panel cannot read, and resumes with a reject", async () => {
+    const { user } = renderPanel(({ question, resume }) => {
+      if (question === "Dim the desk lamp") {
+        return [
+          {
+            propose: [
+              { name: "turn_on", args: { entity_id: "light.hue_desk", brightness_percent: "30" } },
+            ],
+          },
+        ];
+      }
+      return resume === undefined ? [] : [{ say: "Left the desk lamp as it was." }];
+    });
+    await ask(user, "Dim the desk lamp");
+
+    await user.click(
+      await within(panel()).findByRole("button", { name: "Reject the proposed changes" }),
+    );
+
+    expect(await within(panel()).findByText("Left the desk lamp as it was.")).toBeInTheDocument();
+    expect(aegra.runs.at(-1)?.body.command).toEqual({
+      resume: { decisions: [{ type: "reject" }] },
+    });
+  });
+
+  it("says a saved chat could not load, takes no question, and loads it on Try again", async () => {
+    aegra = createFakeAegra();
+    installFakeAegra(aegra);
+    const saved = aegra.seed({
+      metadata: { source: "dashboard", thread_name: "Which lights are on?" },
+      messages: [human("Which lights are on?"), ai("None of them.")],
+    });
+    localStorage.setItem("home-keeper.agent-thread", saved.thread_id);
+    aegra.failNext("GET", `/threads/${saved.thread_id}/state`, 403);
+    const { user } = mountPanel();
+
+    expect(await within(panel()).findByRole("alert")).toHaveTextContent(
+      "This chat could not be loaded.",
+    );
+    expect(within(panel()).queryByRole("textbox")).toBeNull();
+
+    await user.click(within(panel()).getByRole("button", { name: "Try again" }));
+
+    expect(await within(panel()).findByText("None of them.")).toBeInTheDocument();
+    expect(within(panel()).getByRole("textbox")).toBeEnabled();
+  });
+
+  it("connects once the agent answers again after Try again", async () => {
+    aegra = createFakeAegra();
+    aegra.fail(502);
+    installFakeAegra(aegra);
+    const { user } = mountPanel();
+    await waitFor(() => expect(panel()).toHaveTextContent(NOT_RUNNING), { timeout: 3000 });
+    aegra.fail(null);
+
+    await user.click(within(panel()).getByRole("button", { name: "Try again" }));
+
+    await ask(user, "Which lights are on?");
+    expect(await within(panel()).findByText("Reply: Which lights are on?")).toBeInTheDocument();
+  });
 });

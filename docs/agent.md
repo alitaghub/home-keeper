@@ -85,19 +85,25 @@ LangGraph Studio and other local tools.
 
 - Answers stream in as the agent writes them. When the agent uses a tool, the
   panel shows the call collapsed; open it to see the arguments and the result.
+  **Stop generating** ends an answer early.
+- When a question fails, the panel says so and puts the question back in that
+  chat's message box, so you can send it again.
 - When the agent proposes a device change (`monitor`, `stop_monitoring`,
   `turn_on`, `turn_off`), a card on that call names the device and the action,
   with **Approve** and **Reject**. The device name comes from the dashboard; a
   device the dashboard does not know shows its entity id. When one proposal
   holds several changes, you decide each one; the agent continues once all of
-  them have a decision. A card disappears once you decide.
+  them have a decision. A card disappears once you decide. If the proposal is in
+  a form the dashboard cannot show, the panel offers only **Reject**.
 - After you approve a command, the agent reports what Home Keeper observed (see
   [control.md](control.md)). The device card on the page changes on its next
   refresh, never before Home Keeper sees the change.
 - **Recent chats** lists the chats you started in the dashboard, newest first,
   titled by their first question. Telegram conversations do not appear.
   **New chat** starts another; **Delete chat** deletes the open chat from the
-  agent's database. A reload reopens the chat you had open.
+  agent's database. A reload reopens the chat you had open. If a chat's history
+  cannot be loaded, the panel says so and offers **Try again** instead of a
+  message box.
 
 Threads are stored in the agent's own database in the shared Postgres, so a
 conversation survives a restart.

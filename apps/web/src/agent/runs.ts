@@ -1,7 +1,9 @@
 import type { LangChainMessage } from "@assistant-ui/react-langgraph";
 
-/** A run as the panel sees it: its start, and its end with whether it failed. */
+/** A run as the panel sees it: its start, and its end with whether it failed. A chat's
+ * history that fails to load counts as a failed run of that chat. */
 export type RunEvent =
+  | { type: "load-failed"; threadId: string }
   | { type: "start"; threadId: string | undefined }
   | {
       type: "end";

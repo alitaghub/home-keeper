@@ -4,17 +4,22 @@
 export type Decision = "approve" | "reject";
 
 const ACTIONS = ["monitor", "stop_monitoring", "turn_on", "turn_off"] as const;
+type ActionName = (typeof ACTIONS)[number];
 
 // Only turning a light on takes a brightness.
 export type ProposedAction =
-  | { name: "monitor" | "stop_monitoring" | "turn_off"; entityId: string }
+  | { name: Exclude<ActionName, "turn_on">; entityId: string }
   | { name: "turn_on"; entityId: string; brightnessPercent?: number };
+
+/** An approval interrupt: its actions, or how many it holds when one cannot be read. */
+export type Approval =
+  | { kind: "actions"; actions: ProposedAction[] }
+  | { kind: "unreadable"; count: number };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isAction = (name: unknown): name is ProposedAction["name"] =>
-  ACTIONS.some((action) => action === name);
+const isAction = (name: unknown): name is ActionName => ACTIONS.some((action) => action === name);
 
 function parseAction(request: unknown): ProposedAction | null {
   if (!isRecord(request) || !isAction(request.name) || !isRecord(request.args)) return null;
@@ -34,19 +39,21 @@ const isReviewOf = (review: unknown, action: ProposedAction) =>
   review.allowed_decisions.includes("approve") &&
   review.allowed_decisions.includes("reject");
 
-/** The proposed actions of an approval interrupt, or null for any other interrupt value. */
-export function parseApproval(value: unknown): ProposedAction[] | null {
+/** An approval interrupt's proposed actions, or null for any other interrupt value. */
+export function parseApproval(value: unknown): Approval | null {
   if (!isRecord(value)) return null;
   const { action_requests: requests, review_configs: reviews } = value;
   if (!Array.isArray(requests) || requests.length === 0) return null;
-  if (!Array.isArray(reviews) || reviews.length !== requests.length) return null;
+  // The run waits for one decision per request, so even an unreadable one can be rejected.
+  const unreadable: Approval = { kind: "unreadable", count: requests.length };
+  if (!Array.isArray(reviews) || reviews.length !== requests.length) return unreadable;
   const actions: ProposedAction[] = [];
   for (const [index, request] of requests.entries()) {
     const action = parseAction(request);
-    if (!action || !isReviewOf(reviews[index], action)) return null;
+    if (!action || !isReviewOf(reviews[index], action)) return unreadable;
     actions.push(action);
   }
-  return actions;
+  return { kind: "actions", actions };
 }
 
 /** The resume value for an approval interrupt: one decision per action, in its order. */

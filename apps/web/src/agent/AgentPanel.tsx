@@ -106,14 +106,20 @@ function createAgent(): Agent {
   };
 
   const load: Agent["load"] = async (threadId) => {
-    const state = await client.threads.getState<unknown>(threadId);
-    return {
-      messages: parseMessages(state.values),
-      // A chat left waiting for approval shows its cards again.
-      interrupts: state.tasks.flatMap((task) =>
-        task.interrupts.map(({ value }) => ({ value, resumable: true })),
-      ),
-    };
+    try {
+      const state = await client.threads.getState<unknown>(threadId);
+      return {
+        messages: parseMessages(state.values),
+        // A chat left waiting for approval shows its cards again.
+        interrupts: state.tasks.flatMap((task) =>
+          task.interrupts.map(({ value }) => ({ value, resumable: true })),
+        ),
+      };
+    } catch (error) {
+      // The runtime only logs a failed load and shows the chat as empty.
+      runs.emit({ type: "load-failed", threadId });
+      throw error;
+    }
   };
 
   return { threadList: aegraThreadList(client), load, stream, runs };
@@ -132,6 +138,8 @@ export default function AgentPanel({
 }) {
   const [reachable, setReachable] = useState<Reachability>("checking");
   const [attempt, setAttempt] = useState(0);
+  // A fresh chat runtime, which reopens the saved chat.
+  const [session, setSession] = useState(0);
 
   // Without the agent profile, the web container answers /agent with an error.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` re-runs the check on "Try again"
@@ -156,7 +164,12 @@ export default function AgentPanel({
   return (
     <section id="agent-panel" aria-label="Agent" className={panelSlot}>
       {reachable === "up" ? (
-        <AgentChat names={names} close={close} />
+        <AgentChat
+          key={session}
+          names={names}
+          close={close}
+          onReload={() => setSession((n) => n + 1)}
+        />
       ) : (
         <>
           <PanelHeader>{close}</PanelHeader>
@@ -203,7 +216,15 @@ function PanelHeader({ children }: { children: ReactNode }) {
   );
 }
 
-function AgentChat({ names, close }: { names: ReadonlyMap<string, string>; close: ReactNode }) {
+function AgentChat({
+  names,
+  close,
+  onReload,
+}: {
+  names: ReadonlyMap<string, string>;
+  close: ReactNode;
+  onReload: () => void;
+}) {
   const [agent] = useState(createAgent);
   // Read once, before the runtime reports any thread change.
   const [savedThread] = useState(readThread);
@@ -214,6 +235,7 @@ function AgentChat({ names, close }: { names: ReadonlyMap<string, string>; close
     onThreadIdChange: saveThread,
     load: agent.load,
     stream: agent.stream,
+    unstable_allowCancellation: true,
   });
 
   return (
@@ -245,7 +267,7 @@ function AgentChat({ names, close }: { names: ReadonlyMap<string, string>; close
           {/* Hidden, not unmounted, so a half-decided approval keeps its decisions. */}
           <div hidden={recentOpen} className="flex min-h-0 flex-1 flex-col">
             <RunFailure />
-            <OpenChat names={names} />
+            <OpenChat names={names} onReload={onReload} />
           </div>
         </RunsContext.Provider>
       </TooltipProvider>
@@ -253,29 +275,44 @@ function AgentChat({ names, close }: { names: ReadonlyMap<string, string>; close
   );
 }
 
-/** Shows why the last question failed, gives an unsent question back, and keeps Recent's
- * activity order current after every run. */
+// A chat's id, or undefined for a chat Aegra has not created yet.
+type ChatId = string | undefined;
+
+/** Shows why a chat's last question failed, gives an unsent question back in that chat, and
+ * keeps Recent's activity order current after every run. A run goes on after you switch
+ * chats, so each failure stays with its own chat. */
 function RunFailure() {
   const aui = useAui();
   const runs = useContext(RunsContext);
-  const [failed, setFailed] = useState(false);
+  const threadId = useAuiState((s) => s.threadListItem.externalId);
+  // Each failed chat, with the question still to give back.
+  const [failures, setFailures] = useState<ReadonlyMap<ChatId, string | undefined>>(new Map());
   useEffect(
     () =>
       runs?.subscribe((event) => {
-        if (event.type === "start") return setFailed(false);
+        if (event.type === "load-failed") return;
+        if (event.type === "start") {
+          // A failure before Aegra made the chat belongs to whichever new chat runs next.
+          return setFailures((all) => without(all, event.threadId, undefined));
+        }
         void aui
           .threads()
           .reload()
           .catch(() => {});
         // A failed resume shows its error on the approval cards instead.
         if (!event.failed || event.resume) return;
-        setFailed(true);
-        const composer = aui.composer();
-        if (event.unsent && !composer.getState().text) composer.setText(event.unsent);
+        setFailures((all) => new Map(all).set(event.threadId, event.unsent));
       }),
     [aui, runs],
   );
-  if (!failed) return null;
+  const unsent = failures.get(threadId);
+  useEffect(() => {
+    if (unsent === undefined) return;
+    const composer = aui.composer();
+    if (!composer.getState().text) composer.setText(unsent);
+    setFailures((all) => new Map(all).set(threadId, undefined));
+  }, [aui, threadId, unsent]);
+  if (!failures.has(threadId)) return null;
   return (
     <p
       role="alert"
@@ -284,6 +321,12 @@ function RunFailure() {
       {RUN_FAILED}
     </p>
   );
+}
+
+function without<K, V>(map: ReadonlyMap<K, V>, ...keys: K[]): ReadonlyMap<K, V> {
+  const rest = new Map(map);
+  for (const key of keys) rest.delete(key);
+  return rest;
 }
 
 function RestoreThread({
@@ -311,8 +354,38 @@ function RestoreThread({
   return null;
 }
 
-function OpenChat({ names }: { names: ReadonlyMap<string, string> }) {
+function OpenChat({
+  names,
+  onReload,
+}: {
+  names: ReadonlyMap<string, string>;
+  onReload: () => void;
+}) {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const externalId = useAuiState((s) => s.threadListItem.externalId);
+  const runs = useContext(RunsContext);
+  const [unloaded, setUnloaded] = useState<string | null>(null);
+  useEffect(
+    () =>
+      runs?.subscribe((event) => {
+        if (event.type === "load-failed") setUnloaded(event.threadId);
+      }),
+    [runs],
+  );
+  // Without its history, the chat takes no question: the agent would answer from turns
+  // you cannot see.
+  if (unloaded !== null && unloaded === externalId) {
+    return (
+      <div className="grid content-start gap-3 p-4 text-sm" role="alert">
+        <p>This chat could not be loaded.</p>
+        <p>
+          <Button variant="outline" size="sm" onClick={onReload}>
+            Try again
+          </Button>
+        </p>
+      </div>
+    );
+  }
   return (
     // Keyed by the chat, so an approval never shows in another chat.
     <ApprovalScope key={threadId} names={names}>
