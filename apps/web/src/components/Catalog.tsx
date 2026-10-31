@@ -92,7 +92,7 @@ export function Catalog({
             )}
           </p>
         )}
-        {!!supported.length && !kinds.length && (
+        {!!query.trim() && !kinds.length && (
           <p className="text-sm text-muted-foreground">
             {found.length ? "No supported devices match" : "No devices match"} “{query.trim()}”.
           </p>

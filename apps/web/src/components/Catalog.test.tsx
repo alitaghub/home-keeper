@@ -96,4 +96,26 @@ describe("catalog on the Setup tab", () => {
     expect(screen.getByText(/^No devices match “zzz”/)).toBeInTheDocument();
     expect(screen.queryByText(/No supported devices match/)).toBeNull();
   });
+
+  it("still says what a search found when the home has no supported devices", async () => {
+    render(
+      <Catalog
+        entities={[ungroupedSensor]}
+        homeAssistantUrl={null}
+        selected={[]}
+        onToggle={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    const search = screen.getByRole("searchbox", { name: "Search devices" });
+
+    await user.type(search, "sensor");
+    expect(screen.getByText(/No supported devices match “sensor”/)).toBeInTheDocument();
+    expect(screen.queryByText(/^No devices match/)).toBeNull();
+
+    await user.clear(search);
+    await user.type(search, "zzz");
+    expect(screen.getByText(/^No devices match “zzz”/)).toBeInTheDocument();
+    expect(screen.queryByText(/No supported devices match/)).toBeNull();
+  });
 });
