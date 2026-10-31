@@ -91,8 +91,9 @@ also need the [`control` profile](control.md).
 - A proposal saved by an older version, such as one for `turn_on_light`, is no
   longer accepted. The bot says the result is uncertain; use `/new` to continue.
 
-Telegram history is separate from browser chat and from other family members'
-conversations. Browser chat still runs at <http://localhost:3000>. Anyone who can
+Telegram history is separate from the dashboard's agent panel and from other family
+members' conversations; the panel's **Recent chats** lists only chats started in the
+dashboard. Anyone who can
 reach the existing local Aegra API can still inspect threads, as described in
 [the agent limits](agent.md#limits).
 
@@ -119,7 +120,7 @@ Compose waits for the agent to become healthy, then starts the bot process.
 The bot has no Compose healthcheck, so `up --wait` does not prove that Telegram
 polling works. Send `/help` privately to verify it after setup.
 
-Stopping only `telegram` leaves browser chat and the dashboard running. Normal
+Stopping only `telegram` leaves the dashboard and its agent panel running. Normal
 `down` keeps the bot's state and Aegra's conversations, both in the shared
 Postgres. `down --volumes` deletes them along with the stack's other saved data.
 
@@ -167,7 +168,7 @@ text, without interpreting their HTML or Markdown.
 
 Your questions and replies, including home details in the answers, pass through
 Telegram. Questions and tool results also reach your configured model provider,
-as they do in browser chat. Home Assistant credentials and model credentials
+as they do in the dashboard's agent panel. Home Assistant credentials and model credentials
 are not passed to the bot. See [security.md](security.md).
 
 ## Manual real-bot check

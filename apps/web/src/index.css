@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-shimmer";
 
 /* The page follows the system setting; there is no theme switch. */
 @custom-variant dark (@media (prefers-color-scheme: dark));
@@ -114,3 +115,10 @@
     @apply bg-background text-foreground antialiased;
   }
 }
+
+/* Radix marks open and closed parts with data-state; the copied assistant-ui parts style both. */
+@custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
+
+@custom-variant data-closed (
+  &:where([data-state="closed"], [data-closed]:not([data-closed="false"]))
+);

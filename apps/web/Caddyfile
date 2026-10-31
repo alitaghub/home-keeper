@@ -10,6 +10,21 @@
 		reverse_proxy api:{$HOME_KEEPER_PORT}
 	}
 
+	# A request another website started from your browser; browsers mark them.
+	@crossSite header_regexp Sec-Fetch-Site ^(cross-site|same-site)$
+
+	# The agent panel's chat: Aegra, only with `--profile agent`. Without it the name `agent`
+	# does not resolve and Caddy answers 502, which the panel shows as "not running".
+	handle_path /agent/* {
+		# Aegra has no authentication and reads text/plain bodies as JSON, so a cross-site
+		# form post would reach it; the dashboard itself always calls from its own origin.
+		respond @crossSite 403
+		reverse_proxy agent:2026 {
+			# Answers stream as Server-Sent Events; each event goes out as it arrives.
+			flush_interval -1
+		}
+	}
+
 	handle {
 		# Only the dashboard's own scripts and styles may run, and it cannot be framed.
 		header {

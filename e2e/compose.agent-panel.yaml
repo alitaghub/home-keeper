@@ -1,0 +1,17 @@
+# The agent-panel proof: the real agent graph in Aegra with a deterministic model
+# (dashboard_graph.py). Layered over compose.demo.yaml by compose_agent_panel_proof.py;
+# relative paths resolve from the repository root, the project directory.
+services:
+  agent:
+    # Bypasses serve.py, so it passes on the database password itself.
+    command:
+      - sh
+      - -c
+      - >-
+        POSTGRES_PASSWORD=$$(cat /db-password/password) exec aegra serve
+        --host 0.0.0.0 --port 2026 --config /fixture/aegra.json
+    volumes:
+      - ./e2e/dashboard_graph.py:/fixture/dashboard_graph.py:ro
+      - ./e2e/agent-panel-aegra.json:/fixture/aegra.json:ro
+    environment:
+      PYTHONPATH: /fixture
