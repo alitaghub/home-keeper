@@ -14,11 +14,14 @@ The agent reaches Home Keeper only through the public API, the same one the
 dashboard uses. It can:
 
 - list the devices you monitor (`list_monitored`), with each one's kind
-  (`kind=light`, `kind=switch` or `kind=state` for any other device) and its
+  (`kind=light`, `kind=switch`, `kind=on_off` for another on/off device such as
+  a fan or a door sensor, or `kind=state` for any other device) and its
   current state in Home Assistant's words, such as "Heat"
-- report usage over a time range for lights, plugs and switches: on-time per
-  day and per hour, switch-ons, and unknown time. Lights also get their average
-  brightness; plugs and switches have none
+- report usage over a time range for lights, plugs, switches and other on/off
+  devices: on-time per day and per hour, switch-ons, and unknown time. Lights
+  also get their average brightness; plugs and switches have none. An on/off
+  device's line uses Home Assistant's words, such as
+  `"Open" for 3h 12m, ..., became "Open" 4 time(s)` for a door sensor
 - show the changes Home Assistant recorded, and whether Home Assistant can be reached
 - list the devices in Home Assistant, with their kind
 - start or stop monitoring a device (`monitor`, `stop_monitoring`),
@@ -27,7 +30,8 @@ dashboard uses. It can:
 - turn a monitored light, plug or switch on or off (`turn_on`, `turn_off`),
   after you approve it in the chat. A light can also take a brightness from 1
   to 100 percent; a plug or switch cannot. No other device can be switched: a
-  command for a `state` device answers "This device cannot be switched." This
+  command for an `on_off` or `state` device answers "This device cannot be
+  switched." This
   needs the `control` profile
   (see [control.md](control.md)). The agent reports what Home Keeper then
   observed: the change, no change within 5 seconds, a refusal from Home

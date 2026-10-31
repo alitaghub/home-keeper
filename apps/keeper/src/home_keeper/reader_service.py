@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, TypeAdapter, ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
-from home_keeper.demo import ENTITIES, DemoReplay
+from home_keeper.demo import ENTITIES, DemoReplay, demo_label
 from home_keeper.home_assistant import VISIBLE_ASCII, ConnectorError, HomeAssistantConnector
 from home_keeper.models import (
     CollectorError,
@@ -27,8 +27,10 @@ from home_keeper.models import (
     Reading,
 )
 from home_keeper.reader import (
+    RAW_WORDS,
     HistoryRow,
     LiveState,
+    OnOffWords,
     Reader,
     ReaderCatalog,
     ReaderFailure,
@@ -36,6 +38,7 @@ from home_keeper.reader import (
     ReaderHistory,
     ReaderStates,
     ReaderUnavailable,
+    ReaderWords,
 )
 from home_keeper.settings import ReaderSettings
 from home_keeper.tokens import load_token
@@ -180,6 +183,20 @@ class HomeAssistantBackend:
             for entity_id in entity_ids
         }
 
+    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
+        # Discovery reads the translations; a fresh catalog keeps them current.
+        _, sources = self._discover()
+        connector = self._connection()
+        words: dict[Identity, OnOffWords] = {}
+        for entity_id in entity_ids:
+            source = sources.get(entity_id)
+            if source is None:
+                words[entity_id] = RAW_WORDS
+                continue
+            on, off = connector.words(source)
+            words[entity_id] = OnOffWords(on=on, off=off)
+        return words
+
 
 class DemoBackend:
     """The synthetic home. The demo controller's commands switch its devices.
@@ -242,6 +259,15 @@ class DemoBackend:
             )
             result[entity_id] = [history_row(entity_id, state) for state in initial + during]
         return result
+
+    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
+        known = {entity["id"] for entity in ENTITIES}
+        return {
+            entity_id: OnOffWords(on=demo_label("on", entity_id), off=demo_label("off", entity_id))
+            if entity_id in known
+            else RAW_WORDS
+            for entity_id in entity_ids
+        }
 
     def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
         with self.replay.lock:
@@ -351,6 +377,12 @@ def create_reader_app(backend: ReaderBackend, service_token: str) -> FastAPI:
         return ReaderHistory(
             history=backend.history(entity_id or [], start.astimezone(UTC), end.astimezone(UTC))
         )
+
+    @app.get("/internal/words", response_model=ReaderWords)
+    def words(
+        entity_id: Annotated[list[Identity] | None, Query(max_length=MAX_STATE_IDS)] = None,
+    ) -> ReaderWords:
+        return ReaderWords(words=backend.words(entity_id or []))
 
     if isinstance(backend, DemoBackend):
         demo = backend

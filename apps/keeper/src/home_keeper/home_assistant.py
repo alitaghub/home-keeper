@@ -17,7 +17,8 @@ from typing import Any, NoReturn, Protocol, cast
 from urllib.parse import urlsplit
 
 import httpx
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import ConnectionClosed, PayloadTooBig, WebSocketException
+from websockets.frames import CloseCode
 from websockets.sync.client import connect
 
 from home_keeper.events import device_state, is_json_object
@@ -36,6 +37,11 @@ from home_keeper.models import (
 MAX_PAYLOAD = 8 * 1024 * 1024
 # Weeks of a busy light's history outgrow one registry list.
 HISTORY_MAX_PAYLOAD = 16 * 1024 * 1024
+# All answers of one history read together, across its per-device requests.
+HISTORY_MAX_TOTAL = 64 * 1024 * 1024
+# One history read, every request included, ends within this; below the API's wait for the
+# reader (READER_TIMEOUT_SECONDS), so a slow read fails as a timeout, not an unreachable reader.
+HISTORY_SECONDS = 8
 # Every entity's state in one answer, sensors included.
 STATES_MAX_PAYLOAD = 16 * 1024 * 1024
 MAX_REGISTRY_ROWS = MAX_CATALOG_ENTITIES
@@ -202,10 +208,9 @@ class HomeAssistantConnector:
             raise ConnectorError("configuration")
         if not source_entity_ids:
             return {}
-        # Home Assistant takes one `no_attributes` per request: lights and switches are read
-        # together with their attributes. Every other device's attributes are never kept, so
-        # each is read without them, in its own request: one busy sensor's history fills the
-        # payload cap alone, and must not take the other devices' history with it.
+        # One `no_attributes` per request: lights and switches share one, with attributes. Each
+        # other device has its own, without them, so one busy sensor cannot fill the others'.
+        deadline = time.monotonic() + HISTORY_SECONDS
         attributed = ("light", "switch")
         with_attributes = [i for i in source_entity_ids if device_kind_of(i) in attributed]
         requests = [(with_attributes, False)] if with_attributes else []
@@ -215,12 +220,14 @@ class HomeAssistantConnector:
             if device_kind_of(entity_id) not in attributed
         ]
         history: dict[str, list[DeviceState]] = {}
-        with self._session(HISTORY_MAX_PAYLOAD) as session:
+        with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL, deadline) as session:
             for entity_ids, no_attributes in requests:
                 result = session.request(
                     "history/history_during_period",
                     # Home Assistant answers a malformed history request with an error result.
                     failure="invalid_data",
+                    # Past it, the session's TimeoutError leaves as ConnectorError("timeout").
+                    deadline=deadline,
                     start_time=start.isoformat(),
                     end_time=end.isoformat(),
                     entity_ids=entity_ids,
@@ -243,36 +250,54 @@ class HomeAssistantConnector:
         return {entity_id: history[entity_id] for entity_id in source_entity_ids}
 
     @contextlib.contextmanager
-    def _session(self, max_size: int = MAX_PAYLOAD) -> Generator["Session"]:
-        """An authenticated WebSocket for read requests. Every failure inside, including the
-        caller's parsing, leaves as a safe ConnectorError code."""
+    def _session(
+        self,
+        max_size: int = MAX_PAYLOAD,
+        max_total: int | None = None,
+        deadline: float | None = None,
+    ) -> Generator["Session"]:
+        """An authenticated WebSocket for read requests, whose answers may total `max_total`
+        bytes. Connecting and authenticating end by `deadline`, a `time.monotonic()` value.
+        Every failure inside, including the caller's parsing, leaves as a safe ConnectorError
+        code."""
         try:
             with connect(
                 self._websocket_url,
-                open_timeout=self._timeout,
-                close_timeout=self._timeout,
+                open_timeout=self._wait(deadline),
+                close_timeout=self._wait(deadline),
                 max_size=max_size,
                 proxy=None,
                 logger=_WS_LOGGER,
             ) as socket:
-                if self._receive(socket, max_size).get("type") != "auth_required":
+                answer = self._receive(socket, max_size, self._wait(deadline))
+                if answer.get("type") != "auth_required":
                     raise ConnectorError("invalid_data")
                 socket.send(json.dumps({"type": "auth", "access_token": self._token}))
-                authentication = self._receive(socket, max_size).get("type")
+                authentication = self._receive(socket, max_size, self._wait(deadline)).get("type")
                 if authentication == "auth_invalid":
                     raise ConnectorError("authentication")
                 if authentication != "auth_ok":
                     raise ConnectorError("invalid_data")
-                yield Session(self, socket, max_size)
+                yield Session(self, socket, max_size, max_total)
         except Exception as error:
             _raise_safe(error)
+
+    def _wait(self, deadline: float | None) -> float:
+        """The connector's timeout, cut to what is left before `deadline`. Raises TimeoutError
+        once it has passed."""
+        if deadline is None:
+            return self._timeout
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError
+        return min(self._timeout, left)
 
     def _receive(
         self, socket: WebSocket, max_size: int = MAX_PAYLOAD, timeout: float | None = None
     ) -> dict[str, Any]:
         """One message, waiting at most `timeout`, else the connector's timeout."""
         raw = socket.recv(timeout=self._timeout if timeout is None else timeout)
-        if len(raw) > max_size:
+        if _size(raw) > max_size:
             raise ConnectorError("invalid_data")
         data = json.loads(raw)
         if not is_json_object(data):
@@ -416,6 +441,11 @@ class HomeAssistantConnector:
         """The state with its word, from the translations the latest discovery read."""
         return state.model_copy(update={"label": self._labels.of(source_entity_id, state.state)})
 
+    def words(self, source_entity_id: str) -> tuple[str, str]:
+        """A device's words for `on` and `off`, from the translations the latest discovery
+        read; the raw state where Home Assistant has none."""
+        return self._labels.of(source_entity_id, "on"), self._labels.of(source_entity_id, "off")
+
     def read_states(self, source_entity_ids: Sequence[str]) -> dict[str, DeviceState | None]:
         """The current state of each device, from one read of every state; None when Home
         Assistant has no such entity. The API checks the selection itself."""
@@ -481,6 +511,13 @@ def _raise_safe(error: Exception) -> NoReturn:
         raise ConnectorError("tls") from None
     if isinstance(error, TimeoutError):
         raise ConnectorError("timeout") from None
+    # An answer over the size limit: websockets closes with 1009, "message too big".
+    if isinstance(error, PayloadTooBig) or (
+        isinstance(error, ConnectionClosed)
+        and CloseCode.MESSAGE_TOO_BIG
+        in {close.code for close in (error.rcvd, error.sent) if close is not None}
+    ):
+        raise ConnectorError("invalid_data") from None
     if isinstance(error, (OSError, WebSocketException)):
         raise ConnectorError("connection") from None
     raise ConnectorError("invalid_data") from None
@@ -490,9 +527,15 @@ class Session:
     """Read requests on one authenticated WebSocket. Home Assistant needs each request's ID to
     be higher than the last, so the session numbers them from 1."""
 
-    def __init__(self, connector: HomeAssistantConnector, socket: WebSocket, max_size: int):
+    def __init__(
+        self,
+        connector: HomeAssistantConnector,
+        socket: WebSocket,
+        max_size: int,
+        max_total: int | None = None,
+    ):
         self._connector = connector
-        self._socket = socket
+        self._socket = _Counted(socket, max_total)
         self._max_size = max_size
         self._ids = itertools.count(1)
 
@@ -508,25 +551,40 @@ class Session:
             raise TimeoutError
         request_id = next(self._ids)
         self._socket.send(json.dumps({**fields, "id": request_id, "type": command}))
-        while True:
-            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
-            # The session is the connector's companion and shares its size-checked receive.
-            response = self._connector._receive(self._socket, self._max_size, timeout)  # pyright: ignore[reportPrivateUsage]
-            answered = response.get("id")
-            # A late answer to an earlier request that timed out is not this one's.
-            if (
-                response.get("type") == "result"
-                and isinstance(answered, int)
-                and not isinstance(answered, bool)
-                and answered < request_id
-            ):
-                continue
-            break
-        if response.get("type") != "result" or answered != request_id:
+        timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+        # The session is the connector's companion and shares its size-checked receive. No
+        # request follows a timed-out one, so the answer is this request's or invalid.
+        response = self._connector._receive(self._socket, self._max_size, timeout)  # pyright: ignore[reportPrivateUsage]
+        answered = response.get("id")
+        if response.get("type") != "result" or isinstance(answered, bool) or answered != request_id:
             raise ConnectorError("invalid_data")
         if response.get("success") is not True:
             raise ConnectorError(failure)
         return response.get("result")
+
+
+class _Counted:
+    """A socket that counts the bytes it receives, and fails past `max_total` of them."""
+
+    def __init__(self, socket: WebSocket, max_total: int | None) -> None:
+        self._socket = socket
+        self._max_total = max_total
+        self._received = 0
+
+    def send(self, message: str, /) -> None:
+        self._socket.send(message)
+
+    def recv(self, timeout: float | None = None) -> str | bytes:
+        raw = self._socket.recv(timeout=timeout)
+        self._received += _size(raw)
+        if self._max_total is not None and self._received > self._max_total:
+            raise ConnectorError("invalid_data")
+        return raw
+
+
+def _size(raw: str | bytes) -> int:
+    """A message's size in bytes; a text message is UTF-8 on the wire."""
+    return len(raw) if isinstance(raw, bytes) else len(raw.encode())
 
 
 def _light_or_switch_reason(
@@ -566,12 +624,9 @@ def _other_reason(  # noqa: PLR0911 -- one return per ordered check
 
 
 def _state_words(session: "Session") -> dict[tuple[str, str, str], str]:
-    """Home Assistant's translated state words in its own language, else English. A failed or
-    late translations read leaves no words, so every label falls back to the raw state.
-
-    The result is `{"resources": {key: word}}`, with keys
-    `component.<domain>.entity_component.<device class or _>.state.<state>`.
-    """
+    """Home Assistant's state words in its language, else English; none when the read fails
+    or is late, so labels fall back to raw states. The result is `{"resources": {key: word}}`,
+    keyed `component.<domain>.entity_component.<device class or _>.state.<state>`."""
     # The same failures `_session` turns into codes; here they only cost the language or the
     # words. An unknown language asks for English. TimeoutError is an OSError.
     failures = (ConnectorError, OSError, WebSocketException, ValueError)

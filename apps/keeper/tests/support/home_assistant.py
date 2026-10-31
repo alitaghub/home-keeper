@@ -7,6 +7,9 @@ from typing import Any, Self
 
 import httpx
 import pytest
+from websockets.client import ClientProtocol
+from websockets.frames import OP_TEXT
+from websockets.frames import Frame as WebSocketFrame
 
 from home_keeper.home_assistant import HomeAssistantConnector
 
@@ -17,6 +20,20 @@ type Handler = Callable[[httpx.Request], httpx.Response]
 
 # Registry reads: the scripted answer for each, whatever order the adapter asks in.
 REGISTRY_READS = ("config/entity_registry/list", "config/device_registry/list")
+
+
+class FakeClock:
+    """A clock the fake socket advances by the time each answer takes, so a slow Home Assistant
+    costs no real time. Patch it in for the adapter's `time` module."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class FakeSocket:
@@ -38,7 +55,13 @@ class FakeSocket:
         translations: dict[str, str] | None = None,
         failing: Iterable[str] = (),
         silent: Iterable[str] = (),
+        delays: dict[str, float] | None = None,
+        clock: FakeClock | None = None,
     ) -> None:
+        # Seconds each answer to a command type takes on `clock`: a receive that waits less
+        # times out (the answer arrives late); one that waits at least that long gets it.
+        self.delays = delays or {}
+        self.clock = clock
         self.messages: deque[Frame] = deque(
             [
                 {"type": "auth_required"},
@@ -73,6 +96,14 @@ class FakeSocket:
             return json.dumps(self._late.pop(0))
         assert self.messages, f"No scripted answer for {self.sent[-1:]}"
         message = self.messages.popleft()
+        if "slow" in message:
+            assert self.clock is not None, "A delay needs a clock"
+            if timeout is not None and message["slow"] > timeout:
+                self.clock.now += timeout
+                self._late.append(message["reply"])
+                raise TimeoutError
+            self.clock.now += message["slow"]
+            return json.dumps(message["reply"])
         if "late" in message:
             self.waits.append(timeout)
             self._late.append(message["late"])
@@ -98,7 +129,9 @@ class FakeSocket:
         reply = self._answer(identity, frame)
         if reply is None:
             return
-        if frame.get("type") in self.silent:
+        if frame.get("type") in self.delays:
+            self.messages.appendleft({"slow": self.delays[frame["type"]], "reply": reply})
+        elif frame.get("type") in self.silent:
             # Home Assistant never answers in time; the answer may still arrive late.
             self.messages.appendleft({"late": reply})
         else:
@@ -133,6 +166,41 @@ class FakeSocket:
 
     def close(self) -> None:
         pass
+
+
+class Utf8Socket(FakeSocket):
+    """A FakeSocket that sends UTF-8 JSON text frames, as Home Assistant does, without
+    escaping non-ASCII text. `answer_bytes` records the UTF-8 size of each result frame."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.answer_bytes: list[int] = []
+
+    def recv(self, timeout: float | None = None) -> str:
+        text = json.dumps(json.loads(super().recv(timeout)), ensure_ascii=False)
+        if json.loads(text).get("type") == "result":
+            self.answer_bytes.append(len(text.encode("utf-8")))
+        return text
+
+
+class ProtocolSocket(FakeSocket):
+    """A FakeSocket whose frames pass through the installed websockets library's real frame
+    parser and its `max_size`, with no network. Set `protocol` to the client protocol first;
+    a message over the limit raises the library's own close exception, as a real socket does."""
+
+    protocol: ClientProtocol
+
+    def recv(self, timeout: float | None = None) -> str:
+        raw = super().recv(timeout)
+        self.protocol.receive_data(WebSocketFrame(OP_TEXT, raw.encode()).serialize(mask=False))
+        events = self.protocol.events_received()
+        if self.protocol.parser_exc is not None:
+            self.protocol.receive_eof()
+            assert self.protocol.close_exc is not None
+            raise self.protocol.close_exc
+        [event] = events
+        assert isinstance(event, WebSocketFrame)
+        return bytes(event.data).decode()
 
 
 def install_socket(monkeypatch: pytest.MonkeyPatch, socket: FakeSocket) -> None:

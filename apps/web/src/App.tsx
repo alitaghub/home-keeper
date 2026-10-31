@@ -11,7 +11,7 @@ import {
   unwrap,
 } from "./api/client";
 import { AgentSlot } from "./components/AgentSlot";
-import { Catalog, lightName } from "./components/Catalog";
+import { Catalog, deviceName, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { HistoryDialog } from "./components/History";
 import { type DeviceCommand, Monitored } from "./components/Monitored";
@@ -595,7 +595,7 @@ export function App() {
           <HistoryDialog
             key={historyFor.id}
             entityId={historyFor.id}
-            name={lightName(historyFor)}
+            name={deviceName(historyFor)}
             onClose={() => setHistoryFor(null)}
           />
         )}

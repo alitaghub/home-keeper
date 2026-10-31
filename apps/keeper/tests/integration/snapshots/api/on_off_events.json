@@ -1,0 +1,54 @@
+{
+  "status": 200,
+  "body": {
+    "events": [
+      {
+        "device_kind": "on_off",
+        "entity_id": "door",
+        "id": "door@2026-10-12T09:59:50+00:00",
+        "new": {
+          "availability": "available",
+          "device_kind": "on_off",
+          "label": "Closed",
+          "last_changed": "2026-10-12T09:59:50+00:00",
+          "last_updated": "2026-10-12T09:59:50+00:00",
+          "state": "off"
+        },
+        "old": {
+          "availability": "available",
+          "device_kind": "on_off",
+          "label": "Open",
+          "last_changed": "2026-10-12T09:59:30+00:00",
+          "last_updated": "2026-10-12T09:59:30+00:00",
+          "state": "on"
+        },
+        "source_entity_id": "binary_sensor.front",
+        "time": "2026-10-12T09:59:50+00:00"
+      },
+      {
+        "device_kind": "on_off",
+        "entity_id": "door",
+        "id": "door@2026-10-12T09:59:30+00:00",
+        "new": {
+          "availability": "available",
+          "device_kind": "on_off",
+          "label": "Open",
+          "last_changed": "2026-10-12T09:59:30+00:00",
+          "last_updated": "2026-10-12T09:59:30+00:00",
+          "state": "on"
+        },
+        "old": {
+          "availability": "available",
+          "device_kind": "on_off",
+          "label": "Closed",
+          "last_changed": "2026-10-12T09:59:10+00:00",
+          "last_updated": "2026-10-12T09:59:10+00:00",
+          "state": "off"
+        },
+        "source_entity_id": "binary_sensor.front",
+        "time": "2026-10-12T09:59:30+00:00"
+      }
+    ],
+    "next_cursor": null
+  }
+}

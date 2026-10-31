@@ -28,7 +28,16 @@ EXPECTED = {
     "light.hue_room",
     "switch.smart_plug",
     "cover.garage_door",
+    "fan.ceiling_fan",
+    "binary_sensor.front_door",
     "sensor.ungrouped",
+}
+# The demo home's kinds beyond lights: the garage door is a generic `state` device, the fan and
+# the door sensor are on/off devices.
+OTHER_KINDS = {
+    "cover.garage_door": "state",
+    "fan.ceiling_fan": "on_off",
+    "binary_sensor.front_door": "on_off",
 }
 
 
@@ -115,13 +124,18 @@ def main() -> None:
         catalog = get("/api/catalog")["entities"]
         return (
             {entry["id"] for entry in catalog} == EXPECTED
-            # Two single lights, the smart plug and the garage door (a generic `state` device);
-            # the room group and the sensor, which has no device, are not.
-            and sum(entry["supported"] for entry in catalog) == 4
+            # Two single lights, the smart plug, the garage door (a generic `state` device), the
+            # ceiling fan and the front door sensor (on/off devices); the room group and the
+            # sensor, which has no device, are not.
+            and sum(entry["supported"] for entry in catalog) == 6
+            and {
+                entry["id"]: entry["device_kind"] for entry in catalog if entry["id"] in OTHER_KINDS
+            }
+            == OTHER_KINDS
             and get("/api/health")["status"] == "healthy"
         )
 
-    wait_until("six-entity catalog and healthy reader", ready)
+    wait_until("eight-entity catalog and healthy reader", ready)
     page, page_headers = fetch("/")
     assert "<html" in page.lower(), "Dashboard HTML not served"
     script = re.search(r'<script[^>]+src="(/assets/[^"]+\.js)"', page)

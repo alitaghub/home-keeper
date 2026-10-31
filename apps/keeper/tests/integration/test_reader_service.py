@@ -304,6 +304,7 @@ def test_unreachable_home_assistant_is_a_503_with_a_safe_code(
             ("/internal/catalog", {}),
             ("/internal/states", {"entity_id": "ha:hue"}),
             ("/internal/history", {"entity_id": "ha:hue", **WINDOW}),
+            ("/internal/words", {"entity_id": "ha:hue"}),
         ):
             response = client.get(path, params=params, headers=AUTH)
             assert response.status_code == 503, response.text
@@ -323,6 +324,7 @@ def test_unreachable_home_assistant_is_a_503_with_a_safe_code(
         "/internal/health",
         "/internal/catalog",
         "/internal/states?entity_id=ha:hue",
+        "/internal/words?entity_id=ha:hue",
         "/internal/history?entity_id=ha:hue&start=2026-10-13T09:00:00Z&end=2026-10-13T10:00:00Z",
     ],
 )
@@ -579,3 +581,74 @@ def test_history_of_a_state_device_carries_labels_and_is_read_without_attributes
     [frame] = history_frames(state_home)
     assert frame["entity_ids"] == ["climate.hall"]
     assert frame["no_attributes"] is True
+
+
+DOOR_WORDS = {
+    "component.binary_sensor.entity_component.door.state.on": "Open",
+    "component.binary_sensor.entity_component.door.state.off": "Closed",
+}
+
+
+@pytest.fixture
+def door_home(home: Home) -> Home:
+    """The home plus a door sensor with translated states and a fan with none."""
+    home.entities = [
+        *ENTITIES,
+        registry_entry("door", "binary_sensor.front", platform="demo", translation_key=None),
+        registry_entry("fan", "fan.ceiling", platform="demo", translation_key=None),
+    ]
+    home.translations = DOOR_WORDS
+    home.server.states["binary_sensor.front"] = entity_state(
+        "binary_sensor.front", "off", device_class="door"
+    )
+    home.server.states["fan.ceiling"] = entity_state("fan.ceiling", "on")
+    return home
+
+
+def test_words_gives_a_door_its_translated_words_and_raw_words_where_there_are_none(
+    reader: TestClient, door_home: Home
+) -> None:
+    # The catalog read teaches the reader each device's class and Home Assistant's words.
+    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+
+    response = reader.get(
+        "/internal/words",
+        params=[
+            ("entity_id", "ha:door"),
+            ("entity_id", "ha:fan"),
+            ("entity_id", "ha:gone"),
+        ],
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "words": {
+            "ha:door": {"on": "Open", "off": "Closed"},
+            # No translation, or no such device: the raw states.
+            "ha:fan": {"on": "on", "off": "off"},
+            "ha:gone": {"on": "on", "off": "off"},
+        }
+    }
+
+
+def test_http_reader_words_answers_every_requested_device_and_nothing_for_none(
+    reader: TestClient, door_home: Home, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+
+    def forward(request: httpx.Request) -> httpx.Response:
+        answer = reader.get(request.url.raw_path.decode(), headers=AUTH)
+        return httpx.Response(answer.status_code, content=answer.content)
+
+    transport = httpx.MockTransport(forward)
+    monkeypatch.setattr(reader_module.httpx, "Client", partial(httpx.Client, transport=transport))
+    http_reader = HttpReader("http://reader.internal", SERVICE_TOKEN)
+
+    words = http_reader.words(["ha:door", "ha:gone"])
+
+    assert {key: (value.on, value.off) for key, value in words.items()} == {
+        "ha:door": ("Open", "Closed"),
+        "ha:gone": ("on", "off"),
+    }
+    assert http_reader.words([]) == {}

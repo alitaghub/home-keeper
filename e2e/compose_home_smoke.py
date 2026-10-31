@@ -10,6 +10,11 @@ integration registers device-backed climate entities, which the catalog must lis
 `state` devices, and a monitored climate reading carries Home Assistant's own translated word
 for its state (from the real `frontend/get_translations` payload).
 
+Also proves on/off devices: Home Assistant's `demo` integration registers device-backed binary
+sensors with a device class (moisture, motion), which the catalog must list as supported
+`on_off` devices, and a monitored reading carries Home Assistant's translated word for its
+device class ("Wet", "Detected").
+
 Uses its own Compose project and ports, and deletes its volumes at the end.
 """
 
@@ -53,6 +58,12 @@ CLIMATE_LABELS = {
     "heat_cool": "Heat/Cool",
     "dry": "Dry",
     "fan_only": "Fan only",
+}
+# What Home Assistant's English translations call the states of the device classes the demo
+# binary sensors have: moisture reads Wet/Dry and motion Detected/Clear.
+BINARY_SENSOR_LABELS = {
+    "moisture": {"on": "Wet", "off": "Dry"},
+    "motion": {"on": "Detected", "off": "Clear"},
 }
 # The states the proof sets, in order: on, brightness only, color only, then off.
 PROOF_STATES: list[dict[str, Any]] = [
@@ -319,6 +330,60 @@ def prove_demo_climate_is_a_state_device_with_a_translated_label() -> None:
             assert "temperature" not in reading, reading
 
 
+def prove_demo_binary_sensor_is_an_on_off_device_with_a_translated_label(token: str) -> None:
+    """The demo integration's binary sensors, which have a device class, are supported `on_off`
+    devices on a device, and once monitored a reading's label is Home Assistant's translated
+    word for the device class and state."""
+    headers = {"X-Home-Keeper": "1"}
+    with httpx.Client(base_url=KEEPER, timeout=30, trust_env=False) as client:
+        wait_for_healthy_reader(client)
+        deadline = time.monotonic() + 90
+        while True:
+            entities = client.get("/api/catalog").json()["entities"]
+            sensors = [e for e in entities if e["supported"] and e.get("device_kind") == "on_off"]
+            if sensors:
+                break
+            assert time.monotonic() < deadline, "No demo on/off device appeared in the catalog"
+            time.sleep(2)
+        # Every on/off device belongs to a device: the registry rule.
+        assert all(sensor["device_id"] for sensor in sensors), sensors
+
+        for sensor in sensors:
+            selected = client.put(
+                f"/api/selection/{sensor['id']}", json={"selected": True}, headers=headers
+            )
+            assert selected.status_code == 200, selected.text
+        monitored = client.get("/api/monitored")
+        assert monitored.status_code == 200, monitored.text
+        binary = [
+            entity
+            for entity in monitored.json()["entities"]
+            if (entity["source_entity_id"] or "").startswith("binary_sensor.")
+        ]
+        assert binary, "No demo binary sensor is monitored as an on/off device"
+        with httpx.Client(
+            base_url=HOME_ASSISTANT,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+            trust_env=False,
+        ) as home_assistant:
+            for sensor in binary:
+                assert sensor["device_kind"] == "on_off", sensor
+                assert sensor["supported"], sensor
+                reading = sensor["state"]
+                assert reading["device_kind"] == "on_off", reading
+                assert reading["state"] in ("on", "off"), reading
+                # The demo sensors have a device class: its translation names the state.
+                source = home_assistant.get(f"/api/states/{sensor['source_entity_id']}").json()
+                device_class = source["attributes"]["device_class"]
+                assert reading["label"] == BINARY_SENSOR_LABELS[device_class][reading["state"]], (
+                    device_class,
+                    reading,
+                )
+                # A binary sensor has no attributes in its reading.
+                assert "device_class" not in reading, reading
+
+
 def main() -> None:
     started = time.monotonic()
     try:
@@ -430,6 +495,7 @@ def main() -> None:
 
         prove_history_comes_from_the_recorder(token)
         prove_demo_climate_is_a_state_device_with_a_translated_label()
+        prove_demo_binary_sensor_is_an_on_off_device_with_a_translated_label(token)
 
         # Losing the token cannot be repaired silently: setup fails and says how to reset.
         compose("run", "--rm", "--no-deps", "--entrypoint", "rm", "ha-setup", "/ha-token/token")
