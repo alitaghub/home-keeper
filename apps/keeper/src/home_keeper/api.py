@@ -17,6 +17,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from home_keeper.changes import BEFORE_START, read_cursor, read_page
 from home_keeper.commands import Commands, Refusal
 from home_keeper.control import Controller
+from home_keeper.measurements import measurement_series
 from home_keeper.models import (
     CatalogResponse,
     CommandRecord,
@@ -28,6 +29,7 @@ from home_keeper.models import (
     EventsPage,
     HealthStatus,
     Identity,
+    MeasurementReport,
     MonitoredEntities,
     ReaderError,
     Selection,
@@ -35,6 +37,7 @@ from home_keeper.models import (
     Unreachable,
     UsageKind,
     UsageReport,
+    statistics_period,
     to_utc,
 )
 from home_keeper.monitoring import Monitoring, SelectionFull, UnknownEntity, UnsupportedEntity
@@ -47,6 +50,10 @@ logger = logging.getLogger(__name__)
 UTC_ZONE = ZoneInfo("UTC")
 # History's window when a request names no start.
 HISTORY_WINDOW = timedelta(days=30)
+# The longest range one measurements request may cover.
+MEASUREMENT_RANGE = timedelta(days=31)
+# Device kinds with no on-time: no usage entry.
+WITHOUT_USAGE = ("state", "measurement")
 EARLIEST_START = datetime.min.replace(tzinfo=UTC) + BEFORE_START
 
 # Fixed text for each reason Home Assistant cannot be read: never upstream text, URLs or tokens.
@@ -266,9 +273,8 @@ def create_app(
         end: datetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
     ):
-        """On-time, switch-ons and brightness of selected lights, plugs, switches and other
-        on/off devices in `[start, end)`, from Home Assistant's history. An on/off device also
-        has Home Assistant's words for its on and off. Devices of kind `state` have no entry."""
+        """On-time, switch-ons and brightness of monitored on/off devices in `[start, end)`,
+        from Home Assistant's history. Other kinds have no entry."""
         # A far-past offset can overflow the conversion to UTC.
         try:
             start = to_utc(start)
@@ -284,8 +290,8 @@ def create_app(
         current = now().astimezone(UTC)
         kinds = monitoring.kinds()
         # Unselected IDs are left out rather than reported as missing, and devices with no
-        # on or off, such as a thermostat, have no usage.
-        switchable = {device for device, kind in kinds.items() if kind != "state"}
+        # on or off, such as a thermostat or a power meter, have no usage.
+        switchable = {device for device, kind in kinds.items() if kind not in WITHOUT_USAGE}
         devices = sorted(set(entity_id or switchable) & switchable)
         # Home Assistant has no history after now.
         history_end = min(end, current)
@@ -297,7 +303,7 @@ def create_app(
 
         def kind_of(device: str) -> UsageKind:
             # A device selected without a kind is still known by its rows.
-            if (kind := kinds[device]) is not None and kind != "state":
+            if (kind := kinds[device]) is not None and kind not in WITHOUT_USAGE:
                 return kind
             seen = {row.reading.device_kind for row in history.get(device, [])}
             return "on_off" if "on_off" in seen else "switch" if "switch" in seen else "light"
@@ -321,6 +327,47 @@ def create_app(
                     timezone=timezone,
                     rows=history.get(device, []),
                     words=words.get(device, RAW_WORDS),
+                )
+                for device in devices
+            ],
+        )
+
+    @app.get("/api/measurements", response_model=MeasurementReport, responses=needs_home_assistant)
+    def measurements(
+        *,
+        start: datetime,
+        end: datetime,
+        entity_id: Annotated[list[Identity] | None, Query(max_length=500)] = None,
+    ):
+        """Statistics of monitored measurements in `[start, end)`: 5-minute buckets up to 24
+        hours, else hourly. Periods without statistics are gaps. Other kinds have no entry."""
+        # A far-past offset can overflow the conversion to UTC.
+        try:
+            start = to_utc(start)
+            end = to_utc(end)
+        except (ValueError, OverflowError):
+            raise HTTPException(422, "Invalid measurement range") from None
+        if start > end or end - start > MEASUREMENT_RANGE:
+            raise HTTPException(422, "Invalid measurement range")
+        measured = {device for device, kind in monitoring.kinds().items() if kind == "measurement"}
+        # Unselected IDs and other kinds are left out rather than reported as missing.
+        devices = sorted(set(entity_id or measured) & measured)
+        statistics = reader.statistics(devices, start, end) if devices else {}
+        # The statistics answered, so a failed current read costs only the unit and latest value.
+        try:
+            current = reader.states(devices) if devices else {}
+        except ReaderUnavailable:
+            current = {}
+        period = statistics_period(start, end)
+        return MeasurementReport(
+            start=start.isoformat(),
+            end=end.isoformat(),
+            devices=[
+                measurement_series(
+                    device,
+                    period,
+                    statistics.get(device, []),
+                    live.reading if (live := current.get(device)) else None,
                 )
                 for device in devices
             ],

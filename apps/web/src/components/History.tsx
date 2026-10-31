@@ -1,21 +1,13 @@
-import { X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useId } from "react";
 import { brightnessPercent, duration, time } from "../format";
 import { cn } from "../lib/utils";
 import { type DeviceUsage, fetchUsage, type Usage } from "../useUsage";
-import { Button } from "./ui/button";
+import { RANGES, RangeDialog } from "./RangeDialog";
 
 const WIDTH = 1000;
 const HEIGHT = 24;
 // A dim light still shows as a visible bar.
 const MIN_LEVEL = 0.2;
-
-const RANGES = [
-  { days: 1, label: "24 hours" },
-  { days: 7, label: "7 days" },
-  { days: 30, label: "30 days" },
-] as const;
-type Days = (typeof RANGES)[number]["days"];
 
 /**
  * The words for a device's on and off, capitalized and inline: Home Assistant's words for an
@@ -263,87 +255,19 @@ export function HistoryDialog({
   name: string;
   onClose: () => void;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  // A retry asks again for the same range.
-  const [request, setRequest] = useState({ days: 1 as Days, attempt: 0 });
-  const { days } = request;
-  // Each answer remembers its request, so a range switch or a retry never shows old numbers.
-  const [loaded, setLoaded] = useState<
-    { request: typeof request; report: Usage } | { request: typeof request; failed: true }
-  >();
-
-  useEffect(() => {
-    dialog.current?.showModal();
-  }, []);
-
-  useEffect(() => {
-    let current = true;
-    fetchUsage(request.days, [entityId]).then(
-      (report) => current && setLoaded({ request, report }),
-      () => current && setLoaded({ request, failed: true }),
-    );
-    return () => {
-      current = false;
-    };
-  }, [request, entityId]);
-
-  const shown = loaded?.request === request ? loaded : undefined;
-  const report = shown && "report" in shown ? shown.report : undefined;
-  const device = report?.devices.find((entry) => entry.entity_id === entityId);
-  const label = RANGES.find((range) => range.days === days)?.label ?? "";
-
   return (
-    <dialog
-      ref={dialog}
-      className="m-auto w-[calc(100%-2rem)] max-w-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-lg border bg-background p-6 text-foreground shadow-lg backdrop:bg-black/50"
-      aria-labelledby="history-dialog-heading"
+    <RangeDialog
+      headingId="history-dialog-heading"
+      name={name}
+      entityId={entityId}
+      load={fetchUsage}
+      failure="Cannot load usage."
       onClose={onClose}
     >
-      <div className="grid gap-5">
-        <div className="flex items-start justify-between gap-3">
-          <h2
-            id="history-dialog-heading"
-            className="min-w-0 text-lg font-semibold leading-snug break-words"
-          >
-            {name}
-          </h2>
-          <Button type="button" variant="ghost" size="sm" onClick={() => dialog.current?.close()}>
-            <X aria-hidden="true" />
-            Close
-          </Button>
-        </div>
-        <fieldset className="flex flex-wrap items-center gap-2">
-          <legend className="sr-only">Range</legend>
-          {RANGES.map((range) => (
-            <Button
-              key={range.days}
-              type="button"
-              size="sm"
-              variant={range.days === days ? "default" : "outline"}
-              aria-pressed={range.days === days}
-              onClick={() => setRequest({ days: range.days, attempt: 0 })}
-            >
-              {range.label}
-            </Button>
-          ))}
-        </fieldset>
-        {shown && "failed" in shown ? (
-          <p className="text-sm text-danger" role="status">
-            Cannot load usage.{" "}
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto p-0"
-              onClick={() => setRequest({ days, attempt: request.attempt + 1 })}
-            >
-              Retry
-            </Button>
-          </p>
-        ) : !report ? (
-          <p className="text-sm text-muted-foreground" role="status">
-            Loading…
-          </p>
-        ) : !device ? (
+      {(report, days) => {
+        const device = report.devices.find((entry) => entry.entity_id === entityId);
+        const label = RANGES.find((range) => range.days === days)?.label ?? "";
+        return !device ? (
           <p className="text-sm text-muted-foreground" role="status">
             Home Assistant has no usage for this device.
           </p>
@@ -387,8 +311,8 @@ export function HistoryDialog({
               {`Days and hours use the ${report.timezone} time zone. Unknown time counts as neither ${wordsOf(device).on} nor ${wordsOf(device).off}.`}
             </p>
           </>
-        )}
-      </div>
-    </dialog>
+        );
+      }}
+    </RangeDialog>
   );
 }

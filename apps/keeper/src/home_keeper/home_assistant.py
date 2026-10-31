@@ -10,7 +10,7 @@ import ssl
 import time
 from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, NoReturn, Protocol, cast
@@ -21,15 +21,21 @@ from websockets.exceptions import ConnectionClosed, PayloadTooBig, WebSocketExce
 from websockets.frames import CloseCode
 from websockets.sync.client import connect
 
-from home_keeper.events import device_state, is_json_object
+from home_keeper.events import device_state, is_json_object, unit_of
 from home_keeper.models import (
     MAX_CATALOG_ENTITIES,
     MAX_STATE_LENGTH,
+    MEASUREMENT_DOMAINS,
+    MEASUREMENT_STATE_CLASS,
     PRESENCE_DOMAINS,
+    Bucket,
     Catalog,
+    DeviceKind,
     DeviceState,
     Entity,
+    Unit,
     device_kind_of,
+    statistics_period,
 )
 
 # One WebSocket message: a whole registry list in one answer. Real registry rows are about
@@ -42,6 +48,12 @@ HISTORY_MAX_TOTAL = 64 * 1024 * 1024
 # One history read, every request included, ends within this; below the API's wait for the
 # reader (READER_TIMEOUT_SECONDS), so a slow read fails as a timeout, not an unreachable reader.
 HISTORY_SECONDS = 8
+# Devices read without attributes, per history request: many sensors in one read must not cost
+# one round trip each.
+HISTORY_BATCH = 25
+# Measurements per statistics request, so a month of hourly statistics stays under
+# HISTORY_MAX_PAYLOAD per answer.
+STATISTICS_BATCH = 50
 # Every entity's state in one answer, sensors included.
 STATES_MAX_PAYLOAD = 16 * 1024 * 1024
 MAX_REGISTRY_ROWS = MAX_CATALOG_ENTITIES
@@ -72,6 +84,7 @@ _READ_COMMANDS = frozenset(
         "history/history_during_period",
         "get_config",
         "frontend/get_translations",
+        "recorder/statistics_during_period",
     }
 )
 GROUP_REASON = "Groups and rooms are not recorded"
@@ -184,12 +197,17 @@ class HomeAssistantConnector:
         self._labels = Labels({}, {})
         # Device classes from the latest state read of a discovery.
         self._device_classes: dict[str, str] = {}
+        # Each entity whose state class is `measurement`, with its unit, from the same read.
+        self._measuring: dict[str, Unit | None] = {}
+        # Each measurement of the latest successful discovery, with its unit.
+        self._measurements: dict[str, Unit | None] = {}
 
     def close(self) -> None:
         self._http.close()
 
     def discover(self) -> Catalog:
         self._device_classes = {}
+        self._measuring = {}
         with self._session() as session:
             entities = _rows(session.request("config/entity_registry/list", failure="discovery"))
             devices = _rows(session.request("config/device_registry/list", failure="discovery"))
@@ -197,6 +215,11 @@ class HomeAssistantConnector:
             words = _state_words(session)
         self._entities = mapping
         self._labels = Labels(words, self._device_classes)
+        self._measurements = {
+            mapping[entity.id]: self._measuring.get(mapping[entity.id])
+            for entity in catalog.entities
+            if entity.device_kind == "measurement"
+        }
         return catalog
 
     def history(
@@ -208,16 +231,15 @@ class HomeAssistantConnector:
             raise ConnectorError("configuration")
         if not source_entity_ids:
             return {}
-        # One `no_attributes` per request: lights and switches share one, with attributes. Each
-        # other device has its own, without them, so one busy sensor cannot fill the others'.
+        # One `no_attributes` per request: lights and switches share one, with attributes. Other
+        # devices go without them, HISTORY_BATCH to a request.
         deadline = time.monotonic() + HISTORY_SECONDS
         attributed = ("light", "switch")
         with_attributes = [i for i in source_entity_ids if device_kind_of(i) in attributed]
+        without = [i for i in source_entity_ids if device_kind_of(i) not in attributed]
         requests = [(with_attributes, False)] if with_attributes else []
         requests += [
-            ([entity_id], True)
-            for entity_id in source_entity_ids
-            if device_kind_of(entity_id) not in attributed
+            (list(batch), True) for batch in itertools.batched(without, HISTORY_BATCH, strict=False)
         ]
         history: dict[str, list[DeviceState]] = {}
         with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL, deadline) as session:
@@ -242,12 +264,52 @@ class HomeAssistantConnector:
                     raise ConnectorError("invalid_data")
                 history |= {
                     entity_id: [
-                        self._labelled(history_state(row, entity_id), entity_id)
-                        for row in _rows(result.get(entity_id, []))
+                        self._recorded(row, entity_id) for row in _rows(result.get(entity_id, []))
                     ]
                     for entity_id in entity_ids
                 }
         return {entity_id: history[entity_id] for entity_id in source_entity_ids}
+
+    def _recorded(self, row: object, source_entity_id: str) -> DeviceState:
+        """A history row as a labelled state. A measurement's row has no attributes, so its
+        unit is the one discovery read."""
+        measured = source_entity_id in self._measurements
+        state = self._labelled(
+            history_state(row, source_entity_id, measured=measured), source_entity_id
+        )
+        if measured:
+            return state.model_copy(update={"unit": self._measurements[source_entity_id]})
+        return state
+
+    def statistics(
+        self, source_entity_ids: Sequence[str], start: datetime, end: datetime
+    ) -> dict[str, list[Bucket]]:
+        """Each measurement's statistics from `start` to `end`, oldest first, STATISTICS_BATCH
+        measurements to a request: 5-minute buckets for a range up to 24 hours, else hourly ones.
+        An entity with no statistics has []."""
+        if any(not _DEVICE_ID.fullmatch(entity_id) for entity_id in source_entity_ids):
+            raise ConnectorError("configuration")
+        if not source_entity_ids:
+            return {}
+        # The whole read, connecting included, ends within HISTORY_SECONDS, as a history read.
+        deadline = time.monotonic() + HISTORY_SECONDS
+        statistics: dict[str, list[Bucket]] = {}
+        with self._session(HISTORY_MAX_PAYLOAD, HISTORY_MAX_TOTAL, deadline) as session:
+            for batch in itertools.batched(source_entity_ids, STATISTICS_BATCH, strict=False):
+                result = session.request(
+                    "recorder/statistics_during_period",
+                    # Home Assistant answers a malformed statistics request with an error result.
+                    failure="invalid_data",
+                    deadline=deadline,
+                    start_time=start.isoformat(),
+                    end_time=end.isoformat(),
+                    statistic_ids=list(batch),
+                    period=statistics_period(start, end),
+                    types=["mean", "min", "max"],
+                )
+                # Parsed inside the session, so malformed data leaves as ConnectorError.
+                statistics |= statistics_buckets(result, batch)
+        return {entity_id: statistics[entity_id] for entity_id in source_entity_ids}
 
     @contextlib.contextmanager
     def _session(
@@ -343,7 +405,7 @@ class HomeAssistantConnector:
             if device_id is not None and device_id not in device_names:
                 # Dangling relationships retain the entity without inventing a device.
                 device_id = None
-            kind = device_kind_of(entity_id)
+            kind: DeviceKind | None = device_kind_of(entity_id)
             if not _DEVICE_ID.fullmatch(entity_id):
                 kind = None
                 reason = ENTITY_ID_REASON
@@ -356,6 +418,8 @@ class HomeAssistantConnector:
                 if groups is None:
                     groups = self._read_groups()
                 reason = GROUP_REASON if entity_id in groups else None
+            if reason is None and self._measured(entity_id):
+                kind = "measurement"
             supported = reason is None
             projected.append(
                 Entity(
@@ -373,10 +437,14 @@ class HomeAssistantConnector:
             mapping[identity] = entity_id
         return Catalog(source_id="home_assistant", entities=projected), mapping
 
+    def _measured(self, entity_id: str) -> bool:
+        """Whether a sensor is a measurement: its state class is `measurement`."""
+        return entity_id.partition(".")[0] in MEASUREMENT_DOMAINS and entity_id in self._measuring
+
     def _read_groups(self) -> frozenset[str]:
         """The devices whose state marks them as a group, from one read of every state. An
         entity with no state has no group markers. Keeps each device's device class for
-        translating its state."""
+        translating its state, and the unit of each state whose state class is `measurement`."""
         try:
             status, payload = self._get("/api/states", STATES_MAX_PAYLOAD)
             if status != HTTPStatus.OK:
@@ -410,6 +478,8 @@ class HomeAssistantConnector:
                 and device_class.isascii()
             ):
                 self._device_classes[entity_id] = device_class
+            if attributes.get("state_class") == MEASUREMENT_STATE_CLASS:
+                self._measuring[entity_id] = unit_of(attributes)
             if isinstance(attributes.get("entity_id"), list) or any(
                 value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
             ):
@@ -467,7 +537,8 @@ class HomeAssistantConnector:
                     raise TypeError("Not a state")
                 entity_id = row.get("entity_id")
                 if isinstance(entity_id, str) and entity_id in wanted:
-                    state = device_state(row, entity_id)
+                    measured = entity_id in self._measurements
+                    state = device_state(row, entity_id, measured=measured)
                     found[entity_id] = state and self._labelled(state, entity_id)
         except ConnectorError:
             raise
@@ -676,10 +747,11 @@ def _timestamp(value: object) -> datetime:
     return datetime.fromtimestamp(value, UTC)
 
 
-def history_state(row: object, source_entity_id: str) -> DeviceState:
-    """One compressed history row, `{s, a, lc, lu}`, as a device's state. Times are Unix
-    seconds; Home Assistant always sends `lu` and leaves out `lc` when it equals `lu`. Only
-    the approved light attributes are kept; every other device keeps its state only."""
+def history_state(row: object, source_entity_id: str, *, measured: bool = False) -> DeviceState:
+    """One compressed history row, `{s, a, lc, lu}`, as a device's state, a measurement's
+    when `measured`. Times are Unix seconds; Home Assistant always sends `lu` and leaves out
+    `lc` when it equals `lu`. Only the approved light attributes are kept; every other device
+    keeps its state only."""
     if not is_json_object(row):
         raise ValueError("Invalid history row")
     updated = _timestamp(row.get("lu"))
@@ -692,7 +764,48 @@ def history_state(row: object, source_entity_id: str) -> DeviceState:
             "last_updated": updated,
         },
         source_entity_id,
+        measured=measured,
     )
     if state is None:
         raise ValueError("Invalid history row")
     return state
+
+
+def _statistics_time(value: object) -> datetime:
+    """A statistics row's time: Unix milliseconds."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("Invalid statistics time")
+    return datetime.fromtimestamp(0, UTC) + timedelta(milliseconds=value)
+
+
+def _statistic(row: Mapping[str, object], key: str) -> float:
+    value = row.get(key)
+    # A missing or null mean, min or max is invalid data, never a zero.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("Invalid statistic")
+    return float(value)
+
+
+def statistics_buckets(result: object, statistic_ids: Sequence[str]) -> dict[str, list[Bucket]]:
+    """A `recorder/statistics_during_period` result, `{entity_id: [{start, end, mean, min,
+    max}]}` with times in Unix milliseconds, as each entity's buckets, oldest first; [] for an
+    entity without statistics. A missing or null value raises ValueError or TypeError."""
+    if not is_json_object(result):
+        raise TypeError("Invalid statistics")
+    statistics: dict[str, list[Bucket]] = {}
+    for entity_id in statistic_ids:
+        buckets: list[tuple[datetime, Bucket]] = []
+        for row in _rows(result.get(entity_id, [])):
+            if not is_json_object(row):
+                raise TypeError("Invalid statistics row")
+            start = _statistics_time(row.get("start"))
+            bucket = Bucket(
+                start=start.isoformat(),
+                end=_statistics_time(row.get("end")).isoformat(),
+                mean=_statistic(row, "mean"),
+                min=_statistic(row, "min"),
+                max=_statistic(row, "max"),
+            )
+            buckets.append((start, bucket))
+        statistics[entity_id] = [bucket for _, bucket in sorted(buckets, key=lambda item: item[0])]
+    return statistics

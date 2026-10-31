@@ -1,0 +1,28 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "device_id": "device-p",
+        "device_kind": "measurement",
+        "device_name": "Desk plug",
+        "id": "power",
+        "missing": false,
+        "name": "Desk plug power",
+        "reason": null,
+        "source_entity_id": "sensor.desk_plug_power",
+        "state": {
+          "availability": "available",
+          "device_kind": "measurement",
+          "label": "412",
+          "last_changed": "2026-10-12T09:00:00+00:00",
+          "last_updated": "2026-10-12T09:00:00+00:00",
+          "state": "412",
+          "unit": "W",
+          "value": 412.0
+        },
+        "supported": true
+      }
+    ]
+  }
+}

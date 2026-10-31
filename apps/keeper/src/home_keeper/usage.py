@@ -1,5 +1,4 @@
-"""How long selected lights, plugs, switches and other on/off devices were on, from Home
-Assistant's history. Devices of kind `state` have no on-time.
+"""How long monitored on/off devices were on, from Home Assistant's history.
 
 Time the history cannot vouch for is unknown, never on or off.
 """

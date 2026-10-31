@@ -19,15 +19,17 @@ class KeeperError(Exception):
 
 
 # What a device is; None for a domain the keeper does not record, such as a person.
-# `on_off` (a fan, a door sensor) has usage; `state` (any other device) only a state. Neither
-# can be switched.
-DeviceKind = Literal["light", "switch", "on_off", "state"] | None
+# `on_off` (a fan, a door sensor) has usage; `state` (any other device) only a state;
+# `measurement` (a power meter, a thermometer) a value with statistics. None can be switched.
+DeviceKind = Literal["light", "switch", "on_off", "state", "measurement"] | None
 
 
 class Reading(Wire):
     state: str
     # Home Assistant's translated word for the state, else the raw state.
     label: str
+    # A measurement's unit, such as W; other devices have none.
+    unit: str | None = None
     # Plugs and switches have no brightness or color.
     brightness: int | None = None
     color_mode: str | None = None
@@ -106,6 +108,23 @@ class Usage(Wire):
     end: str
     timezone: str
     devices: list[DeviceUsage]
+
+
+class MeasurementSeries(Wire):
+    entity_id: str
+    unit: str | None
+    # The lowest, mean and highest value over the range; None without statistics.
+    min: float | None
+    mean: float | None
+    max: float | None
+    # The current value; None when it is not a number or cannot be read.
+    latest: float | None
+
+
+class Measurements(Wire):
+    start: str
+    end: str
+    devices: list[MeasurementSeries]
 
 
 class Event(Wire):

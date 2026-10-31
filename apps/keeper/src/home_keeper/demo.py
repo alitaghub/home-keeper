@@ -1,24 +1,26 @@
 """The synthetic home the demo reader serves. No device, vendor, network-administration or
 model access.
 
-With the `control` profile, the demo controller forwards light and switch commands to the
-demo reader, and they switch the synthetic home's lights and plug. The garage door is a
-generic device: it only reports open or closed. The ceiling fan and the front door sensor are
-on/off devices with usage. No command switches any of these three.
+With the `control` profile, the demo controller's commands switch the synthetic lights and
+plug. No command switches a device of any other kind.
 """
 
-from datetime import datetime
+import math
+from datetime import UTC, datetime, timedelta
 from threading import Lock
 from typing import TypedDict, overload
 
 from home_keeper.models import (
+    Bucket,
     DeviceKind,
     DeviceState,
     GenericState,
     LightCommand,
     LightState,
+    MeasurementState,
     OnOffState,
     SwitchState,
+    statistics_period,
 )
 from home_keeper_light_command import (
     BRIGHTNESS_MAX,
@@ -39,6 +41,11 @@ DEMO_LABELS = {"on": "On", "off": "Off", "open": "Open", "closed": "Closed"}
 DEVICE_CLASS_LABELS = {"binary_sensor.front_door": {"on": "Open", "off": "Closed"}}
 # The garage door's state for each replay step's on, off or unavailable.
 DOOR_STATES = {"on": "open", "off": "closed", "unavailable": "unavailable"}
+# The desk plug's power, in watts, for each replay step's on, off or unavailable.
+POWER_STATES = {"on": "412", "off": "0", "unavailable": "unavailable"}
+POWER_UNIT = "W"
+# How far back the synthetic statistics reach.
+DEMO_STATISTICS = timedelta(days=30)
 
 
 def demo_label(state: str, identity: str | None = None) -> str:
@@ -122,6 +129,15 @@ ENTITIES: list[DemoEntity] = [
         "reason": None,
     },
     {
+        "id": "sensor.desk_plug_power",
+        "device_id": "smart-plug",
+        "device_name": "Smart plug",
+        "name": "Desk plug power",
+        "device_kind": "measurement",
+        "supported": True,
+        "reason": None,
+    },
+    {
         "id": "sensor.ungrouped",
         "device_id": None,
         "device_name": None,
@@ -165,6 +181,16 @@ class DemoReplay:
         if kind == "state":
             return GenericState.model_validate(
                 since | {"state": "open", "device_kind": "state", "label": demo_label("open")}
+            )
+        if kind == "measurement":
+            return MeasurementState.model_validate(
+                since
+                | {
+                    "state": POWER_STATES["on"],
+                    "device_kind": "measurement",
+                    "unit": POWER_UNIT,
+                    "label": demo_label(POWER_STATES["on"]),
+                }
             )
         brightness = 180 if identity == "light.hue_desk" else 100
         return LightState.model_validate(
@@ -212,6 +238,14 @@ class DemoReplay:
             return old.model_validate(
                 {"state": value["state"], "device_kind": old.device_kind} | times
             )
+        if isinstance(old, MeasurementState):
+            # The desk plug draws power with the lights' on and off steps.
+            state = POWER_STATES.get(str(value["state"]), old.state)
+            times["last_changed"] = event_time if old.state != state else old.last_changed
+            times["label"] = demo_label(state)
+            return old.model_validate(
+                {"state": state, "device_kind": "measurement", "unit": old.unit} | times
+            )
         if isinstance(old, GenericState):
             # The garage door opens and closes with the lights' on and off steps.
             state = DOOR_STATES.get(str(value["state"]), old.state)
@@ -233,10 +267,10 @@ class DemoReplay:
     ) -> tuple[LightState, LightState] | tuple[SwitchState, SwitchState] | None:
         """Apply a command and hold the device; returns (old, new), or None if it cannot switch."""
         old = self.states.get(identity)
-        # No command switches a generic or other on/off device.
+        # No command switches a generic, other on/off or measurement device.
         if (
             old is None
-            or isinstance(old, GenericState | OnOffState)
+            or isinstance(old, GenericState | OnOffState | MeasurementState)
             or old.state not in ("on", "off")
         ):
             return None
@@ -265,3 +299,37 @@ class DemoReplay:
         self.states[identity] = new
         self.held[identity] = HELD_PASSES
         return old, new
+
+
+def demo_power(moment: datetime) -> float:
+    """The desk plug's synthetic mean power, in watts, for the period starting at `moment`:
+    a daily curve with a repeatable wobble, so every read gives the same numbers."""
+    seconds = moment.timestamp()
+    daily = math.sin(2 * math.pi * (seconds % 86400) / 86400)
+    wobble = (int(seconds // 300) * 2654435761 % 1000) / 1000
+    return round(250 + 150 * daily + 40 * wobble, 1)
+
+
+def demo_statistics(start: datetime, end: datetime, now: datetime) -> list[Bucket]:
+    """Synthetic statistics like Home Assistant's: every whole period that starts in
+    `[start, end)`, has ended by `now` and starts within DEMO_STATISTICS of it, oldest first.
+    The period follows the range, as for Home Assistant."""
+    period = statistics_period(start, end)
+    step = timedelta(minutes=5) if period == "5minute" else timedelta(hours=1)
+    epoch = datetime.fromtimestamp(0, UTC)
+    # Periods start at whole multiples of their length, as Home Assistant's do.
+    moment = epoch + math.ceil((max(start, now - DEMO_STATISTICS) - epoch) / step) * step
+    buckets: list[Bucket] = []
+    while moment < end and moment + step <= now:
+        mean = demo_power(moment)
+        buckets.append(
+            Bucket(
+                start=moment.isoformat(),
+                end=(moment + step).isoformat(),
+                mean=mean,
+                min=round(mean * 0.8, 1),
+                max=round(mean * 1.25, 1),
+            )
+        )
+        moment += step
+    return buckets

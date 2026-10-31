@@ -22,6 +22,7 @@ from support.home_assistant import (
     realistic_device,
     realistic_entity,
     registry_entry,
+    statistics_row,
     use_transport,
 )
 from websockets.client import ClientProtocol
@@ -65,6 +66,7 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
         states: Iterable[Frame] = (),
         *,
         history: dict[str, list[Frame]] | None = None,
+        statistics: dict[str, list[Frame]] | None = None,
         language: str = "en",
         translations: dict[str, str] | None = None,
         failing: Iterable[str] = (),
@@ -76,6 +78,7 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
             entities,
             devices,
             history,
+            statistics=statistics,
             language=language,
             translations=translations,
             failing=failing,
@@ -934,7 +937,7 @@ def test_history_of_a_state_device_is_read_without_attributes_and_a_light_keeps_
         assert not {"climate.hall", "light.desk"} <= set(request["entity_ids"])
 
 
-def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
+def test_busy_sensors_are_read_25_to_a_request_so_each_answer_fits_and_a_light_keeps_attributes(
     connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, install, _ = connector
@@ -943,22 +946,23 @@ def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
     monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
     start = datetime(2026, 10, 13, tzinfo=UTC)
     end = start + timedelta(days=1)
-    rows = 43_000
+    rows = 12_500
     # Home Assistant sends Unix seconds as floats with microseconds.
     busy = {
         f"sensor.busy_{number}": [
             {"s": f"{20 + index % 7}.5", "lu": start.timestamp() + index * 2 + 0.123456}
             for index in range(rows)
         ]
-        for number in range(10)
+        for number in range(60)
     }
     light: list[Frame] = [
         {"s": "on", "a": {"brightness": 120}, "lu": start.timestamp() + 1.654321},
         {"s": "off", "a": {}, "lu": start.timestamp() + 90.5},
     ]
-    # Together the sensors outgrow one answer, so one request for all of them cannot work.
+    # All together the sensors outgrow one answer, so one request for all of them cannot work;
+    # 25 of them fit.
     assert len(json.dumps(busy)) > HISTORY_MAX_PAYLOAD
-    assert all(len(json.dumps(one)) < HISTORY_MAX_PAYLOAD for one in busy.values())
+    assert len(json.dumps(dict(list(busy.items())[:25]))) < HISTORY_MAX_PAYLOAD
     socket = install([], history={**busy, "light.desk": light})
 
     history = client.history([*busy, "light.desk"], start, end)
@@ -969,17 +973,11 @@ def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
     }
     assert history["light.desk"][0].model_dump()["brightness"] == 120
     requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
-    for request in requests:
-        sensors = [i for i in request["entity_ids"] if i.startswith("sensor.")]
-        if sensors:
-            # Each non-light device is read on its own, without attributes.
-            assert request["entity_ids"] == sensors
-            assert len(sensors) == 1
-            assert request["no_attributes"] is True
-        else:
-            assert request["entity_ids"] == ["light.desk"]
-            assert request["no_attributes"] is False
-    assert len(requests) == 11
+    sensors = [r for r in requests if r["entity_ids"] != ["light.desk"]]
+    assert [len(r["entity_ids"]) for r in sensors] == [25, 25, 10]
+    assert {r["no_attributes"] for r in sensors} == {True}
+    [lamp] = [r for r in requests if r["entity_ids"] == ["light.desk"]]
+    assert lamp["no_attributes"] is False
 
 
 def test_discovery_gives_up_on_unanswered_language_and_translation_reads_within_a_budget(
@@ -1128,7 +1126,7 @@ def test_an_on_off_device_that_reports_unavailable_or_unknown_is_not_available(
     assert reading.model_dump()["availability"] == word
 
 
-def test_history_of_on_off_devices_is_read_one_device_per_request_without_attributes(
+def test_history_of_on_off_devices_is_read_together_without_attributes_and_apart_from_a_light(
     connector: Connector,
 ) -> None:
     client, install, _ = connector
@@ -1163,8 +1161,7 @@ def test_history_of_on_off_devices_is_read_one_device_per_request_without_attrib
     assert history["light.desk"][0].model_dump()["brightness"] == 120
     requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
     assert sorted(r["entity_ids"] for r in requests) == [
-        ["binary_sensor.front"],
-        ["fan.ceiling"],
+        ["binary_sensor.front", "fan.ceiling"],
         ["light.desk"],
     ]
     for request in requests:
@@ -1177,8 +1174,8 @@ def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all
     client, install, _ = connector
     clock = FakeClock()
     monkeypatch.setattr("home_keeper.home_assistant.time", clock)
-    devices = [f"sensor.slow_{number}" for number in range(10)]
-    # Each device answers in 3 s: alone fast enough, together far too slow.
+    devices = [f"sensor.slow_{number}" for number in range(60)]
+    # Each request of 25 answers in 3 s: alone fast enough, the three of them too slow.
     install(
         [],
         history={device: [{"s": "1", "lu": 1.0}] for device in devices},
@@ -1196,20 +1193,19 @@ def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all
     assert clock.monotonic() - started <= 8
 
 
-def test_history_answers_that_together_pass_64_mib_are_invalid_data(
+def test_history_answers_that_together_pass_the_total_cap_are_invalid_data(
     connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, install, _ = connector
-    # Parsing tens of MiB takes real time, more under coverage; only simulated time counts
-    # against the history deadline.
-    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
-    # About 13.5 MiB of rows per device: each answer is under the 16 MiB cap, five are over 64.
+    # 30 sensors go in two requests: 25 and 5. Each answer is far under the per-answer cap, but
+    # the two together pass a total cap set between 25 sensors' answer and all 30 sensors'.
     row = {"s": "x" * 250, "lu": 1_760_000_000.0}
-    rows = [row] * (13_500_000 // len(json.dumps(row)))
-    devices = [f"sensor.busy_{number}" for number in range(5)]
+    rows = [row] * 150
+    devices = [f"sensor.busy_{number}" for number in range(30)]
+    one = len(json.dumps({"sensor.busy_0": rows}))
+    monkeypatch.setattr("home_keeper.home_assistant.HISTORY_MAX_TOTAL", 27 * one)
     install([], history=dict.fromkeys(devices, rows))
-    assert len(json.dumps({"x": rows})) < HISTORY_MAX_PAYLOAD
-    assert 5 * len(json.dumps(rows)) > 64 * 1024 * 1024
+    assert one * 30 < HISTORY_MAX_PAYLOAD
 
     with pytest.raises(ConnectorError) as error:
         client.history(
@@ -1282,6 +1278,257 @@ def test_the_64_mib_history_budget_counts_utf8_bytes_not_characters(
     assert error.value.code == "invalid_data"
 
 
+def test_only_a_sensor_with_state_class_measurement_on_a_device_is_a_supported_measurement(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    demo = {"platform": "demo", "translation_key": None}
+    install(
+        [
+            registry_entry("measured", "sensor.power", **demo),
+            registry_entry("total", "sensor.energy", **demo),
+            registry_entry("increasing", "sensor.meter", **demo),
+            registry_entry("plain", "sensor.label", **demo),
+            registry_entry("silent", "sensor.silent", **demo),
+            registry_entry("number", "number.level", **demo),
+            registry_entry("config", "sensor.setting", entity_category="config", **demo),
+            registry_entry("loose", "sensor.loose", device_id=None, **demo),
+        ],
+        [{"id": "device1", "name": "Desk plug"}],
+        states=[
+            entity_state("sensor.power", "412", state_class="measurement", unit_of_measurement="W"),
+            entity_state("sensor.energy", "9.5", state_class="total"),
+            entity_state("sensor.meter", "9.5", state_class="total_increasing"),
+            # A unit alone does not make a measurement.
+            entity_state("sensor.label", "12", unit_of_measurement="W"),
+            entity_state("number.level", "3", state_class="measurement"),
+            entity_state("sensor.setting", "3", state_class="measurement"),
+            entity_state("sensor.loose", "3", state_class="measurement"),
+        ],
+    )
+
+    catalog = client.discover()
+
+    by_id = {entity.id: entity for entity in catalog.entities}
+    kinds = {
+        key: (entity.supported, entity.model_dump()["device_kind"]) for key, entity in by_id.items()
+    }
+    assert kinds["ha:measured"] == (True, "measurement")
+    # Any other state class, no state class, no state, or a number: a generic state device.
+    for key in ("total", "increasing", "plain", "silent", "number"):
+        assert kinds[f"ha:{key}"] == (True, "state"), key
+    # The registry rule of every device still applies first.
+    assert by_id["ha:config"].supported is False
+    assert by_id["ha:loose"].supported is False
+
+
+@pytest.mark.parametrize(
+    ("state", "value", "availability"),
+    [
+        ("412.5", 412.5, "available"),
+        ("-3", -3.0, "available"),
+        ("1e3", 1000.0, "available"),
+        ("unavailable", None, "unavailable"),
+        ("unknown", None, "unknown"),
+        ("sunny", None, "available"),
+        ("nan", None, "available"),
+        ("inf", None, "available"),
+    ],
+)
+def test_a_measurement_reading_has_a_finite_number_or_null_and_the_unit_of_measurement(
+    connector: Connector, state: str, value: float | None, availability: str
+) -> None:
+    client, install, _ = connector
+    install(
+        [registry_entry("power", "sensor.power", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Desk plug"}],
+        [
+            entity_state(
+                "sensor.power",
+                state,
+                state_class="measurement",
+                unit_of_measurement="W",
+                friendly_name="PRIVATE_SENTINEL",
+            )
+        ],
+    )
+    # Discovery sees the state class, so the reading is a measurement's.
+    client.discover()
+
+    reading = client.read_states(["sensor.power"])["sensor.power"]
+
+    assert reading is not None
+    encoded = reading.model_dump()
+    assert encoded["device_kind"] == "measurement"
+    assert encoded["state"] == state
+    assert encoded["value"] == value
+    assert encoded["unit"] == "W"
+    assert encoded["availability"] == availability
+    assert "PRIVATE_SENTINEL" not in reading.model_dump_json()
+
+
+def test_a_measurement_without_a_unit_has_a_null_unit_and_other_sensors_are_state(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    ids = ["sensor.count", "sensor.label", "sensor.energy", "number.level"]
+    install(
+        [
+            registry_entry(f"id{n}", entity_id, platform="demo", translation_key=None)
+            for n, entity_id in enumerate(ids)
+        ],
+        [{"id": "device1", "name": "Desk plug"}],
+        [
+            entity_state("sensor.count", "7", state_class="measurement"),
+            entity_state("sensor.label", "7", unit_of_measurement="W"),
+            entity_state("sensor.energy", "7", state_class="total_increasing"),
+            entity_state("number.level", "7", state_class="measurement"),
+        ],
+    )
+    client.discover()
+    readings = client.read_states(ids)
+
+    kinds = {
+        key: reading.model_dump()["device_kind"] for key, reading in readings.items() if reading
+    }
+    assert kinds == {
+        "sensor.count": "measurement",
+        "sensor.label": "state",
+        "sensor.energy": "state",
+        "number.level": "state",
+    }
+    count = readings["sensor.count"]
+    assert count is not None
+    assert count.model_dump()["unit"] is None
+
+
+def test_history_of_a_measurement_carries_its_value_and_unit_and_is_read_without_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    end = datetime(2026, 10, 13, 10, tzinfo=UTC)
+    at = start.timestamp()
+    install(
+        [registry_entry("power", "sensor.power", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Desk plug"}],
+        [entity_state("sensor.power", "412", state_class="measurement", unit_of_measurement="W")],
+    )
+    client.discover()
+    socket = install(
+        [],
+        history={
+            "sensor.power": [
+                {"s": "412", "lu": at},
+                {"s": "unavailable", "lu": at + 60},
+            ]
+        },
+    )
+
+    rows = client.history(["sensor.power"], start, end)["sensor.power"]
+
+    encoded = [row.model_dump() for row in rows]
+    assert [(row["device_kind"], row["value"], row["unit"]) for row in encoded] == [
+        ("measurement", 412.0, "W"),
+        ("measurement", None, "W"),
+    ]
+    [request] = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    assert request["entity_ids"] == ["sensor.power"]
+    assert request["no_attributes"] is True
+
+
+@pytest.mark.parametrize(
+    ("span", "period"),
+    [
+        (timedelta(hours=1), "5minute"),
+        (timedelta(hours=24), "5minute"),
+        (timedelta(hours=24, seconds=1), "hour"),
+        (timedelta(days=7), "hour"),
+        (timedelta(days=30), "hour"),
+    ],
+)
+def test_statistics_ask_for_mean_min_and_max_in_5_minute_buckets_up_to_24_hours_else_hourly(
+    connector: Connector, span: timedelta, period: str
+) -> None:
+    client, install, _ = connector
+    end = datetime(2026, 10, 13, 10, tzinfo=UTC)
+    socket = install([])
+
+    client.statistics(["sensor.power", "number.level"], end - span, end)
+
+    [request] = [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
+    assert request["period"] == period
+    assert request["statistic_ids"] == ["sensor.power", "number.level"]
+    assert sorted(request["types"]) == ["max", "mean", "min"]
+    assert datetime.fromisoformat(request["start_time"]) == end - span
+    assert datetime.fromisoformat(request["end_time"]) == end
+
+
+def test_statistics_parse_each_bucket_oldest_first_and_give_a_device_without_any_an_empty_list(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 6, 10, tzinfo=UTC)
+    end = start + timedelta(days=7)
+    install(
+        [],
+        statistics={
+            "sensor.power": [
+                statistics_row(start, 10.5, 5, 20),
+                # Two hours missing here: Home Assistant sends no row for them.
+                statistics_row(start + timedelta(hours=3), 60, 1, 90.25),
+            ],
+        },
+    )
+
+    result = client.statistics(["sensor.power", "sensor.quiet"], start, end)
+
+    assert list(result) == ["sensor.power", "sensor.quiet"]
+    assert [
+        (datetime.fromisoformat(b.start), datetime.fromisoformat(b.end), b.mean, b.min, b.max)
+        for b in result["sensor.power"]
+    ] == [
+        (start, start + timedelta(hours=1), 10.5, 5.0, 20.0),
+        (start + timedelta(hours=3), start + timedelta(hours=4), 60.0, 1.0, 90.25),
+    ]
+    assert result["sensor.quiet"] == []
+
+
+MISSING = object()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("max", MISSING, id="missing max"),
+        pytest.param("min", MISSING, id="missing min"),
+        pytest.param("mean", MISSING, id="missing mean"),
+        pytest.param("mean", None, id="null mean"),
+        pytest.param("min", None, id="null min"),
+        pytest.param("max", None, id="null max"),
+        pytest.param("mean", "1", id="text mean"),
+        pytest.param("mean", float("nan"), id="not a number"),
+        pytest.param("max", float("inf"), id="infinite"),
+        pytest.param("start", MISSING, id="missing start"),
+        pytest.param("end", "soon", id="text end"),
+    ],
+)
+def test_a_statistics_row_missing_mean_min_or_max_or_with_a_bad_value_is_invalid_data(
+    connector: Connector, field: str, value: object
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    row = statistics_row(start, 1, 0, 2) | {field: value}
+    if value is MISSING:
+        del row[field]
+    install([], statistics={"sensor.power": [row]})
+
+    with pytest.raises(ConnectorError) as error:
+        client.statistics(["sensor.power"], start, start + timedelta(hours=2))
+
+    assert error.value.code == "invalid_data"
+
+
 def test_slow_connect_and_authentication_count_toward_the_8_second_history_deadline(
     connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1336,3 +1583,73 @@ def test_a_history_answer_over_the_message_size_limit_is_invalid_data_not_a_conn
         client.history([source], DAY_START, DAY_END)
 
     assert error.value.code == code
+
+
+def test_statistics_home_assistant_refuses_are_invalid_data_and_a_bad_id_sends_nothing(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    install([], failing=["recorder/statistics_during_period"])
+    with pytest.raises(ConnectorError) as refused:
+        client.statistics(["sensor.power"], start, start + timedelta(hours=2))
+    assert refused.value.code == "invalid_data"
+
+    socket = install([])
+    with pytest.raises(ConnectorError) as malformed:
+        client.statistics(["../services/light"], start, start + timedelta(hours=2))
+    assert malformed.value.code == "configuration"
+    assert client.statistics([], start, start + timedelta(hours=2)) == {}
+    assert not [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
+
+
+def test_60_non_light_devices_are_read_in_history_requests_of_25_25_and_10_without_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    devices = [f"sensor.device_{number}" for number in range(60)]
+    at = start.timestamp()
+    socket = install(
+        [],
+        history={device: [{"s": str(number), "lu": at}] for number, device in enumerate(devices)},
+    )
+
+    history = client.history(devices, start, start + timedelta(hours=1))
+
+    requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    assert [len(r["entity_ids"]) for r in requests] == [25, 25, 10]
+    # Every device is asked for once, in order, and none with attributes.
+    assert [i for r in requests for i in r["entity_ids"]] == devices
+    assert {r["no_attributes"] for r in requests} == {True}
+    assert list(history) == devices
+    assert [history[device][0].state for device in devices] == [str(n) for n in range(60)]
+
+
+def test_120_measurements_are_read_in_statistics_requests_of_50_50_and_20_and_merged(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 6, 10, tzinfo=UTC)
+    end = start + timedelta(days=7)
+    meters = [f"sensor.meter_{number}" for number in range(120)]
+    socket = install(
+        [],
+        statistics={
+            meter: [statistics_row(start, number, number - 1, number + 1)]
+            for number, meter in enumerate(meters)
+        },
+    )
+
+    result = client.statistics(meters, start, end)
+
+    requests = [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
+    assert [len(r["statistic_ids"]) for r in requests] == [50, 50, 20]
+    assert [i for r in requests for i in r["statistic_ids"]] == meters
+    # Each request asks the same question of its own devices.
+    assert {(r["period"], r["start_time"], r["end_time"]) for r in requests} == {
+        ("hour", requests[0]["start_time"], requests[0]["end_time"])
+    }
+    assert sorted(r["types"] for r in requests) == [["mean", "min", "max"]] * 3
+    assert list(result) == meters
+    assert [result[meter][0].mean for meter in meters] == [float(n) for n in range(120)]

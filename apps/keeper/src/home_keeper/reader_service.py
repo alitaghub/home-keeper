@@ -17,13 +17,15 @@ from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, TypeAdapter, ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
-from home_keeper.demo import ENTITIES, DemoReplay, demo_label
+from home_keeper.demo import ENTITIES, DemoReplay, demo_label, demo_statistics
 from home_keeper.home_assistant import VISIBLE_ASCII, ConnectorError, HomeAssistantConnector
 from home_keeper.models import (
+    Bucket,
     CollectorError,
     DeviceState,
     Entity,
     Identity,
+    MeasurementState,
     Reading,
 )
 from home_keeper.reader import (
@@ -37,6 +39,7 @@ from home_keeper.reader import (
     ReaderHealthy,
     ReaderHistory,
     ReaderStates,
+    ReaderStatistics,
     ReaderUnavailable,
     ReaderWords,
 )
@@ -68,9 +71,13 @@ _collector_error: TypeAdapter[CollectorError] = TypeAdapter(CollectorError)
 def _reading_of(state: DeviceState) -> Reading:
     # Unset light attributes stay unset, so the routes leave them out. A state the connector
     # did not label is its own word.
-    return _reading.validate_python(
-        state.model_dump(mode="json", exclude_none=True) | {"label": state.label or state.state}
-    )
+    reading = state.model_dump(mode="json", exclude_none=True) | {
+        "label": state.label or state.state
+    }
+    # A measurement always has its value and unit, null when it has none.
+    if isinstance(state, MeasurementState):
+        reading |= {"value": state.value, "unit": state.unit}
+    return _reading.validate_python(reading)
 
 
 def live_state(source_entity_id: str, state: DeviceState) -> LiveState:
@@ -197,6 +204,28 @@ class HomeAssistantBackend:
             words[entity_id] = OnOffWords(on=on, off=off)
         return words
 
+    def statistics(
+        self, entity_ids: Sequence[Identity], start: datetime, end: datetime
+    ) -> dict[Identity, list[Bucket]]:
+        entities, sources = self._discover()
+        measurements = {entity.id for entity in entities if entity.device_kind == "measurement"}
+        # Only measurements Home Assistant still has; every other ID has no statistics.
+        requested = {
+            entity_id: sources[entity_id]
+            for entity_id in entity_ids
+            if entity_id in measurements and entity_id in sources
+        }
+        try:
+            statistics = self._connection().statistics(sorted(set(requested.values())), start, end)
+        except ConnectorError as error:
+            raise _unavailable(error) from None
+        return {
+            entity_id: statistics.get(source, [])
+            if (source := requested.get(entity_id)) is not None
+            else []
+            for entity_id in entity_ids
+        }
+
 
 class DemoBackend:
     """The synthetic home. The demo controller's commands switch its devices.
@@ -266,6 +295,19 @@ class DemoBackend:
             entity_id: OnOffWords(on=demo_label("on", entity_id), off=demo_label("off", entity_id))
             if entity_id in known
             else RAW_WORDS
+            for entity_id in entity_ids
+        }
+
+    def statistics(
+        self, entity_ids: Sequence[Identity], start: datetime, end: datetime
+    ) -> dict[Identity, list[Bucket]]:
+        """Synthetic statistics for the demo's measurements; [] for any other ID."""
+        measurements = {
+            entity["id"] for entity in ENTITIES if entity["device_kind"] == "measurement"
+        }
+        now = datetime.now(UTC)
+        return {
+            entity_id: demo_statistics(start, end, now) if entity_id in measurements else []
             for entity_id in entity_ids
         }
 
@@ -376,6 +418,20 @@ def create_reader_app(backend: ReaderBackend, service_token: str) -> FastAPI:
             raise HTTPException(422, "Invalid request")
         return ReaderHistory(
             history=backend.history(entity_id or [], start.astimezone(UTC), end.astimezone(UTC))
+        )
+
+    @app.get("/internal/statistics", response_model=ReaderStatistics)
+    def statistics(
+        start: AwareDatetime,
+        end: AwareDatetime,
+        entity_id: Annotated[list[Identity] | None, Query(max_length=MAX_STATE_IDS)] = None,
+    ) -> ReaderStatistics:
+        if start > end:
+            raise HTTPException(422, "Invalid request")
+        return ReaderStatistics(
+            statistics=backend.statistics(
+                entity_id or [], start.astimezone(UTC), end.astimezone(UTC)
+            )
         )
 
     @app.get("/internal/words", response_model=ReaderWords)

@@ -1,5 +1,6 @@
 """The API's view of Home Assistant: the reader service, reached over internal HTTP. The
-API asks it for the catalog, current states, history and reachability on each request."""
+API asks it for the catalog, current states, history, statistics and reachability on each
+request."""
 
 from collections.abc import Sequence
 from datetime import datetime
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field, PrivateAttr, ValidationError, model_valid
 
 from home_keeper.models import (
     MAX_CATALOG_ENTITIES,
+    Bucket,
     CollectorError,
     Entity,
     Identity,
@@ -22,6 +24,7 @@ from home_keeper.models import (
 )
 
 __all__ = [
+    "Bucket",
     "HistoryRow",
     "HttpReader",
     "LiveState",
@@ -119,6 +122,15 @@ class Reader(Protocol):
         not have. Raises ReaderUnavailable."""
         ...
 
+    def statistics(
+        self, entity_ids: Sequence[Identity], start: datetime, end: datetime
+    ) -> dict[Identity, list[Bucket]]:
+        """One key per requested ID, buckets oldest first: Home Assistant's statistics from
+        `start` to `end`, in 5-minute buckets for a range up to 24 hours, else hourly ones. []
+        for an ID that is no measurement, has no statistics or Home Assistant no longer has; a
+        period with no statistics has no bucket. Raises ReaderUnavailable."""
+        ...
+
 
 # The reader service's internal bodies, shared by the service and HttpReader.
 class ReaderHealthy(WireModel):
@@ -145,6 +157,10 @@ class ReaderHistory(WireModel):
 
 class ReaderWords(WireModel):
     words: dict[Identity, OnOffWords]
+
+
+class ReaderStatistics(WireModel):
+    statistics: dict[Identity, list[Bucket]]
 
 
 class HttpReader:
@@ -195,6 +211,22 @@ class HttpReader:
             "/internal/words", ReaderWords, params={"entity_id": list(entity_ids)}
         ).words
         return {entity_id: words.get(entity_id, RAW_WORDS) for entity_id in entity_ids}
+
+    def statistics(
+        self, entity_ids: Sequence[Identity], start: datetime, end: datetime
+    ) -> dict[Identity, list[Bucket]]:
+        if not entity_ids:
+            return {}
+        statistics = self._get(
+            "/internal/statistics",
+            ReaderStatistics,
+            params={
+                "entity_id": list(entity_ids),
+                "start": [start.isoformat()],
+                "end": [end.isoformat()],
+            },
+        ).statistics
+        return {entity_id: statistics.get(entity_id, []) for entity_id in entity_ids}
 
     def _get[T: BaseModel](
         self, path: str, model: type[T], params: dict[str, list[str]] | None = None

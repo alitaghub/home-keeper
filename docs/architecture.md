@@ -63,11 +63,11 @@ flowchart LR
 
 | Part      | Code                                   | Job                                                                                         |
 | --------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Reader    | `reader_service.py`, `home_assistant.py` | Holds the Home Assistant token. Answers the API's reads of the catalog, current state, history and reachability on request. Keeps no state; caches the catalog for up to 10 seconds. The API reaches it through `reader.py`. |
+| Reader    | `reader_service.py`, `home_assistant.py` | Holds the Home Assistant token. Answers the API's reads of the catalog, current state, history, statistics and reachability on request. Keeps no state; caches the catalog for up to 10 seconds. The API reaches it through `reader.py`. |
 | Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the reader's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
 | Demo      | `demo.py`, `reader_service.py`         | The reader's synthetic home. Same reader routes, no hardware, a day of synthetic history from the start. Applies demo light commands. |
 | API       | `api.py`, `models.py`, `control.py`    | Validates requests and answers them from the reader and the store. Routes selection to Monitoring and commands to Commands. |
-| History   | `changes.py`, `usage.py`               | Turns Home Assistant's history rows into the changes History lists and the usage numbers, with unknown time named. |
+| History   | `changes.py`, `usage.py`, `measurements.py` | Turns Home Assistant's history rows into the changes History lists and the usage numbers, with unknown time named, and a measurement's statistics into its overall numbers. |
 | Monitoring | `monitoring.py`                       | Owns the selection, checks a new selection against Home Assistant's catalog, and answers each monitored device's current state from the reader. |
 | Commands  | `commands.py`                          | Checks, forwards and records commands to monitored lights, plugs and switches, then reads the device's state every 0.5 s for up to 5 s to confirm the outcome. |
 | Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo reader. Publishes no port. |
@@ -181,9 +181,9 @@ Device history is not stored here. Home Assistant's recorder keeps it.
 | ----------- | --------------------------------------------------------------------------------------------- |
 | Source      | Where data comes from: `demo` or `home_assistant`. One database holds one source.             |
 | Catalog     | The devices and entities the reader lists from Home Assistant, with whether each one can be monitored. |
-| Device kind | What a device is, from its Home Assistant domain: `light` or `switch` (plugs too).           |
+| Device kind | What a device is, from Home Assistant's domain and state: `light`; `switch` (plugs too); `on_off` (a fan, a binary sensor, a siren, a humidifier or a remote); `measurement` (a sensor whose `state_class` is `measurement`); `state` (any other device). Only `light` and `switch` can be switched. |
 | Selection   | The devices you chose to monitor. The only filter for history, usage and the agent. |
-| Reader      | The service that reads Home Assistant for the API: catalog, current state, history and reachability. |
+| Reader      | The service that reads Home Assistant for the API: catalog, current state, history, statistics and reachability. |
 | History     | A device's past states as Home Assistant's recorder keeps them. Read on demand, never copied. |
 | Change      | Two consecutive history rows of a monitored device that differ in state, availability, brightness or color, at Home Assistant's time. |
 | Unknown time | Time Home Assistant has no history for (`no_history`) or reported a device unavailable (`unavailable`). |
