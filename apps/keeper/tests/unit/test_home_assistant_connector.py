@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 from support.home_assistant import (
+    FakeClock,
     FakeSocket,
     Frame,
     StateServer,
@@ -62,6 +63,8 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
         translations: dict[str, str] | None = None,
         failing: Iterable[str] = (),
         silent: Iterable[str] = (),
+        delays: dict[str, float] | None = None,
+        clock: FakeClock | None = None,
     ) -> FakeSocket:
         socket = FakeSocket(
             entities,
@@ -71,6 +74,8 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
             translations=translations,
             failing=failing,
             silent=silent,
+            delays=delays,
+            clock=clock,
         )
         install_socket(monkeypatch, socket)
         server.states = {state["entity_id"]: state for state in states}
@@ -1155,3 +1160,78 @@ def test_history_of_on_off_devices_is_read_one_device_per_request_without_attrib
     ]
     for request in requests:
         assert request["no_attributes"] is (request["entity_ids"] != ["light.desk"])
+
+
+def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, install, _ = connector
+    clock = FakeClock()
+    monkeypatch.setattr("home_keeper.home_assistant.time", clock)
+    devices = [f"sensor.slow_{number}" for number in range(10)]
+    # Each device answers in 3 s: alone fast enough, together far too slow.
+    install(
+        [],
+        history={device: [{"s": "1", "lu": 1.0}] for device in devices},
+        delays={"history/history_during_period": 3.0},
+        clock=clock,
+    )
+    started = clock.monotonic()
+
+    with pytest.raises(ConnectorError) as error:
+        client.history(
+            devices, datetime(2026, 10, 13, 9, tzinfo=UTC), datetime(2026, 10, 13, 10, tzinfo=UTC)
+        )
+
+    assert error.value.code == "timeout"
+    assert clock.monotonic() - started <= 8
+
+
+def test_history_answers_that_together_pass_64_mib_are_invalid_data(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    # About 13.5 MiB of rows per device: each answer is under the 16 MiB cap, five are over 64.
+    row = {"s": "x" * 250, "lu": 1_760_000_000.0}
+    rows = [row] * (13_500_000 // len(json.dumps(row)))
+    devices = [f"sensor.busy_{number}" for number in range(5)]
+    install([], history=dict.fromkeys(devices, rows))
+    assert len(json.dumps({"x": rows})) < HISTORY_MAX_PAYLOAD
+    assert 5 * len(json.dumps(rows)) > 64 * 1024 * 1024
+
+    with pytest.raises(ConnectorError) as error:
+        client.history(
+            devices, datetime(2026, 10, 13, tzinfo=UTC), datetime(2026, 10, 14, tzinfo=UTC)
+        )
+
+    assert error.value.code == "invalid_data"
+
+
+def test_discovery_waits_only_the_budget_for_silent_translations_when_the_language_answers(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    socket = install(
+        [registry_entry("climate", "climate.hall", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Hall"}],
+        [entity_state("climate.hall", "heat")],
+        translations=TRANSLATIONS,
+        silent=["frontend/get_translations"],
+    )
+
+    catalog = client.discover()
+
+    assert [entity.supported for entity in catalog.entities] == [True]
+    # The language read answered and the translations read was sent, then abandoned.
+    assert [
+        r["type"] for r in socket.sent if r["type"] in ("get_config", "frontend/get_translations")
+    ] == [
+        "get_config",
+        "frontend/get_translations",
+    ]
+    assert socket.waits
+    assert sum(wait for wait in socket.waits if wait is not None) <= 2
+    # Without translations the label is the raw state.
+    [reading] = client.read_states(["climate.hall"]).values()
+    assert reading is not None
+    assert reading.model_dump()["label"] == "heat"

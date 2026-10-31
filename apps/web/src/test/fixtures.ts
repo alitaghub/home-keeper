@@ -301,7 +301,7 @@ export const monitoredState = (
 /** A monitored on/off device: Home Assistant's `state` (on or off), worded as `label`. */
 export const monitoredOnOff = (
   entity: Schemas["Entity"] & { device_kind: "on_off" },
-  state: "on" | "off" | "unavailable" | "unknown",
+  state: Schemas["OnOffReading"]["state"],
   label: string,
   availability: Reading["availability"] = "available",
 ) =>

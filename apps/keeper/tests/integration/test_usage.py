@@ -49,20 +49,19 @@ PLUG = Entity(
     device_kind="switch",
     supported=True,
 )
-# Built on demand: a kind the code does not know fails the tests that use it, not the module.
-DOOR = {
-    "id": "door-a",
-    "device_id": "device-door-a",
-    "device_name": "Door sensor",
-    "name": "Front door",
-    "device_kind": "on_off",
-    "supported": True,
-}
+DOOR = Entity(
+    id="door-a",
+    device_id="device-door-a",
+    device_name="Door sensor",
+    name="Front door",
+    device_kind="on_off",
+    supported=True,
+)
 SOURCES = {
     BULB_A.id: "light.bulb_a",
     BULB_B.id: "light.bulb_b",
     PLUG.id: "switch.kettle",
-    DOOR["id"]: "binary_sensor.front_door",
+    DOOR.id: "binary_sensor.front_door",
 }
 REPORT_KEYS = {"start", "end", "timezone", "devices"}
 UNREACHABLE: list[ReaderError] = ["reader_unreachable", "connection", "authentication", "timeout"]
@@ -99,7 +98,7 @@ class Home:
     def record(self, entity_id: str, *rows: Row) -> None:
         """Home Assistant's recorder holds each (time, state) of the device, in order."""
         kind: Payload = {"device_kind": "switch"} if entity_id == PLUG.id else {}
-        if entity_id == DOOR["id"]:
+        if entity_id == DOOR.id:
             kind = {"device_kind": "on_off"}
         for at, state in rows:
             self.reader.record(entity_id, history_row(SOURCES[entity_id], at, state | kind))
@@ -137,9 +136,9 @@ def home(
     time = [clock]
     reader = FakeReader([BULB_A, BULB_B, PLUG])
     if "door-a" in devices:
-        reader.entities.append(Entity.model_validate(DOOR))
+        reader.entities.append(DOOR)
         # Home Assistant's translations of a door sensor's states.
-        reader.word_list["door-a"] = OnOffWords(on="Open", off="Closed")
+        reader.word_list[DOOR.id] = OnOffWords(on="Open", off="Closed")
     app = create_app(
         database,
         TOKEN,
@@ -697,11 +696,13 @@ def test_an_on_off_device_without_translation_reports_on_and_off(database: str) 
     assert (door["on_label"], door["off_label"]) == ("on", "off")
 
 
-def test_usage_cannot_be_read_while_home_assistant_words_are_unreachable(database: str) -> None:
+def test_usage_is_a_503_when_only_the_words_read_fails(database: str) -> None:
     with home(database, ("door-a",), clock=utc(10, 12)) as house:
         house.record("door-a", (utc(10, 9), on()))
-        house.reader.error = "connection"
+        # The catalog and the history still answer; only Home Assistant's words do not.
+        house.reader.words_error = "connection"
 
         response = house.usage_response(utc(10, 8), utc(10, 12))
 
     assert response.status_code == 503, response.text
+    assert house.reader.word_reads == [["door-a"]]

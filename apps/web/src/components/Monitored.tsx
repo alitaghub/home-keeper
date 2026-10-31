@@ -4,7 +4,7 @@ import type { Schemas } from "../api/client";
 import { ago, brightnessPercent, date } from "../format";
 import { cn } from "../lib/utils";
 import type { DeviceUsage, Usage } from "../useUsage";
-import { lightName } from "./Catalog";
+import { deviceName } from "./Catalog";
 import { UsageStrip } from "./History";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
@@ -203,7 +203,7 @@ function Tile({
   onHistory: (entity: Schemas["MonitoredEntity"]) => void;
   busy: boolean;
 }) {
-  const name = lightName(entity);
+  const name = deviceName(entity);
   const { state } = entity;
   // Only an available device with a known on/off state can be switched.
   const recorded = state?.availability === "available" ? state.state : null;
@@ -307,7 +307,7 @@ function OtherTile({
   entity: Schemas["MonitoredEntity"];
   onStop: (id: string) => void;
 }) {
-  const name = lightName(entity);
+  const name = deviceName(entity);
   const { state } = entity;
   return (
     <article className="min-w-0">

@@ -19,9 +19,8 @@ class KeeperError(Exception):
 
 
 # What a device is; None for a domain the keeper does not record, such as a person.
-# `on_off`: a device that is only on or off, such as a fan or a door sensor, which has usage
-# but cannot be switched. `state`: any other device, which reports a state but cannot be
-# switched.
+# `on_off` (a fan, a door sensor) has usage; `state` (any other device) only a state. Neither
+# can be switched.
 DeviceKind = Literal["light", "switch", "on_off", "state"] | None
 
 

@@ -158,11 +158,18 @@ Home Keeper keeps no copy of device history, so this one setting decides how far
 back History and usage go.
 
 Each history read asks Home Assistant for the lights, plugs and switches in one
-request, and for every other device in a request of its own. One answer can be at
-most 16 MiB. A device that changes very often, such as a busy power sensor, can
-exceed that over a long range. Then the whole read fails with `invalid_data`, and
-History and usage cannot load for that range. Choose a shorter range or stop
-monitoring that device.
+request, and for every other device in a request of its own. Three limits apply
+to one history read:
+
+- One answer can be at most 16 MiB.
+- All answers of the read together can be at most 64 MiB.
+- The whole read must finish within 8 seconds.
+
+A device that changes very often, such as a busy power sensor, can exceed the
+size limits over a long range. Then the whole read fails with `invalid_data`. A
+read that takes longer than 8 seconds fails with `timeout`. In both cases History
+and usage cannot load for that range. Choose a shorter range, or stop monitoring
+the busy device.
 
 ## Use your own Home Assistant
 
@@ -247,7 +254,8 @@ Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discove
 shows supported devices by default, using their device names, under **Lights**,
 **Plugs and switches**, **Other on/off** and **Other**. An on/off or other device
 that has its own entity name adds it to the device name, such as
-"Front door · Door". Room groups, people, settings and other
+"Front door · Door", on **Setup** and on its **Home** card, so two entities of
+one device are told apart. Room groups, people, settings and other
 entities stay in the collapsed **Show other entities** section on the **Setup**
 tab. Type in **Search devices** to show only entities whose name or device name
 contains the text, in every section. Clear the search to see the full list again.

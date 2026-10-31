@@ -308,7 +308,7 @@ def state_device_responses(database: str) -> dict[str, Recorded]:
         result["state_events"] = record(client.get("/api/events"))
         usage = client.get("/api/usage", params=usage_range(NOW - timedelta(minutes=1), clock[0]))
         result["state_usage"] = record(usage)
-        # Usage covers lights, plugs and switches only.
+        # A device of kind `state` has no usage entry.
         assert usage.json()["devices"] == []
 
         beat(client, clock[0])

@@ -105,6 +105,8 @@ class FakeReader:
         self.history_reads: list[tuple[list[str], datetime, datetime]] = []
         # Home Assistant's words for on and off by entity ID; a device not listed has none.
         self.word_list: dict[str, OnOffWords] = {}
+        # Set to fail only the words reads, while the catalog, states and history still answer.
+        self.words_error: ReaderError | None = None
         # The entity IDs of each `words` call, in order.
         self.word_reads: list[list[str]] = []
 
@@ -139,6 +141,8 @@ class FakeReader:
     def words(self, entity_ids: Sequence[str]) -> dict[str, OnOffWords]:
         self.word_reads.append(list(entity_ids))
         self._check()
+        if self.words_error is not None:
+            raise ReaderUnavailable(self.words_error)
         return {entity_id: self.word_list.get(entity_id, RAW_WORDS) for entity_id in entity_ids}
 
     def record(self, entity_id: str, *rows: HistoryRow) -> None:

@@ -101,11 +101,13 @@ test("a monitored door sensor shows under Other on/off with a strip and no comma
   const section = page.locator("section", {
     has: page.getByRole("heading", { level: 2, name: "Other on/off" }),
   });
-  const card = section.locator("#monitored-onoff article", { hasText: "Front door" });
+  const card = section.locator("#monitored-onoff article", { hasText: "Front door · Door" });
   await expect(card).toBeVisible();
   await expect(card.getByText("Open").first()).toBeVisible();
   await expect(card.getByRole("img", { name: /^Last 24 hours/ })).toBeVisible();
-  await expect(card.getByRole("button", { name: "Usage history of Front door" })).toBeVisible();
+  await expect(
+    card.getByRole("button", { name: "Usage history of Front door · Door" }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: /^Turn (on|off)/ })).toHaveCount(0);
   await expect(page.getByRole("slider")).toHaveCount(0);
   // It is not a light or a plug.

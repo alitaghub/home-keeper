@@ -80,11 +80,13 @@ describe("sections on Home", () => {
 
     const other = screen.getByRole("heading", { level: 2, name: "Other" }).closest("section");
     if (!other) throw new Error("Other is not a section");
-    expect(within(other).getByRole("heading", { name: "Hall thermostat" })).toBeInTheDocument();
+    expect(
+      within(other).getByRole("heading", { name: "Hall thermostat · Heating" }),
+    ).toBeInTheDocument();
     expect(within(other).getAllByText("Heat").length).toBeGreaterThan(0);
     expect(within(other).getByText(/^Changed /)).toBeInTheDocument();
     expect(other.querySelector("#monitored-other")).toContainElement(
-      within(other).getByRole("heading", { name: "Hall thermostat" }),
+      within(other).getByRole("heading", { name: "Hall thermostat · Heating" }),
     );
   });
 
@@ -96,7 +98,7 @@ describe("sections on Home", () => {
     expect(screen.queryByRole("button", { name: /Usage history/ })).not.toBeInTheDocument();
     // It can still be stopped.
     expect(
-      screen.getByRole("button", { name: "Stop monitoring Hall thermostat" }),
+      screen.getByRole("button", { name: "Stop monitoring Hall thermostat · Heating" }),
     ).toBeInTheDocument();
   });
 
@@ -168,7 +170,7 @@ describe("other on/off devices on Home", () => {
       .getByRole("heading", { level: 2, name: "Other on/off" })
       .closest("section");
     if (!section) throw new Error("Other on/off is not a section");
-    const card = within(section).getByRole("heading", { name: "Front door" });
+    const card = within(section).getByRole("heading", { name: "Front door · Door" });
     expect(section.querySelector("#monitored-onoff")).toContainElement(card);
     expect(within(section).getAllByText("Open").length).toBeGreaterThan(0);
     // The strip words on time with Home Assistant's word, not "on".
@@ -176,7 +178,7 @@ describe("other on/off devices on Home", () => {
     expect(strip).toHaveAccessibleName(/Open/);
     expect(strip).not.toHaveAccessibleName(/\bon\b/);
     expect(
-      within(section).getByRole("button", { name: "Usage history of Front door" }),
+      within(section).getByRole("button", { name: "Usage history of Front door · Door" }),
     ).toBeInTheDocument();
     // It is not shown as a light.
     expect(screen.queryByRole("heading", { level: 2, name: "Lights" })).not.toBeInTheDocument();
@@ -187,8 +189,12 @@ describe("other on/off devices on Home", () => {
 
     expect(screen.queryByRole("slider")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Turn (on|off)/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Usage history of Front door" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Stop monitoring Front door" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Usage history of Front door · Door" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Stop monitoring Front door · Door" }),
+    ).toBeInTheDocument();
   });
 
   it("shows an unavailable on/off device as unavailable instead of with its label", () => {
@@ -198,7 +204,9 @@ describe("other on/off devices on Home", () => {
       .getByRole("heading", { level: 2, name: "Other on/off" })
       .closest("section");
     if (!section) throw new Error("Other on/off is not a section");
-    const card = within(section).getByRole("heading", { name: "Front door" }).closest("article");
+    const card = within(section)
+      .getByRole("heading", { name: "Front door · Door" })
+      .closest("article");
     if (!card) throw new Error("Front door is not inside a card");
     expect(card.querySelector("[data-status]")).toHaveAttribute("data-status", "unknown");
     expect(card).toHaveTextContent("Unavailable");
@@ -214,4 +222,62 @@ describe("other on/off devices on Home", () => {
 
     expect(headings()).toEqual(["Lights", "Plugs and switches", "Other on/off", "Other"]);
   });
+});
+
+describe("two monitored entities of one device on Home", () => {
+  const hall = {
+    device_id: "hall-sensor",
+    device_name: "Hall sensor",
+    supported: true,
+    reason: null,
+  };
+
+  it.each([
+    [
+      "state",
+      [
+        fixtures.monitoredState(
+          { ...fixtures.thermostat, ...hall, id: "sensor.hall_temperature", name: "Temperature" },
+          "21",
+          "21",
+        ),
+        fixtures.monitoredState(
+          { ...fixtures.thermostat, ...hall, id: "sensor.hall_humidity", name: "Humidity" },
+          "40",
+          "40",
+        ),
+      ],
+    ],
+    [
+      "on_off",
+      [
+        fixtures.monitoredOnOff(
+          { ...fixtures.frontDoor, ...hall, id: "binary_sensor.hall_door", name: "Temperature" },
+          "on",
+          "Open",
+        ),
+        fixtures.monitoredOnOff(
+          { ...fixtures.frontDoor, ...hall, id: "binary_sensor.hall_window", name: "Humidity" },
+          "off",
+          "Closed",
+        ),
+      ],
+    ],
+  ])(
+    "titles the %s cards by device and entity and labels their stop buttons apart",
+    (_, entities) => {
+      show(entities);
+
+      expect(
+        screen.getByRole("heading", { name: "Hall sensor · Temperature" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Hall sensor · Humidity" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Stop monitoring Hall sensor · Temperature" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Stop monitoring Hall sensor · Humidity" }),
+      ).toBeInTheDocument();
+    },
+  );
 });
