@@ -17,6 +17,8 @@ export default defineConfig({
         changeOrigin: true,
         headers: { origin: apiOrigin },
       },
+      // The web container forwards /agent to Aegra when the stack runs `--profile agent`.
+      "/agent": { target: apiOrigin, changeOrigin: true },
     },
   },
   test: {

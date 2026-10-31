@@ -104,8 +104,9 @@ The commands are fixed. The API picks the call from the device's kind:
 A plug or switch has no brightness. A command with `brightness_pct` for one is
 refused with `not_supported`.
 
-`sender` names who asked: `{"kind": "dashboard"}`, `{"kind": "browser_chat"}`,
-or `{"kind": "telegram", "id": 123456789, "name": "Ada"}`. It is a label for the
+`sender` names who asked: `{"kind": "dashboard"}` for the device cards,
+`{"kind": "browser_chat"}` for the agent after you approve in the dashboard's
+agent panel, or `{"kind": "telegram", "id": 123456789, "name": "Ada"}`. It is a label for the
 record, not authentication. See [security.md](security.md).
 
 ### Outcome
@@ -182,8 +183,8 @@ exists. With control `on` and no commands, it reads "No device commands yet."
 Each row shows the light, plug or switch, the command (`Turn on`, `Turn on at 30%` or
 `Turn off`), the outcome, the sender and the time sent. Today's rows show the
 time only; hover over it for the full date. The sender reads
-`Dashboard`, `Browser chat`, or the Telegram user's name and ID, such as
-`Sam (Telegram 12345)`.
+`Dashboard` (a device card's switch), `Browser chat` (the agent, approved in the
+agent panel), or the Telegram user's name and ID, such as `Sam (Telegram 12345)`.
 
 | Outcome        | Shown as                    |
 | -------------- | --------------------------- |

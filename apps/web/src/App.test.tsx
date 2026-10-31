@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { components } from "./api/schema";
+import { createFakeAegra, type FakeAegra, installFakeAegra } from "./test/fake-aegra";
 import {
   type ApiCall,
   type FakeApi,
@@ -1958,5 +1959,109 @@ describe("when Home Assistant cannot be reached", () => {
     expect(switchButtons()).toEqual([]);
     // Home Assistant answers, so this is no outage.
     expect(banner()).toBeNull();
+  });
+});
+
+describe("agent panel", () => {
+  const STORAGE_KEY = "home-keeper.agent-panel";
+  let aegra: FakeAegra;
+
+  /** Renders the dashboard with the keeper API and Aegra behind fakes. */
+  function renderWithAgent(replies: Replies = {}) {
+    api = installFakeApi(replies);
+    aegra = createFakeAegra();
+    installFakeAegra(aegra);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const view = render(<App />);
+    return { user, view };
+  }
+
+  const agentPanel = () =>
+    screen.queryByRole("region", { name: "Agent" }) ??
+    screen.queryByRole("complementary", { name: "Agent" });
+
+  beforeEach(() => localStorage.clear());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+  });
+
+  it("is closed on a first visit and opens beside the current tab from Ask", async () => {
+    startOn("history");
+    const { user } = renderWithAgent();
+    await screen.findByRole("tab", { name: "History", selected: true });
+    expect(agentPanel()).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+
+    await waitFor(() => expect(agentPanel()).toBeVisible());
+    expect(screen.getByRole("tab", { name: "History", selected: true })).toBeInTheDocument();
+    expect(byId("panel-history")).toBeVisible();
+  });
+
+  it("remembers that the panel was open or closed across a reload", async () => {
+    const first = renderWithAgent();
+    await first.user.click(await screen.findByRole("button", { name: "Ask" }));
+    await waitFor(() => expect(agentPanel()).toBeVisible());
+    first.view.unmount();
+
+    const second = renderWithAgent();
+    await waitFor(() => expect(agentPanel()).toBeVisible());
+    await second.user.click(screen.getByRole("button", { name: "Close agent panel" }));
+    expect(agentPanel()).toBeNull();
+    second.view.unmount();
+
+    renderWithAgent();
+    await screen.findByRole("button", { name: "Ask" });
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(agentPanel()).toBeNull();
+  });
+
+  it.each([
+    ["an unreadable saved value", () => localStorage.setItem(STORAGE_KEY, "{not json")],
+    [
+      "storage that throws",
+      () =>
+        vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+          throw new DOMException("The operation is insecure.", "SecurityError");
+        }),
+    ],
+  ])("starts closed with %s and still opens", async (_, breakStorage) => {
+    breakStorage();
+    const { user } = renderWithAgent();
+
+    await user.click(await screen.findByRole("button", { name: "Ask" }));
+
+    await waitFor(() => expect(agentPanel()).toBeVisible());
+  });
+
+  it("returns to the tab you were on when you close the panel", async () => {
+    startOn("setup");
+    const { user } = renderWithAgent();
+    await user.click(await screen.findByRole("button", { name: "Ask" }));
+    await waitFor(() => expect(agentPanel()).toBeVisible());
+
+    await user.click(screen.getByRole("button", { name: "Close agent panel" }));
+
+    expect(agentPanel()).toBeNull();
+    expect(screen.getByRole("tab", { name: "Setup", selected: true })).toBeInTheDocument();
+    expect(byId("panel-setup")).toBeVisible();
+  });
+
+  it("keeps the dashboard working while the agent is not running", async () => {
+    const { user } = renderWithAgent();
+    aegra.fail(502);
+    await user.click(await screen.findByRole("button", { name: "Ask" }));
+
+    await waitFor(
+      () =>
+        expect(agentPanel()).toHaveTextContent(
+          "The agent isn't running. Start it with --profile agent.",
+        ),
+      { timeout: 3000 },
+    );
+    openTab("Setup");
+    expect(byId("panel-setup")).toBeVisible();
+    expect(await screen.findAllByText(fixtures.desk.device_name)).not.toHaveLength(0);
   });
 });

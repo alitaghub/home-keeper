@@ -6,7 +6,6 @@ AZURE_OPENAI_* values. It never calls the model.
 
 import json
 import os
-import re
 import subprocess
 import time
 import uuid
@@ -19,8 +18,8 @@ import httpx
 REPO = Path(__file__).resolve().parents[1]
 # The browser addresses: localhost, which also reaches the stack through an SSH port forward.
 AGENT_URL = f"http://localhost:{os.environ.get('AGENT_PORT', '2026')}"
-CHAT_URL = f"http://localhost:{os.environ.get('CHAT_PORT', '3000')}"
-AGENT_SERVICES = {"agent", "chat"}
+DASHBOARD_URL = f"http://localhost:{os.environ.get('HOME_KEEPER_PORT', '8000')}"
+AGENT_SERVICES = {"agent"}
 TIMEOUT = 90
 
 
@@ -47,6 +46,8 @@ def check_profile_config(file: str) -> None:
     assert "postgres" in plain["services"], f"{file}: no Postgres without the agent profile"
     services: dict[str, Any] = config(file, "--profile", "agent")["services"]
     assert services.keys() >= AGENT_SERVICES, f"{file}: missing {AGENT_SERVICES - services.keys()}"
+    # The browser reaches Aegra only through the dashboard, so no chat service runs.
+    assert "chat" not in services, f"{file}: the agent profile still starts a chat service"
     assert not [
         name for name, service in services.items() if "redis" in f"{name} {service.get('image')}"
     ], f"{file}: Redis in the agent profile"
@@ -90,7 +91,7 @@ def main() -> None:
     ).raise_for_status()
     assert "agent" in [assistant["graph_id"] for assistant in assistants.json()], assistants.text
 
-    # The browser calls Aegra directly, so Aegra allows exactly the chat origin and no other.
+    # The dashboard reaches Aegra through its own address, so no website needs CORS.
     def allowed_origin(origin: str) -> str | None:
         preflight = httpx.options(
             f"{AGENT_URL}/threads/search",
@@ -99,8 +100,29 @@ def main() -> None:
         )
         return preflight.headers.get("access-control-allow-origin")
 
-    assert allowed_origin("http://evil.example.test") is None, "Aegra allows any origin"
-    assert allowed_origin(CHAT_URL) == CHAT_URL, "Aegra does not allow exactly the chat origin"
+    for origin in ("http://evil.example.test", DASHBOARD_URL, "http://localhost:3000"):
+        assert allowed_origin(origin) is None, f"Aegra allows the origin {origin}"
+
+    # The dashboard forwards /agent/* to Aegra with the prefix stripped.
+    info = httpx.get(f"{DASHBOARD_URL}/agent/info", timeout=10).raise_for_status()
+    assert info.json()["name"] == "Aegra", info.text
+    forwarded = httpx.post(
+        f"{DASHBOARD_URL}/agent/assistants/search", json={"graph_id": "agent"}, timeout=10
+    ).raise_for_status()
+    assert "agent" in [assistant["graph_id"] for assistant in forwarded.json()], forwarded.text
+    # A form post another site starts needs no preflight; Aegra reads its text/plain as JSON.
+    for site in ("cross-site", "same-site"):
+        refused = httpx.post(
+            f"{DASHBOARD_URL}/agent/threads",
+            content=json.dumps({"metadata": {"source": "dashboard"}}),
+            headers={
+                "Content-Type": "text/plain",
+                "Sec-Fetch-Site": site,
+                "Origin": "http://evil.example.test",
+            },
+            timeout=10,
+        )
+        assert refused.status_code == 403, f"A {site} /agent request answered {refused}"
 
     # Threads live in Postgres, so a thread outlives an agent restart. No run, so no model call.
     marker = str(uuid.uuid4())
@@ -114,34 +136,15 @@ def main() -> None:
     kept = httpx.get(f"{AGENT_URL}/threads/{thread['thread_id']}", timeout=10).raise_for_status()
     assert kept.json()["metadata"]["smoke"] == marker, kept.text
 
-    def chat_page() -> str:
-        response = httpx.get(CHAT_URL, timeout=5)
-        return response.text if response.status_code == 200 else ""
-
-    page = wait_until("chat page", chat_page)
-    assert "<html" in page.lower(), "Chat page HTML not served"
-    # Next.js inlines the Aegra URL and assistant id into the page's scripts at build time.
-    scripts = re.findall(r'src="(/_next/static/chunks/[^"]+\.js)"', page)
-    assert scripts, "Chat page references no scripts"
-    bundle = "".join(httpx.get(CHAT_URL + src, timeout=10).text for src in scripts)
-    assert re.search(rf'"{re.escape(AGENT_URL)}"[^"]{{0,20}}"agent"', bundle), (
-        f"Chat is not built for {AGENT_URL} and assistant 'agent'"
-    )
-    # The chat server must not proxy Aegra: its proxy answers any origin with `*`.
-    proxied = httpx.get(f"{CHAT_URL}/api/info", timeout=10)
-    assert not (
-        proxied.status_code == 200
-        and proxied.headers.get("content-type", "").startswith("application/json")
-        and {"version", "flags"} <= proxied.json().keys()
-    ), "Chat server proxies Aegra"
-
     print(
         json.dumps(
             {
                 "agent_compose": "passed",
                 "seconds": round(time.monotonic() - started, 2),
-                "proved": "agent profile config, Aegra health, graph listed, chat-only CORS, "
-                "thread kept across restart, chat page built for this agent, no chat proxy",
+                "proved": "agent profile config without chat, Aegra health, graph listed, "
+                "no CORS origin, dashboard /agent reaches Aegra, "
+                "cross-site and same-site /agent refused, "
+                "thread kept across restart",
             }
         )
     )

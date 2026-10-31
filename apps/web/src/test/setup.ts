@@ -11,6 +11,16 @@ HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
   this.dispatchEvent(new Event("close"));
 };
 
+// jsdom does no layout. assistant-ui measures the chat viewport and scrolls it to the end;
+// here nothing has a size, so observing and scrolling do nothing.
+globalThis.ResizeObserver ??= class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+Element.prototype.scrollTo ??= () => {};
+Element.prototype.scrollIntoView ??= () => {};
+
 afterEach(() => {
   cleanup();
 });

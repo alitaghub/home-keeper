@@ -181,12 +181,21 @@ def main() -> None:
         assert foreign_host == 400, f"Foreign Host through the dashboard answered {foreign_host}"
         json.loads(request(f"/api/selection/{entity}", {"selected": False}))
         assert entity not in {entry["id"] for entry in get("/api/monitored")["entities"]}
+        # Without the agent profile, /agent fails instead of serving the dashboard page,
+        # so the agent panel can say the agent isn't running.
+        try:
+            urlopen(Request(base + "/agent/info"), timeout=10)
+            without_agent = None
+        except HTTPError as error:
+            without_agent = error.code
+        assert without_agent == 502, f"/agent without the agent answered {without_agent}"
     finally:
         request(f"/api/selection/{entity}", {"selected": initially_selected})
     print(
         "Compose smoke passed: only the web container published, healthy reader, five "
         "discoveries, dashboard assets with security headers, no dashboard in the API "
-        "image, foreign-origin write refused, the selected light's current state and its removal"
+        "image, foreign-origin write refused, the selected light's current state and its removal, "
+        "/agent failing without the agent"
     )
 
 

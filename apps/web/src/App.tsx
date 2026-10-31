@@ -1,5 +1,7 @@
-import { House, RefreshCw, TriangleAlert } from "lucide-react";
+import { House, MessageSquare, RefreshCw, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { type LayoutStorage, useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import { AGENT_MIN_PX, AGENT_WIDTH } from "./agent/layout";
 import {
   api,
   type CommandRecord,
@@ -8,6 +10,7 @@ import {
   type Schemas,
   unwrap,
 } from "./api/client";
+import { AgentSlot } from "./components/AgentSlot";
 import { Catalog, lightName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { HistoryDialog } from "./components/History";
@@ -17,11 +20,14 @@ import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader } from "./components/ui/card";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { date, time } from "./format";
 import { cn } from "./lib/utils";
+import { useAgentPanel } from "./useAgentPanel";
 import { useCommands, useTimeline } from "./useTimeline";
 import { useRecentUsage } from "./useUsage";
+import { useWideScreen } from "./useWideScreen";
 
 const POLL_MS = 3000;
 
@@ -110,6 +116,24 @@ type Snapshot = {
 // is applied only if no later load has applied its own.
 type LoadOrder = { started: number; snapshot: number; control: number };
 
+// The panel's width, per browser. Storage can be blocked; the panel then opens at its default.
+const layoutStorage: LayoutStorage = {
+  getItem: (key) => {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // Not remembered.
+    }
+  },
+};
+
 export function App() {
   const [tab, setTab] = useState<Tab>(tabFromHash);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -134,6 +158,31 @@ export function App() {
   const sending = useRef(new Set<string>());
   const [sendingIds, setSendingIds] = useState<ReadonlySet<string>>(new Set());
   const [historyFor, setHistoryFor] = useState<Schemas["MonitoredEntity"] | null>(null);
+  const [agentOpen, setAgentOpen] = useAgentPanel();
+  const askButton = useRef<HTMLButtonElement>(null);
+  const closeAgent = () => {
+    setAgentOpen(false);
+    // On a phone the sheet covered the page; focus returns to where it was opened.
+    askButton.current?.focus();
+  };
+  const wide = useWideScreen();
+  const savedLayout = useDefaultLayout({
+    id: "home-keeper.agent-layout",
+    panelIds: agentOpen ? ["dashboard", "agent"] : ["dashboard"],
+    storage: layoutStorage,
+  });
+  const agentPanel = usePanelRef();
+  const [agentShare, setAgentShare] = useState<number>(AGENT_WIDTH.initial);
+  // The width an expanded panel goes back to.
+  const restoreShare = useRef<number>(AGENT_WIDTH.initial);
+  const expanded = agentShare >= AGENT_WIDTH.max - 0.5;
+  const toggleExpanded = () => {
+    const panel = agentPanel.current;
+    if (!panel) return;
+    if (expanded) return panel.resize(`${restoreShare.current}%`);
+    restoreShare.current = panel.getSize().asPercentage;
+    panel.resize(`${AGENT_WIDTH.max}%`);
+  };
 
   const load = useCallback(async () => {
     const seq = ++order.current.started;
@@ -279,15 +328,8 @@ export function App() {
     className: "grid gap-6",
   });
 
-  return (
-    <Tabs
-      value={tab}
-      onValueChange={(value) => {
-        const next = TABS.find((entry) => entry.id === value);
-        if (next) openTab(next.id);
-      }}
-      className="min-h-svh gap-0"
-    >
+  const dashboard = (
+    <>
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
           <div className="flex items-center gap-2 font-semibold tracking-tight">
@@ -312,6 +354,19 @@ export function App() {
           <Badge id="source" variant="outline" className="ml-auto font-mono tracking-wide">
             {snapshot ? (live ? "HOME ASSISTANT" : "SYNTHETIC DEMO") : "CONNECTING"}
           </Badge>
+          <Button
+            ref={askButton}
+            id="ask"
+            type="button"
+            variant={agentOpen ? "secondary" : "default"}
+            size="sm"
+            aria-expanded={agentOpen}
+            aria-controls={agentOpen ? "agent-panel" : undefined}
+            onClick={() => (agentOpen ? closeAgent() : setAgentOpen(true))}
+          >
+            <MessageSquare aria-hidden="true" />
+            Ask
+          </Button>
         </div>
       </header>
       <main className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-6">
@@ -548,6 +603,58 @@ export function App() {
           History comes from Home Assistant · Changes show what happened, not why
         </footer>
       </main>
+    </>
+  );
+  const agent = agentOpen && (
+    <AgentSlot
+      names={names}
+      onClose={closeAgent}
+      width={wide ? { expanded, toggle: toggleExpanded } : undefined}
+    />
+  );
+
+  return (
+    <Tabs
+      value={tab}
+      onValueChange={(value) => {
+        const next = TABS.find((entry) => entry.id === value);
+        if (next) openTab(next.id);
+      }}
+      // items-start: on a phone the rows keep their content's height under the sheet.
+      className={wide ? "h-svh" : "grid min-h-svh grid-rows-[auto_1fr] items-start gap-0"}
+    >
+      {wide ? (
+        // The cards reflow beside the panel; each side scrolls on its own.
+        <ResizablePanelGroup
+          orientation="horizontal"
+          defaultLayout={savedLayout.defaultLayout}
+          onLayoutChanged={savedLayout.onLayoutChanged}
+        >
+          <ResizablePanel id="dashboard" minSize={`${100 - AGENT_WIDTH.max}%`}>
+            <div className="h-full overflow-y-auto">{dashboard}</div>
+          </ResizablePanel>
+          {agent && (
+            <>
+              <ResizableHandle withHandle aria-label="Resize agent panel" />
+              <ResizablePanel
+                id="agent"
+                panelRef={agentPanel}
+                defaultSize={`${AGENT_WIDTH.initial}%`}
+                minSize={AGENT_MIN_PX}
+                maxSize={`${AGENT_WIDTH.max}%`}
+                onResize={(size) => setAgentShare(size.asPercentage)}
+              >
+                {agent}
+              </ResizablePanel>
+            </>
+          )}
+        </ResizablePanelGroup>
+      ) : (
+        <>
+          {dashboard}
+          {agent}
+        </>
+      )}
     </Tabs>
   );
 }
