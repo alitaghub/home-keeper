@@ -49,3 +49,40 @@ test("on, off and unknown devices each look different in light and dark", async 
   // The page follows the system setting.
   expect(backgrounds.size).toBe(SCHEMES.length);
 });
+
+/** The usage strip's fills, as the browser computes them: track, on, off and the unavailable hatch. */
+async function stripFills(page: Page) {
+  const strip = page.locator("#monitored svg[role=img]", {
+    has: page.locator('[data-segment="unavailable"]'),
+  });
+  await expect(strip).toBeVisible();
+  return strip.evaluate((svg) => {
+    const fill = (selector: string) => {
+      const node = svg.querySelector(selector);
+      return node ? getComputedStyle(node).fill : "missing";
+    };
+    return {
+      track: fill(":scope > rect:not([data-segment])"),
+      on: fill('[data-segment="on"]'),
+      off: fill('[data-segment="off"]'),
+      hatch: fill("pattern rect"),
+    };
+  });
+}
+
+test("the usage strip's track, on, off and unavailable spans each look different in light and dark", async ({
+  page,
+}) => {
+  await page.route("**/api/monitored", (route) => route.fulfill({ json: MONITORED }));
+  await page.route("**/api/usage**", (route) => route.fulfill({ json: fixtures.usage }));
+
+  for (const colorScheme of SCHEMES) {
+    await page.emulateMedia({ colorScheme });
+    await page.goto("/");
+    const fills = await stripFills(page);
+    expect(Object.values(fills), `${colorScheme}: ${JSON.stringify(fills)}`).not.toContain(
+      "missing",
+    );
+    expect(new Set(Object.values(fills)).size, `${colorScheme}: ${JSON.stringify(fills)}`).toBe(4);
+  }
+});
