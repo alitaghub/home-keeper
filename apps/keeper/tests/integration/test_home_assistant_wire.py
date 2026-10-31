@@ -26,7 +26,7 @@ def test_actual_websocket_discovery_and_rest_state_read(tmp_path: Path) -> None:
             transmitted.append(("GET", request.path))
             assert request.headers["Authorization"] == "Bearer actual-network-token"
             state: dict[str, object] = {"entity_id": "light.bulb", "state": "off", "attributes": {}}
-            body = json.dumps(state if request.path == "/api/states/light.bulb" else [state])
+            body = json.dumps([state])
             return Response(200, "OK", Headers({"Content-Type": "application/json"}), body.encode())
         return None
 
@@ -65,12 +65,12 @@ def test_actual_websocket_discovery_and_rest_state_read(tmp_path: Path) -> None:
             server.shutdown()
             thread.join(timeout=5)
         assert not thread.is_alive()
-    # Discovery reads the new light's state once for group markers; then the state read.
+    # Discovery reads every state once for group markers; then the state read.
     assert transmitted == [
         "auth",
         "config/entity_registry/list",
         "config/device_registry/list",
-        ("GET", "/api/states/light.bulb"),
+        ("GET", "/api/states"),
         ("GET", "/api/states"),
     ]
 

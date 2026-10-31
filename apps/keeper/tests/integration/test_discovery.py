@@ -2,6 +2,7 @@
 
 from fastapi.testclient import TestClient
 from support.api import BROWSER, CATALOG_ENTITIES, NOW, TOKEN, app_for, catalog_reader
+from support.reader import FakeReader
 
 from home_keeper.api import create_app
 from home_keeper.models import Entity
@@ -77,3 +78,33 @@ def test_a_rename_in_home_assistant_keeps_the_selection_and_shows_the_new_name(
         assert client.get("/api/selection").json() == {"entity_ids": ["bulb-b"]}
         [monitored] = client.get("/api/monitored").json()["entities"]
         assert monitored["name"] == "Renamed lamp"
+
+
+def lights(count: int) -> list[Entity]:
+    return [
+        Entity(
+            id=f"bulb-{number:04}",
+            device_id=f"device-{number:04}",
+            device_name=f"Bulb {number}",
+            name=f"Light {number}",
+            device_kind="light",
+            supported=True,
+        )
+        for number in range(count)
+    ]
+
+
+def test_a_501st_device_cannot_be_selected(database: str) -> None:
+    reader = FakeReader(lights(501))
+    with TestClient(app_for(database, reader=reader), raise_server_exceptions=False) as client:
+        for number in range(500):
+            selected = client.put(
+                f"/api/selection/bulb-{number:04}", json={"selected": True}, headers=BROWSER
+            )
+            assert selected.status_code == 200
+        refused = client.put("/api/selection/bulb-0500", json={"selected": True}, headers=BROWSER)
+
+        assert refused.status_code >= 400
+        selection = client.get("/api/selection").json()["entity_ids"]
+        assert len(selection) == 500
+        assert "bulb-0500" not in selection

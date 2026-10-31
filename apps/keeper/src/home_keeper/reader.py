@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel, Field, PrivateAttr, ValidationError, model_validator
 
 from home_keeper.models import (
+    MAX_CATALOG_ENTITIES,
     CollectorError,
     Entity,
     Identity,
@@ -111,7 +112,7 @@ class ReaderFailure(WireModel):
 
 
 class ReaderCatalog(WireModel):
-    entities: list[Entity] = Field(max_length=500)
+    entities: list[Entity] = Field(max_length=MAX_CATALOG_ENTITIES)
 
 
 class ReaderStates(WireModel):

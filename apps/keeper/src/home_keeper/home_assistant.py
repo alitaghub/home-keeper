@@ -21,6 +21,7 @@ from websockets.sync.client import connect
 
 from home_keeper.events import device_state, is_json_object
 from home_keeper.models import (
+    MAX_CATALOG_ENTITIES,
     Catalog,
     Entity,
     LightState,
@@ -28,12 +29,14 @@ from home_keeper.models import (
     device_kind_of,
 )
 
-MAX_PAYLOAD = 2 * 1024 * 1024
+# One WebSocket message: a whole registry list in one answer. Real registry rows are about
+# 400 to 600 bytes, so MAX_REGISTRY_ROWS of them fit with room for rows that run larger.
+MAX_PAYLOAD = 8 * 1024 * 1024
 # Weeks of a busy light's history outgrow one registry list.
 HISTORY_MAX_PAYLOAD = 16 * 1024 * 1024
 # Every entity's state in one answer, sensors included.
 STATES_MAX_PAYLOAD = 16 * 1024 * 1024
-MAX_REGISTRY_ROWS = 500
+MAX_REGISTRY_ROWS = MAX_CATALOG_ENTITIES
 MAX_SOURCE_ENTITY_ID_LENGTH = 128
 MAX_TOKEN_LENGTH = 4096
 MAX_TIMEOUT_SECONDS = 30
@@ -133,9 +136,6 @@ class HomeAssistantConnector:
             follow_redirects=False,
         )
         self._entities: dict[str, str] = {}
-        # Whether each light or switch candidate's state marks it as a group, by source entity
-        # ID. Read once per candidate, so a steady home costs no state reads.
-        self._groups: dict[str, bool] = {}
 
     def close(self) -> None:
         self._http.close()
@@ -235,6 +235,8 @@ class HomeAssistantConnector:
             )
         projected: list[Entity] = []
         mapping: dict[str, str] = {}
+        # Read on the first candidate, so a home without one costs no state read.
+        groups: frozenset[str] | None = None
         for entity in entities:
             if not is_json_object(entity):
                 raise ConnectorError("invalid_data")
@@ -265,11 +267,11 @@ class HomeAssistantConnector:
                 reason = SWITCH_CATEGORY_REASON
             elif kind == "switch" and not device_id:
                 reason = SWITCH_DEVICE_REASON
-            # Only a candidate that passes every other rule has its state read.
-            elif self._is_group(entity_id):
-                reason = GROUP_REASON
+            # Only a candidate that passes every other rule needs its state.
             else:
-                reason = None
+                if groups is None:
+                    groups = self._group_ids()
+                reason = GROUP_REASON if entity_id in groups else None
             supported = reason is None
             projected.append(
                 Entity(
@@ -285,46 +287,38 @@ class HomeAssistantConnector:
                 )
             )
             mapping[identity] = entity_id
-        sources = set(mapping.values())
-        self._groups = {
-            entity_id: group for entity_id, group in self._groups.items() if entity_id in sources
-        }
         return Catalog(source_id="home_assistant", entities=projected), mapping
 
-    def _is_group(self, entity_id: str) -> bool:
-        """Whether a candidate's state marks it as a group. Keeps only that answer, and only
-        when the read succeeds."""
-        if entity_id in self._groups:
-            return self._groups[entity_id]
+    def _group_ids(self) -> frozenset[str]:
+        """The lights and switches whose state marks them as a group, from one read of every
+        state. An entity with no state has no group markers."""
         try:
-            status, payload = self._read_state(entity_id)
-            if status == HTTPStatus.NOT_FOUND:
-                # No state yet, so no group markers.
-                self._groups[entity_id] = False
-                return False
+            status, payload = self._get("/api/states", STATES_MAX_PAYLOAD)
             if status != HTTPStatus.OK:
                 raise ConnectorError("discovery")
-            data = json.loads(payload)
+            rows = json.loads(payload)
         except ConnectorError:
             raise
         except (httpx.HTTPError, TimeoutError):
             raise ConnectorError("discovery") from None
         except ValueError:
             raise ConnectorError("invalid_data") from None
-        if not is_json_object(data) or data.get("entity_id") != entity_id:
-            raise ConnectorError("invalid_data")
-        attributes = data.get("attributes")
-        if not is_json_object(attributes):
-            raise ConnectorError("invalid_data")
-        group = isinstance(attributes.get("entity_id"), list) or any(
-            value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
-        )
-        self._groups[entity_id] = group
-        return group
-
-    def _read_state(self, entity_id: str) -> tuple[int, bytes]:
-        """GET one entity's state: the status, and the body only for 200."""
-        return self._get(f"/api/states/{entity_id}", MAX_PAYLOAD)
+        groups: set[str] = set()
+        for row in _rows(rows):
+            if not is_json_object(row):
+                raise ConnectorError("invalid_data")
+            entity_id = row.get("entity_id")
+            # Only lights and switches can be candidates; other domains' states are skipped.
+            if not isinstance(entity_id, str) or not _DEVICE_ID.fullmatch(entity_id):
+                continue
+            attributes = row.get("attributes")
+            if not is_json_object(attributes):
+                raise ConnectorError("invalid_data")
+            if isinstance(attributes.get("entity_id"), list) or any(
+                value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
+            ):
+                groups.add(entity_id)
+        return frozenset(groups)
 
     def _get(self, path: str, max_size: int) -> tuple[int, bytes]:
         """The status, and the body only for 200. Raises TimeoutError when the body outlasts

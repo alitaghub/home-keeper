@@ -14,6 +14,8 @@ from support.home_assistant import (
     hue_room,
     install_socket,
     light_state,
+    realistic_device,
+    realistic_entity,
     registry_entry,
     use_transport,
 )
@@ -105,59 +107,43 @@ def test_discovery_sends_only_the_two_registry_reads(connector: Connector) -> No
     ]
 
 
-def test_discovery_reads_the_state_of_each_new_candidate_once(connector: Connector) -> None:
+def test_cold_discovery_reads_every_state_in_one_request_and_no_single_entity(
+    connector: Connector,
+) -> None:
     client, install, server = connector
     huge = {"untrusted": "x" * MAX_PAYLOAD}
     entities = [
         registry_entry("bulb", "light.bulb"),
+        registry_entry("room", "light.living_room"),
+        registry_entry("flagged", "light.flagged"),
         registry_entry("plug", "switch.plug", platform="zha", translation_key=None),
-        # None of these can be recorded whatever their state says, so none is read.
         registry_entry("sensor", "sensor.power"),
         registry_entry("helper", "light.helper", platform="group"),
-        registry_entry("disabled", "light.disabled", disabled_by="user"),
-        registry_entry("setting", "switch.child_lock", entity_category="config"),
-        registry_entry("loose", "switch.template", device_id=None),
     ]
     install(
         entities,
         [{"id": "device1", "name": "Bulb"}],
         [
             light_state("light.bulb"),
+            hue_room("light.living_room"),
+            light_state("light.flagged", is_custom_group=True),
             light_state("switch.plug"),
-            *(
-                light_state(entity, **huge)
-                for entity in (
-                    "sensor.power",
-                    "light.helper",
-                    "light.disabled",
-                    "switch.child_lock",
-                    "switch.template",
-                )
-            ),
+            light_state("sensor.power", **huge),
         ],
     )
-    first = client.discover()
-    assert sorted(server.reads) == ["light.bulb", "switch.plug"]
-    assert {entity.id for entity in first.entities if entity.supported} == {"ha:bulb", "ha:plug"}
+    catalog = client.discover()
 
-    # A steady home costs no state reads.
-    install(entities, [{"id": "device1", "name": "Bulb"}], server.states.values())
-    assert client.discover() == first
-    assert sorted(server.reads) == ["light.bulb", "switch.plug"]
-
-    # Only the new candidate is read. An entity that left the registry is read again on return.
-    server.reads.clear()
-    install(
-        [*entities[1:], registry_entry("desk", "light.desk")],
-        [{"id": "device1", "name": "Bulb"}],
-        [*server.states.values(), hue_room("light.desk")],
-    )
-    second = client.discover()
-    assert server.reads == ["light.desk"]
-    assert {entity.id: entity.reason for entity in second.entities}["ha:desk"] == GROUP
-    install(entities, [{"id": "device1", "name": "Bulb"}], server.states.values())
-    client.discover()
-    assert server.reads == ["light.desk", "light.bulb"]
+    states = [request for request in server.requests if request[1].startswith("/api/states")]
+    # One bulk read; a per-entity read would be a request to /api/states/<id>.
+    assert states == [("GET", "/api/states")]
+    assert {entity.id: entity.reason for entity in catalog.entities} == {
+        "ha:bulb": None,
+        "ha:room": GROUP,
+        "ha:flagged": GROUP,
+        "ha:plug": None,
+        "ha:sensor": NOT_SUPPORTED,
+        "ha:helper": GROUP,
+    }
 
 
 def test_any_enabled_single_light_is_supported_and_groups_rooms_and_others_are_not(
@@ -293,32 +279,16 @@ def test_a_switch_reads_its_state_without_light_attributes(
 
 
 @pytest.mark.parametrize(
-    ("response", "code"),
+    "response",
     [
-        (httpx.Response(500, json={}), "discovery"),
+        httpx.Response(500, json={}),
         # None: Home Assistant cannot be reached.
-        (None, "discovery"),
-        (httpx.Response(200, content=b"{not json"), "invalid_data"),
-        (httpx.Response(200, json=["light.bulb"]), "invalid_data"),
-        (
-            httpx.Response(
-                200, json={"entity_id": "light.bulb", "state": "on", "attributes": ["x"]}
-            ),
-            "invalid_data",
-        ),
-        (httpx.Response(200, content=b"x" * (MAX_PAYLOAD + 1)), "invalid_data"),
+        None,
     ],
-    ids=[
-        "server_error",
-        "unreachable",
-        "not_json",
-        "not_an_object",
-        "attributes_not_an_object",
-        "oversized",
-    ],
+    ids=["server_error", "unreachable"],
 )
-def test_a_failed_candidate_state_read_fails_discovery_and_is_retried_next_pass(
-    connector: Connector, response: httpx.Response | None, code: str
+def test_a_failed_bulk_states_read_fails_discovery_and_is_retried_next_pass(
+    connector: Connector, response: httpx.Response | None
 ) -> None:
     def reply(request: httpx.Request) -> httpx.Response:
         if response is None:
@@ -326,22 +296,27 @@ def test_a_failed_candidate_state_read_fails_discovery_and_is_retried_next_pass(
         return response
 
     client, install, server = connector
+    entities = [registry_entry(), registry_entry("desk", "light.desk")]
     client.discover()
-    install([registry_entry(), registry_entry("desk", "light.desk")])
+    install(entities, states=[hue_room("light.desk")])
     use_transport(client, reply)
     with pytest.raises(ConnectorError) as failure:
         client.discover()
-    assert failure.value.code == code
+    assert failure.value.code == "discovery"
     assert "secret-sentinel" not in str(failure.value)
-    # The failed answer was not kept: the next pass reads the candidate again.
-    server.reads.clear()
+
+    # The next pass reads /api/states again; an entity missing from the list is not a group.
+    server.requests.clear()
     use_transport(client, server)
-    install(
-        [registry_entry(), registry_entry("desk", "light.desk")], states=[hue_room("light.desk")]
-    )
+    install(entities, states=[hue_room("light.desk")])
     catalog = client.discover()
-    assert server.reads == ["light.desk"]
-    assert {entity.id: entity.reason for entity in catalog.entities}["ha:desk"] == GROUP
+    assert [path for _, path in server.requests if path.startswith("/api/states")] == [
+        "/api/states"
+    ]
+    assert {entity.id: entity.reason for entity in catalog.entities} == {
+        "ha:registry1": None,
+        "ha:desk": GROUP,
+    }
 
 
 def test_states_are_read_at_once_keeping_brightness_and_dropping_private_attributes(
@@ -541,3 +516,59 @@ def test_registry_payload_limit_before_projection(
     assert error.value.code == "invalid_data"
     assert len(socket.sent) == 2
     assert json.loads(json.dumps(socket.sent[1]))["type"] == "config/entity_registry/list"
+
+
+def registry_of(entities: int, devices: int) -> tuple[list[Frame], list[Frame]]:
+    return (
+        [realistic_entity(number) for number in range(entities)],
+        [realistic_device(number) for number in range(devices)],
+    )
+
+
+@pytest.mark.parametrize(("entities", "devices"), [(5000, 3), (3, 5000), (501, 501)])
+def test_a_registry_of_up_to_5000_entity_or_device_rows_is_discovered(
+    connector: Connector, entities: int, devices: int
+) -> None:
+    client, install, _ = connector
+    entity_rows, device_rows = registry_of(entities, devices)
+    # At 5000 rows, the rows weigh what a real home's do: past the old 2 MiB message limit.
+    heaviest = max(len(json.dumps(entity_rows)), len(json.dumps(device_rows)))
+    old_limit = 2 * 1024 * 1024
+    assert (heaviest > old_limit) == (max(entities, devices) == 5000)
+    install(entity_rows, device_rows)
+
+    catalog = client.discover()
+
+    assert len(catalog.entities) == entities
+
+
+@pytest.mark.parametrize(("entities", "devices"), [(5001, 3), (3, 5001)])
+def test_5001_entity_rows_or_5001_device_rows_fail_with_invalid_data(
+    connector: Connector, entities: int, devices: int
+) -> None:
+    client, install, _ = connector
+    entity_rows, device_rows = registry_of(entities, devices)
+    install(entity_rows, device_rows)
+
+    with pytest.raises(ConnectorError) as error:
+        client.discover()
+
+    assert error.value.code == "invalid_data"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"{not json", b'{"entity_id": "light.bulb"}', b'["not a state"]'],
+    ids=["not_json", "not_a_list", "entry_not_an_object_state"],
+)
+def test_a_malformed_bulk_states_body_fails_discovery_with_invalid_data(
+    connector: Connector, body: bytes
+) -> None:
+    client, install, _ = connector
+    install([registry_entry()])
+    use_transport(client, lambda _request: httpx.Response(200, content=body))
+
+    with pytest.raises(ConnectorError) as failure:
+        client.discover()
+
+    assert failure.value.code == "invalid_data"
