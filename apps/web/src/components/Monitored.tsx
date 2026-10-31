@@ -1,11 +1,13 @@
 import { ChevronDown, History, Power } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Schemas } from "../api/client";
-import { ago, brightnessPercent, date } from "../format";
+import { ago, brightnessPercent, date, measurement } from "../format";
 import { cn } from "../lib/utils";
+import type { Measurements, Series } from "../useMeasurements";
 import type { DeviceUsage, Usage } from "../useUsage";
 import { deviceName } from "./Catalog";
 import { UsageStrip } from "./History";
+import { Sparkline } from "./Measurements";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 
@@ -343,6 +345,69 @@ function OtherTile({
   );
 }
 
+type RecentSeries = { range: Pick<Measurements, "start" | "end">; series: Series | undefined };
+
+/**
+ * A measurement, such as a power meter or a thermometer: its value and unit now and a line of
+ * the last day's means. It cannot be switched.
+ */
+function MeasurementTile({
+  entity,
+  recent,
+  onStop,
+  onHistory,
+}: {
+  entity: Schemas["MonitoredEntity"];
+  recent: RecentSeries | null;
+  onStop: (id: string) => void;
+  onHistory: (entity: Schemas["MonitoredEntity"]) => void;
+}) {
+  const name = deviceName(entity);
+  const { state } = entity;
+  const reading = state?.device_kind === "measurement" ? state : null;
+  return (
+    <article className="min-w-0">
+      <Card className="h-full gap-4 px-5 py-5">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="min-w-0 font-semibold leading-snug break-words">{name}</h3>
+          {state?.availability !== "available" && <StatusPill state={state} />}
+        </div>
+        {!entity.supported && entity.reason && (
+          <p className="text-xs text-warning-foreground">{entity.reason}</p>
+        )}
+        {state?.availability === "available" && (
+          <p className="text-2xl font-semibold tabular-nums break-words">
+            {/* A state that is no number, such as "high", shows in Home Assistant's words. */}
+            {reading?.value == null ? state.label : measurement(reading.value, reading.unit)}
+          </p>
+        )}
+        {recent?.series && (
+          <div className="grid gap-1">
+            <span className="text-xs text-muted-foreground" aria-hidden="true">
+              Last 24 hours
+            </span>
+            <Sparkline range={recent.range} series={recent.series} caption="Last 24 hours" />
+          </div>
+        )}
+        <div className="mt-auto grid gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="justify-self-start px-2"
+            aria-label={`History of ${name}`}
+            onClick={() => onHistory(entity)}
+          >
+            <History aria-hidden="true" />
+            History
+          </Button>
+          <DeviceDetails entity={entity} name={name} onStop={onStop} />
+        </div>
+      </Card>
+    </article>
+  );
+}
+
 const grid = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
 const sectionHeading = "text-lg font-semibold tracking-tight";
 
@@ -374,6 +439,7 @@ function Section({
 export function Monitored({
   entities,
   usage,
+  measurements = null,
   onStop,
   onSwitch,
   onHistory,
@@ -383,6 +449,8 @@ export function Monitored({
   entities: Schemas["MonitoredEntity"][] | null;
   /** The last day's usage, for each card's strip; null until it loads. */
   usage: Usage | null;
+  /** The last day's statistics, for each measurement's sparkline; null until they load. */
+  measurements?: Measurements | null;
   onStop: (id: string) => void;
   /** Null while control is off: no light, plug or switch gets a switch. Other devices, on/off
    * ones included, never do. */
@@ -396,16 +464,21 @@ export function Monitored({
   const empty = entities !== null && !entities.length;
   const switches = all.filter((entity) => entity.device_kind === "switch");
   const onOffs = all.filter((entity) => entity.device_kind === "on_off");
+  const measured = all.filter((entity) => entity.device_kind === "measurement");
   const others = all.filter((entity) => entity.device_kind === "state");
   // A device without a kind counts as a light, as the API does.
   const lights = all.filter(
     (entity) =>
       entity.device_kind !== "switch" &&
       entity.device_kind !== "on_off" &&
+      entity.device_kind !== "measurement" &&
       entity.device_kind !== "state",
   );
   const devices = new Map(usage?.devices.map((device) => [device.entity_id, device]));
   const recent = (id: string): Recent | null => usage && { range: usage, device: devices.get(id) };
+  const series = new Map(measurements?.devices.map((device) => [device.entity_id, device]));
+  const recentSeries = (id: string): RecentSeries | null =>
+    measurements && { range: measurements, series: series.get(id) };
   // An on/off device, such as a fan or a door sensor, has a plug's card without a switch.
   const tile = (entity: Schemas["MonitoredEntity"]) => (
     <Tile
@@ -453,6 +526,21 @@ export function Monitored({
       </Section>
       <Section heading="Other on/off" headingId="onoff-heading" gridId="monitored-onoff">
         {onOffs.map(tile)}
+      </Section>
+      <Section
+        heading="Measurements"
+        headingId="measurements-heading"
+        gridId="monitored-measurements"
+      >
+        {measured.map((entity) => (
+          <MeasurementTile
+            key={entity.id}
+            entity={entity}
+            recent={recentSeries(entity.id)}
+            onStop={onStop}
+            onHistory={onHistory}
+          />
+        ))}
       </Section>
       <Section heading="Other" headingId="other-heading" gridId="monitored-other">
         {others.map((entity) => (

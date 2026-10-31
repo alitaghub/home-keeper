@@ -37,3 +37,9 @@ export const duration = (seconds: number) => {
   const hours = Math.floor(minutes / 60);
   return hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
 };
+
+const measured = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+
+/** A measured value with its unit, such as "412 W"; "—" when there is no value. */
+export const measurement = (value: number | null | undefined, unit: string | null | undefined) =>
+  value == null ? "—" : unit ? `${measured.format(value)} ${unit}` : measured.format(value);

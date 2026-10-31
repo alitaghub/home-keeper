@@ -75,13 +75,16 @@ your questions and replies.
 1. The **reader** lists the devices in Home Assistant, and the dashboard shows
    them.
 2. You pick the devices to monitor: lights, plugs and switches, other on/off
-   devices such as fans and door sensors, and any other device Home Assistant
-   registers, such as a thermostat or a cover. Home Keeper
+   devices such as fans and door sensors, measurements such as a power meter or
+   a thermometer, and any other device Home Assistant registers, such as a
+   thermostat or a cover. Home Keeper
    shows nothing about a device before you do.
 3. When you open a tab, the **API** asks the reader for what it needs: the state
    Home Assistant reports now, or the history Home Assistant's recorder keeps.
    History covers on/off and availability, plus brightness and color for a light.
-   For any other device it covers the state, in Home Assistant's own words.
+   For any other device it covers the state, in Home Assistant's own words. A
+   measurement's charts come from Home Assistant's statistics, which reach back
+   further than history.
    How far back it goes depends on Home Assistant's
    [recorder settings](docs/home-assistant.md#history-retention).
 4. The API stores only what is its own in Postgres: which devices you monitor and
@@ -90,11 +93,16 @@ your questions and replies.
 5. The **dashboard** has three tabs. **Home** shows each monitored light under
    **Lights** and switches it, then each monitored plug or switch under **Plugs
    and switches**, then each fan, binary sensor, siren, humidifier or remote
-   under **Other on/off**, then every other device under **Other**, with its
-   state in Home Assistant's words and when it last changed. An on/off device
-   has a plug's strip and usage, worded as Home Assistant words its on and off,
-   such as "Open" and "Closed" for a door. Neither on/off nor other devices can
-   be switched, and other devices have no usage.
+   under **Other on/off**, then each measurement under **Measurements**, then
+   every other device under **Other**, with its state in Home Assistant's words
+   and when it last changed. An on/off device has a plug's strip and usage,
+   worded as Home Assistant words its on and off, such as "Open" and "Closed" for
+   a door. A measurement shows its value and unit, such as "412 W", and a
+   sparkline of its last 24 hours; **History** on its card opens a chart of the
+   last 24 hours, 7 days or 30 days with the mean, the lowest-to-highest band and
+   the overall min, mean and max. Periods without statistics stay empty. No
+   on/off device, measurement or other device can be switched, and only on/off
+   devices have usage.
    A card's status badge is warm when the device is on, grey when it is off, and
    dashed when its state is unknown. Each card draws its last 24 hours as a
    strip: on, as high as the light's brightness, and off. Time Home Assistant reported the device unavailable is
@@ -153,8 +161,9 @@ token for the reader. Then:
    under **Settings → Devices & services → Add integration**. Home Assistant owns
    every device connection. Home Keeper can monitor any single device that Home
    Assistant shows, from any brand: lights, smart plugs and switches, other
-   on/off devices such as fans and door sensors, and any other device, such as
-   a thermostat. It does not monitor groups, rooms, people
+   on/off devices such as fans and door sensors, measurements such as a power
+   meter, and any other device, such as a thermostat. It does not monitor
+   groups, rooms, people
    or settings. [Home Assistant](docs/home-assistant.md#discover-and-select-devices)
    lists the rules.
    Pairing a Hue Bridge, for example, needs one press of its button.

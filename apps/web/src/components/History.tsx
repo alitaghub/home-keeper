@@ -10,12 +10,12 @@ const HEIGHT = 24;
 // A dim light still shows as a visible bar.
 const MIN_LEVEL = 0.2;
 
-const RANGES = [
+export const RANGES = [
   { days: 1, label: "24 hours" },
   { days: 7, label: "7 days" },
   { days: 30, label: "30 days" },
 ] as const;
-type Days = (typeof RANGES)[number]["days"];
+export type Days = (typeof RANGES)[number]["days"];
 
 /**
  * The words for a device's on and off, capitalized and inline: Home Assistant's words for an

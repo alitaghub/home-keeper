@@ -12,9 +12,10 @@ Home Assistant's [recorder](https://www.home-assistant.io/integrations/recorder/
 already stores the history of every device. Home Keeper reads that history
 instead of keeping its own copy. The **reader** service holds the Home Assistant
 token and answers the API's reads on request: the device list, the state each
-device reports now, its history in a time window, and whether Home Assistant
-answers. The reader keeps no state. It caches the device list for up to 10
-seconds and never caches a state or history.
+device reports now, its history in a time window, a measurement's statistics,
+and whether Home Assistant answers. The reader keeps no state. It caches the
+device list for up to 10 seconds and never caches a state, history or
+statistics.
 
 The API asks the reader each time the dashboard or the agent needs data. The
 dashboard polls every 3 seconds, so the **Home** tab shows what Home Assistant
@@ -58,15 +59,19 @@ so one busy device cannot fill the answer for the others.
 A change is two consecutive history rows whose state, availability, brightness or
 color differ. Each row says the change in words, such as "Desk lamp turned on at
 40%", at Home Assistant's time. A change of any other device, on/off devices
-included, shows Home Assistant's words for the old and new state, such as
-"Thermostat Heat → Off" or "Front door Closed → Open". Its **Details** show the source entity, the stable
+and measurements included, shows Home Assistant's words for the old and new
+state, such as "Thermostat Heat → Off" or "Front door Closed → Open"; a
+measurement adds its unit, such as "Desk power 380 → 412 W". Its **Details** show the source entity, the stable
 registry identity, the old and new values and that time.
 
 The reader keeps only approved light fields. For a plug, switch or other on/off
 device, such as a fan or a door sensor, it keeps only the on/off state and
 availability, so a plug that reports a brightness never shows
 one. For any other device it keeps only the state text, at most 255 characters,
-and availability. It drops unrelated attributes, account identifiers and raw logs.
+and availability. A measurement also keeps its value, the state as a finite
+number or null, and its unit, `unit_of_measurement`, at most 32 characters.
+Its history rows are read without attributes, so they carry the unit the
+device list read. It drops unrelated attributes, account identifiers and raw logs.
 Every reading also carries a `label`, Home Assistant's translated word for the
 state; see [State words](home-assistant.md#state-words).
 
@@ -94,7 +99,7 @@ nothing happened.
 The read-only `GET /api/usage` endpoint reports, per monitored light, plug,
 switch or other on/off device, how long it was on and how often it was switched
 on, split by local day and local hour of day. Devices of kind `state`, which
-report a state but no on or off, have no entry. Each entry in `devices` names
+report a state but no on or off, and measurements have no entry. Each entry in `devices` names
 its `device_kind`. A light also carries its average brightness while on; a plug
 or switch has no brightness field.
 
@@ -137,11 +142,48 @@ Home Assistant cannot be read, the endpoint answers 503 with a safe error.
   `unknown_intervals` cover the whole range without overlap. A row that repeats
   the same state does not start a new period.
 
+## Measurements
+
+A measurement is a sensor whose state class is `measurement`, such as a power
+meter or a thermometer: Home Assistant keeps a mean, a lowest and a highest
+value for it. An energy meter, with the state class `total` or
+`total_increasing`, has only a sum. It stays a `state` device, and Home Keeper
+does not chart energy totals yet. Its card and chart come
+from Home Assistant's
+[long-term statistics](https://developers.home-assistant.io/docs/core/entity/sensor/#long-term-statistics),
+not from its history. The reader asks for them with
+`recorder/statistics_during_period`: one request for every device of the read,
+with the mean, the lowest and the highest value of each period.
+
+The read-only `GET /api/measurements` endpoint takes timezone-aware `start` and
+`end` timestamps, at most 31 days apart, and an optional repeated `entity_id`.
+Without it, the report covers every monitored measurement. Other devices, and
+devices that are not monitored, are left out. Each entry in `devices` has:
+
+- `period`: `5minute` for a range up to 24 hours, else `hour`.
+- `buckets`: one per period Home Assistant has statistics for, oldest first,
+  each with `start`, `end`, `mean`, `min` and `max`. A period without statistics
+  has no bucket. It is a gap, not a zero, and the dashboard leaves it empty.
+- `min`, the lowest bucket minimum; `mean`, the mean of the bucket means, each
+  period weighing the same; and `max`, the highest bucket maximum. All three are
+  null when there is no bucket.
+- `unit` and `latest`: the unit and value of the reading Home Assistant reports
+  now; null when the device has no unit, its state is not a number, such as
+  `unavailable`, or it cannot be read.
+
+The dashboard's sparkline uses the last 24 hours and reloads once a minute. If
+Home Assistant cannot be read, the endpoint answers 503 with a safe error. The
+whole read must finish within 8 seconds, and its answer can be at most 16 MiB.
+A measurement's statistics row without a mean, a lowest or a highest value is
+data Home Keeper cannot read: the read fails with `invalid_data`.
+
 ## Retention
 
 How far back History and usage go is a Home Assistant setting: its recorder
 keeps 10 days by default.
 [home-assistant.md](home-assistant.md#history-retention) shows how to keep more.
+A measurement's charts reach further: Home Assistant keeps its hourly statistics
+after it purges the history, and its 5-minute statistics as long as the history.
 
 Home Keeper's own retention applies only to the command log. It defaults to 30
 days. Set a positive number of days on the API service:

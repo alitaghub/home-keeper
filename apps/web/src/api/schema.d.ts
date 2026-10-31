@@ -110,6 +110,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/measurements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Measurements
+         * @description Statistics of monitored measurements in `[start, end)`, from Home Assistant: 5-minute
+         *     buckets for a range up to 24 hours, else hourly ones, with each device's lowest, mean,
+         *     highest and current value. Periods without statistics are gaps. Other devices have no
+         *     entry.
+         */
+        get: operations["measurements_api_measurements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/monitored": {
         parameters: {
             query?: never;
@@ -172,7 +195,8 @@ export interface paths {
          * Usage
          * @description On-time, switch-ons and brightness of selected lights, plugs, switches and other
          *     on/off devices in `[start, end)`, from Home Assistant's history. An on/off device also
-         *     has Home Assistant's words for its on and off. Devices of kind `state` have no entry.
+         *     has Home Assistant's words for its on and off. Devices of kind `state` or `measurement`
+         *     have no entry.
          */
         get: operations["usage_api_usage_get"];
         put?: never;
@@ -195,6 +219,29 @@ export interface components {
              */
             kind: "browser_chat";
         };
+        /**
+         * Bucket
+         * @description One period of Home Assistant's statistics for a measurement: from `start` to `end`,
+         *     the mean, the lowest and the highest value.
+         */
+        Bucket: {
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** Max */
+            max: number;
+            /** Mean */
+            mean: number;
+            /** Min */
+            min: number;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+        };
         /** CatalogResponse */
         CatalogResponse: {
             /** Entities */
@@ -214,15 +261,15 @@ export interface components {
          */
         ChangeRecord: {
             /** Device Kind */
-            device_kind: ("light" | "switch") | "on_off" | "state";
+            device_kind: ("light" | "switch") | "on_off" | ("state" | "measurement");
             /** Entity Id */
             entity_id: string;
             /** Id */
             id: string;
             /** New */
-            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"];
+            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"] | components["schemas"]["MeasurementReading"];
             /** Old */
-            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"];
+            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"] | components["schemas"]["MeasurementReading"];
             /** Source Entity Id */
             source_entity_id: string;
             /**
@@ -299,7 +346,7 @@ export interface components {
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
-            device_kind?: ("light" | "switch") | "on_off" | "state" | null;
+            device_kind?: ("light" | "switch") | "on_off" | ("state" | "measurement") | null;
             /** Device Name */
             device_name?: string | null;
             /** Id */
@@ -503,6 +550,77 @@ export interface components {
             /** Unknown Seconds */
             unknown_seconds: number;
         };
+        /**
+         * MeasurementReading
+         * @description A measurement's state as Home Assistant reports it: its text, its number and unit.
+         */
+        MeasurementReading: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "measurement";
+            /** Label */
+            label: string;
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /** State */
+            state: string;
+            /** Unit */
+            unit: string | null;
+            /** Value */
+            value: number | null;
+        };
+        /** MeasurementReport */
+        MeasurementReport: {
+            /** Devices */
+            devices: components["schemas"]["MeasurementSeries"][];
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+        };
+        /**
+         * MeasurementSeries
+         * @description One measurement's statistics over a report's range. Periods Home Assistant has no
+         *     statistics for have no bucket: they are gaps, not zeros.
+         */
+        MeasurementSeries: {
+            /** Buckets */
+            buckets: components["schemas"]["Bucket"][];
+            /** Entity Id */
+            entity_id: string;
+            /** Latest */
+            latest: number | null;
+            /** Max */
+            max: number | null;
+            /** Mean */
+            mean: number | null;
+            /** Min */
+            min: number | null;
+            /**
+             * Period
+             * @enum {string}
+             */
+            period: "5minute" | "hour";
+            /** Unit */
+            unit: string | null;
+        };
         /** MonitoredEntities */
         MonitoredEntities: {
             /** Entities */
@@ -513,7 +631,7 @@ export interface components {
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
-            device_kind?: ("light" | "switch") | "on_off" | "state" | null;
+            device_kind?: ("light" | "switch") | "on_off" | ("state" | "measurement") | null;
             /** Device Name */
             device_name?: string | null;
             /** Id */
@@ -527,7 +645,7 @@ export interface components {
             /** Source Entity Id */
             source_entity_id: string | null;
             /** State */
-            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"]) | null;
+            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"] | components["schemas"]["MeasurementReading"]) | null;
             /** Supported */
             supported: boolean;
         };
@@ -1020,6 +1138,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthStatus"];
+                };
+            };
+        };
+    };
+    measurements_api_measurements_get: {
+        parameters: {
+            query: {
+                start: string;
+                end: string;
+                entity_id?: string[] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasurementReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Unreachable"];
                 };
             };
         };

@@ -10,9 +10,12 @@ type Entity = Schemas["Entity"];
 export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
   entity.device_name || entity.name;
 
-/** A device's name; an on/off or other entity adds its own, since one device can have several. */
+/** A device's name; an on/off, measurement or other entity adds its own, since one device can
+ * have several. */
 export const deviceName = (entity: Pick<Entity, "device_kind" | "device_name" | "name">) =>
-  (entity.device_kind === "state" || entity.device_kind === "on_off") &&
+  (entity.device_kind === "state" ||
+    entity.device_kind === "on_off" ||
+    entity.device_kind === "measurement") &&
   entity.device_name &&
   entity.name !== entity.device_name
     ? `${entity.device_name} · ${entity.name}`
@@ -27,10 +30,12 @@ const KINDS = [
     has: (entity: Entity) =>
       entity.device_kind !== "switch" &&
       entity.device_kind !== "on_off" &&
+      entity.device_kind !== "measurement" &&
       entity.device_kind !== "state",
   },
   { heading: "Plugs and switches", has: (entity: Entity) => entity.device_kind === "switch" },
   { heading: "Other on/off", has: (entity: Entity) => entity.device_kind === "on_off" },
+  { heading: "Measurements", has: (entity: Entity) => entity.device_kind === "measurement" },
   { heading: "Other", has: (entity: Entity) => entity.device_kind === "state" },
 ];
 

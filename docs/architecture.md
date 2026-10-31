@@ -63,7 +63,7 @@ flowchart LR
 
 | Part      | Code                                   | Job                                                                                         |
 | --------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Reader    | `reader_service.py`, `home_assistant.py` | Holds the Home Assistant token. Answers the API's reads of the catalog, current state, history and reachability on request. Keeps no state; caches the catalog for up to 10 seconds. The API reaches it through `reader.py`. |
+| Reader    | `reader_service.py`, `home_assistant.py` | Holds the Home Assistant token. Answers the API's reads of the catalog, current state, history, statistics and reachability on request. Keeps no state; caches the catalog for up to 10 seconds. The API reaches it through `reader.py`. |
 | Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the reader's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
 | Demo      | `demo.py`, `reader_service.py`         | The reader's synthetic home. Same reader routes, no hardware, a day of synthetic history from the start. Applies demo light commands. |
 | API       | `api.py`, `models.py`, `control.py`    | Validates requests and answers them from the reader and the store. Routes selection to Monitoring and commands to Commands. |
@@ -183,7 +183,7 @@ Device history is not stored here. Home Assistant's recorder keeps it.
 | Catalog     | The devices and entities the reader lists from Home Assistant, with whether each one can be monitored. |
 | Device kind | What a device is, from its Home Assistant domain: `light` or `switch` (plugs too).           |
 | Selection   | The devices you chose to monitor. The only filter for history, usage and the agent. |
-| Reader      | The service that reads Home Assistant for the API: catalog, current state, history and reachability. |
+| Reader      | The service that reads Home Assistant for the API: catalog, current state, history, statistics and reachability. |
 | History     | A device's past states as Home Assistant's recorder keeps them. Read on demand, never copied. |
 | Change      | Two consecutive history rows of a monitored device that differ in state, availability, brightness or color, at Home Assistant's time. |
 | Unknown time | Time Home Assistant has no history for (`no_history`) or reported a device unavailable (`unavailable`). |

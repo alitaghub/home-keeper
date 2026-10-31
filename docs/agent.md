@@ -15,13 +15,20 @@ dashboard uses. It can:
 
 - list the devices you monitor (`list_monitored`), with each one's kind
   (`kind=light`, `kind=switch`, `kind=on_off` for another on/off device such as
-  a fan or a door sensor, or `kind=state` for any other device) and its
-  current state in Home Assistant's words, such as "Heat"
+  a fan or a door sensor, `kind=measurement` for a sensor with a value and a
+  unit, such as a power meter, or `kind=state` for any other device) and its
+  current state in Home Assistant's words, such as "Heat", or its value and
+  unit, such as `"412" "W"`
 - report usage over a time range for lights, plugs, switches and other on/off
   devices: on-time per day and per hour, switch-ons, and unknown time. Lights
   also get their average brightness; plugs and switches have none. An on/off
   device's line uses Home Assistant's words, such as
   `"Open" for 3h 12m, ..., became "Open" 4 time(s)` for a door sensor
+- report a monitored measurement's lowest, mean, highest and latest value with
+  its unit over the last 24 hours, 7 days or 30 days (`get_measurements`), from
+  Home Assistant's statistics, one line per device:
+  `- sensor.desk_power "Desk power": min 3.2, mean 41.5, max 412, latest 380 "W"`.
+  A device without statistics for the range reads `no statistics`
 - show the changes Home Assistant recorded, and whether Home Assistant can be reached
 - list the devices in Home Assistant, with their kind
 - start or stop monitoring a device (`monitor`, `stop_monitoring`),
@@ -30,8 +37,8 @@ dashboard uses. It can:
 - turn a monitored light, plug or switch on or off (`turn_on`, `turn_off`),
   after you approve it in the chat. A light can also take a brightness from 1
   to 100 percent; a plug or switch cannot. No other device can be switched: a
-  command for an `on_off` or `state` device answers "This device cannot be
-  switched." This
+  command for an `on_off`, `measurement` or `state` device answers "This device
+  cannot be switched." This
   needs the `control` profile
   (see [control.md](control.md)). The agent reports what Home Keeper then
   observed: the change, no change within 5 seconds, a refusal from Home
@@ -49,7 +56,10 @@ only people on the control allowlist can switch lights, plugs and switches; see
 
 It cannot:
 
-- see power or energy. Home Keeper does not read it. The agent says so.
+- see a value it was not given. It states only the numbers `get_measurements`
+  returns, with their unit, and never estimates power or energy use. Without
+  statistics, or for a device that is not a monitored measurement, it says it
+  cannot see the value.
 - reach Home Assistant. It sends device commands to the Home Keeper API, which
   forwards them to the controller.
 - read the database. It sees only what the API returns.
