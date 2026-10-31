@@ -32,6 +32,7 @@ from langgraph.config import get_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 
+from home_keeper_agent.charts import ChartsInBrowserOnly, chart_tools
 from home_keeper_agent.keeper import KeeperClient
 from home_keeper_agent.tools import COMMAND_TOOLS, command_refusals, keeper_tools, run_context
 
@@ -178,7 +179,7 @@ def build_agent(
     _drop_general_purpose_subagent(model)
     return create_deep_agent(
         model,
-        keeper_tools(client),
+        [*keeper_tools(client), *chart_tools()],
         system_prompt=SYSTEM_PROMPT,
         # The approval middleware is passed here, not as `interrupt_on`, so the command pre-check
         # can follow it in the list and so run before it.
@@ -187,6 +188,9 @@ def build_agent(
             # Middleware state types are invariant, so the checker rejects FilesystemState here
             # although create_deep_agent merges every middleware's state into one graph.
             FilesystemMiddleware(tools=FILE_TOOLS),  # pyright: ignore[reportArgumentType]
+            # Telegram answers are text only; only a browser run's model is offered show_chart.
+            # Listed first, so its rule follows the system prompt's other rules.
+            ChartsInBrowserOnly(),
             CurrentTime(),
             HumanInTheLoopMiddleware(
                 interrupt_on={

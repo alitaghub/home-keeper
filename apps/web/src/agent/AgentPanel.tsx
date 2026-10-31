@@ -1,8 +1,11 @@
 // The agent panel: chat with the agent behind the web container's /agent route.
 import {
   AssistantRuntimeProvider,
+  AuiConfig,
   ThreadListItemPrimitive,
   ThreadListPrimitive,
+  type ToolCallMessagePartProps,
+  Tools,
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
@@ -14,18 +17,38 @@ import {
 } from "@assistant-ui/react-langgraph";
 import { Client } from "@langchain/langgraph-sdk";
 import { History, Maximize2, Minimize2, Plus, Trash2, X } from "lucide-react";
-import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { lazy, type ReactNode, Suspense, useContext, useEffect, useRef, useState } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApprovalScope, RunsContext, ToolCall } from "./Approvals";
+import { ChartSkeleton } from "./ChartSkeleton";
 import { panelSlot, type WidthControl } from "./layout";
 import { parseMessages } from "./messages";
+import { DeviceNames } from "./names";
 import { createRunEvents, questionOf, type RunEvents } from "./runs";
 import { adaptAegraStream } from "./stream";
 import { aegraThreadList, ChatNotFound } from "./threads";
 
 const ASSISTANT_ID = "agent";
+// The chart code, and Recharts with it, loads with the first chart a chat shows.
+const ChartToolUI = lazy(() =>
+  import("./ChartToolUI").then((module) => ({ default: module.ChartToolUI })),
+);
+function ChartTool(props: ToolCallMessagePartProps) {
+  return (
+    <Suspense fallback={<ChartSkeleton label="Drawing a chart" />}>
+      <ChartToolUI {...props} />
+    </Suspense>
+  );
+}
+// The agent's show_chart calls draw as charts, outside the collapsed tool group. The tool
+// runs on the server; this only registers its renderer. Every other tool keeps ToolCall.
+const CHART_TOOLS = AuiConfig({
+  tools: Tools({
+    toolkit: { show_chart: { type: "backend", display: "standalone", render: ChartTool } },
+  }),
+});
 // The docs are not in the image, so the panel links to the hosted page.
 const agentDocs = "https://github.com/alitaghub/home-keeper/blob/main/docs/agent.md";
 // The chat that was open, so a reload reopens it.
@@ -256,38 +279,40 @@ function AgentChat({
   });
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <TooltipProvider>
-        <RestoreThread threadId={savedThread} threadList={agent.threadList} />
-        <RunsContext.Provider value={agent.runs}>
-          <PanelHeader>
-            <ThreadListPrimitive.New asChild>
-              <Button variant="ghost" size="icon-sm" aria-label="New chat" title="New chat">
-                <Plus aria-hidden="true" />
+    <AssistantRuntimeProvider runtime={runtime} config={CHART_TOOLS}>
+      <DeviceNames.Provider value={names}>
+        <TooltipProvider>
+          <RestoreThread threadId={savedThread} threadList={agent.threadList} />
+          <RunsContext.Provider value={agent.runs}>
+            <PanelHeader>
+              <ThreadListPrimitive.New asChild>
+                <Button variant="ghost" size="icon-sm" aria-label="New chat" title="New chat">
+                  <Plus aria-hidden="true" />
+                </Button>
+              </ThreadListPrimitive.New>
+              <Button
+                variant={recentOpen ? "secondary" : "ghost"}
+                size="icon-sm"
+                aria-label="Recent chats"
+                title="Recent chats"
+                aria-expanded={recentOpen}
+                aria-controls="agent-recent"
+                onClick={() => setRecentOpen((open) => !open)}
+              >
+                <History aria-hidden="true" />
               </Button>
-            </ThreadListPrimitive.New>
-            <Button
-              variant={recentOpen ? "secondary" : "ghost"}
-              size="icon-sm"
-              aria-label="Recent chats"
-              title="Recent chats"
-              aria-expanded={recentOpen}
-              aria-controls="agent-recent"
-              onClick={() => setRecentOpen((open) => !open)}
-            >
-              <History aria-hidden="true" />
-            </Button>
-            <DeleteChat />
-            {controls}
-          </PanelHeader>
-          {recentOpen && <RecentChats onPick={() => setRecentOpen(false)} />}
-          {/* Hidden, not unmounted, so a half-decided approval keeps its decisions. */}
-          <div hidden={recentOpen} className="flex min-h-0 flex-1 flex-col">
-            <RunFailure />
-            <OpenChat names={names} onReload={onReload} />
-          </div>
-        </RunsContext.Provider>
-      </TooltipProvider>
+              <DeleteChat />
+              {controls}
+            </PanelHeader>
+            {recentOpen && <RecentChats onPick={() => setRecentOpen(false)} />}
+            {/* Hidden, not unmounted, so a half-decided approval keeps its decisions. */}
+            <div hidden={recentOpen} className="flex min-h-0 flex-1 flex-col">
+              <RunFailure />
+              <OpenChat names={names} onReload={onReload} />
+            </div>
+          </RunsContext.Provider>
+        </TooltipProvider>
+      </DeviceNames.Provider>
     </AssistantRuntimeProvider>
   );
 }

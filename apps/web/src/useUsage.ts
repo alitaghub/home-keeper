@@ -15,15 +15,14 @@ const MIN_GAP_MS = 10_000;
 export function fetchUsage(days: number, entityIds?: string[]) {
   const end = new Date();
   const start = new Date(end.getTime() - days * DAY_MS);
+  return fetchUsageRange(start.toISOString(), end.toISOString(), entityIds);
+}
+
+/** Usage between two ISO 8601 times, for some devices or, without IDs, every monitored one. */
+export function fetchUsageRange(start: string, end: string, entityIds?: readonly string[]) {
   return unwrap(
     api.GET("/api/usage", {
-      params: {
-        query: {
-          start: start.toISOString(),
-          end: end.toISOString(),
-          ...(entityIds && { entity_id: entityIds }),
-        },
-      },
+      params: { query: { start, end, ...(entityIds && { entity_id: [...entityIds] }) } },
     }),
   );
 }

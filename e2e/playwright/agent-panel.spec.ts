@@ -2,7 +2,16 @@
 // (e2e/dashboard_graph.py), behind the dashboard's own address. Started by
 // e2e/compose_agent_panel_proof.py; never against a real home.
 import { execFileSync } from "node:child_process";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { mkdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import {
+  type Download,
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  test,
+} from "@playwright/test";
 import type { paths } from "../../apps/web/src/api/schema";
 
 const DESK = "light.hue_desk";
@@ -277,6 +286,308 @@ test("changes nothing when you reject a proposal, and says so", async ({ page })
   expect(await selection.json()).toEqual({ entity_ids: [DESK] });
   await page.waitForTimeout(4000);
   await expect(deskCard(page)).toBeVisible();
+});
+
+// Charts: the deterministic model answers "bar", "line", "badchart" and "usage <ids>" with a
+// show_chart call (e2e/dashboard_graph.py). These run after the tests above, so the desk
+// lamp is monitored and has history.
+const BAR_TITLE = "Switch-ons this week";
+const LINE_TITLE = "Desk lamp on-time by hour";
+const MARKUP_NAME = "<b>Reading</b> light";
+const CANNOT_DRAW = "The agent sent a chart the panel cannot draw.";
+// Download names: <title-slug>-<YYYY-MM-DD>.<ext>.
+const fileName = (slug: string, extension: string) =>
+  new RegExp(`^${slug}-\\d{4}-\\d{2}-\\d{2}\\.${extension}$`);
+// Chart screenshots in light and dark, kept as evidence after a run: by default
+// apps/web/test-results/agent-charts, as the e2e task runs Playwright from apps/web.
+const SCREENSHOTS = path.resolve(
+  process.env.E2E_SCREENSHOT_DIR ?? path.join("test-results", "agent-charts"),
+);
+
+/** The chart whose accessible name, a short summary, mentions `text`. */
+const chartNamed = (panel: Locator, text: string | RegExp) =>
+  panel
+    .getByRole("img", { name: text })
+    .or(panel.getByRole("figure", { name: text }))
+    .first();
+
+/** Collects Content-Security-Policy violations the page reports from now on. */
+async function watchCsp(page: Page): Promise<string[]> {
+  const violations: string[] = [];
+  page.on("console", (message) => {
+    if (/Content Security Policy|Refused to|CSP violation/i.test(message.text())) {
+      violations.push(message.text());
+    }
+  });
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (event) => {
+      console.error(`CSP violation: ${event.violatedDirective} ${event.blockedURI}`);
+    });
+  });
+  return violations;
+}
+
+/** Opens the panel in `scheme` on a new chat. */
+async function openChartChat(page: Page, scheme: "light" | "dark" = "light") {
+  await page.emulateMedia({ colorScheme: scheme });
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  const panel = await openPanel(page);
+  await panel.getByRole("button", { name: "New chat" }).click();
+  await expect(panel.getByRole("textbox")).toBeVisible();
+  return panel;
+}
+
+async function chooseInMenu(page: Page, panel: Locator, item: string) {
+  await panel.getByRole("button", { name: /options/i }).click();
+  await page.getByRole("menuitem", { name: item }).click();
+}
+
+async function downloadFrom(page: Page, panel: Locator, item: string): Promise<Download> {
+  const download = page.waitForEvent("download");
+  await chooseInMenu(page, panel, item);
+  return download;
+}
+
+async function fileOf(download: Download): Promise<Buffer> {
+  const saved = await download.path();
+  expect(saved).toBeTruthy();
+  return readFileSync(saved ?? "");
+}
+
+/** A PNG decoded by the browser itself: its size, how many colours it has, its corner pixel. */
+async function decodePng(page: Page, bytes: Buffer) {
+  // The PNG's IHDR chunk holds its width and height right after the 8-byte signature.
+  expect(bytes.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  // A blank page, outside the dashboard's CSP, decodes it.
+  const blank = await page.context().newPage();
+  try {
+    return await blank.evaluate(async (base64) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const pen = canvas.getContext("2d");
+      if (!pen) throw new Error("No 2D canvas");
+      pen.drawImage(image, 0, 0);
+      const { data } = pen.getImageData(0, 0, canvas.width, canvas.height);
+      const colours = new Set<number>();
+      for (let index = 0; index < data.length; index += 4) {
+        colours.add(
+          (((data[index] ?? 0) << 24) |
+            ((data[index + 1] ?? 0) << 16) |
+            ((data[index + 2] ?? 0) << 8) |
+            (data[index + 3] ?? 0)) >>>
+            0,
+        );
+      }
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        colours: colours.size,
+        corner: [data[0] ?? 0, data[1] ?? 0, data[2] ?? 0, data[3] ?? 0],
+      };
+    }, bytes.toString("base64"));
+  } finally {
+    await blank.close();
+  }
+}
+
+const luminance = ([red = 0, green = 0, blue = 0]: number[]) =>
+  (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+
+/** Keeps a screenshot of the chart's card as evidence of its look. */
+async function keepScreenshot(panel: Locator, name: string) {
+  mkdirSync(SCREENSHOTS, { recursive: true });
+  await panel
+    .getByRole("figure")
+    .first()
+    .screenshot({ path: path.join(SCREENSHOTS, `${name}.png`) });
+}
+
+test("loads the chart code only when the first chart arrives", async ({ page }) => {
+  const scripts: Response[] = [];
+  page.on("response", (response) => {
+    if (response.request().resourceType() === "script") scripts.push(response);
+  });
+  const bundles = async (responses: Response[]) =>
+    Promise.all(responses.map((response) => response.text().catch(() => "")));
+  const hasRecharts = (bodies: string[]) =>
+    bodies.some((body) => /recharts-(wrapper|surface)/.test(body));
+  // No saved chat, so the open panel has no chart.
+  const panel = await openFresh(page);
+  await page.waitForLoadState("networkidle");
+  const before = scripts.length;
+  expect(hasRecharts(await bundles(scripts))).toBe(false);
+
+  await ask(panel, "bar");
+
+  await expect(chartNamed(panel, new RegExp(BAR_TITLE))).toBeVisible(ANSWER);
+  const loaded = scripts.slice(before);
+  expect(loaded.length).toBeGreaterThan(0);
+  expect(hasRecharts(await bundles(loaded))).toBe(true);
+});
+
+test("draws a bar chart, shows a value on hover, and switches to a table and back", async ({
+  page,
+}) => {
+  const violations = await watchCsp(page);
+  const panel = await openChartChat(page);
+
+  await ask(panel, "bar");
+
+  await expect(chartNamed(panel, new RegExp(BAR_TITLE))).toBeVisible(ANSWER);
+  await expect(panel.getByText("Here is the chart.")).toBeVisible(ANSWER);
+  await expect(panel.getByText("This week", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Last week", { exact: true })).toBeVisible();
+  // No inline <style>: the CSP would block it.
+  await expect(panel.locator("style")).toHaveCount(0);
+  // The first bar is this week's desk lamp; its tooltip shows the category's values.
+  await panel.locator(".recharts-bar-rectangle").first().hover();
+  const tooltip = panel.locator(".recharts-tooltip-wrapper");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("14");
+  await expect(tooltip).toContainText("11");
+  await keepScreenshot(panel, "bar-light");
+
+  await chooseInMenu(page, panel, "Show as table");
+
+  const table = panel.getByRole("table");
+  await expect(table).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "This week" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "Last week" })).toBeVisible();
+  await expect(panel.locator("svg.recharts-surface")).toHaveCount(0);
+  await chooseInMenu(page, panel, "Show as chart");
+  await expect(panel.getByRole("table")).toHaveCount(0);
+  await expect(panel.locator("svg.recharts-surface")).toBeVisible();
+  expect(violations).toEqual([]);
+});
+
+test("downloads a bar chart as CSV and as a PNG of the chart in the light theme", async ({
+  page,
+}) => {
+  const violations = await watchCsp(page);
+  const panel = await openChartChat(page);
+  await ask(panel, "bar");
+  await expect(chartNamed(panel, new RegExp(BAR_TITLE))).toBeVisible(ANSWER);
+  // Let the bars finish growing before the PNG copies them.
+  await page.waitForTimeout(1500);
+
+  const csv = await downloadFrom(page, panel, "Download CSV");
+
+  expect(csv.suggestedFilename()).toMatch(fileName("switch-ons-this-week", "csv"));
+  // These cells hold no comma or quote, so a line splits on commas; a cell may be quoted.
+  const [header, firstRow] = (await fileOf(csv))
+    .toString("utf8")
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .map((line) => line.split(",").map((cell) => cell.replace(/^"(.*)"$/, "$1")));
+  expect(header?.slice(1)).toEqual(["This week", "Last week"]);
+  expect(firstRow).toEqual(["Desk lamp", "14", "11"]);
+
+  const png = await downloadFrom(page, panel, "Download PNG");
+
+  expect(png.suggestedFilename()).toMatch(fileName("switch-ons-this-week", "png"));
+  const image = await decodePng(page, await fileOf(png));
+  const plot = await panel.locator("svg.recharts-surface").boundingBox();
+  expect(plot).toBeTruthy();
+  if (plot) {
+    // The chart's size, at a whole device-pixel scale, plus room for the title and legend.
+    const scale = image.width / plot.width;
+    expect(scale).toBeGreaterThan(0.95);
+    expect(Math.abs(scale - Math.round(scale))).toBeLessThan(0.15);
+    expect(image.height).toBeGreaterThan(plot.height * Math.round(scale));
+  }
+  // Not one flat colour: bars, text and grid are drawn.
+  expect(image.colours).toBeGreaterThan(8);
+  // The light theme's opaque, light background.
+  expect(image.corner[3]).toBe(255);
+  expect(luminance(image.corner)).toBeGreaterThan(0.7);
+  expect(violations).toEqual([]);
+});
+
+test("draws a line chart with straight segments and a name with markup as text", async ({
+  page,
+}) => {
+  const violations = await watchCsp(page);
+  const panel = await openChartChat(page);
+
+  await ask(panel, "line");
+
+  await expect(chartNamed(panel, new RegExp(LINE_TITLE))).toBeVisible(ANSWER);
+  const curves = panel.locator(".recharts-line-curve");
+  await expect(curves).toHaveCount(2);
+  for (const curve of await curves.all()) {
+    // Cubic Bézier commands would mean a smoothed curve.
+    expect(await curve.getAttribute("d")).not.toMatch(/[CcSsQqTt]/);
+  }
+  await expect(panel.getByText(MARKUP_NAME, { exact: true }).first()).toBeVisible();
+  // Late evening, when the reading light is on.
+  const plot = await panel.locator("svg.recharts-surface").boundingBox();
+  expect(plot).toBeTruthy();
+  if (plot) await page.mouse.move(plot.x + plot.width * 0.85, plot.y + plot.height / 2);
+  const tooltip = panel.locator(".recharts-tooltip-wrapper");
+  await expect(tooltip).toContainText(MARKUP_NAME);
+  await expect(panel.locator("figure b")).toHaveCount(0);
+  await keepScreenshot(panel, "line-light");
+  await chooseInMenu(page, panel, "Show as table");
+  await expect(panel.getByRole("columnheader", { name: MARKUP_NAME })).toBeVisible();
+  expect(violations).toEqual([]);
+});
+
+test("draws the desk lamp's on and unknown time per day from its real history", async ({
+  page,
+}) => {
+  const violations = await watchCsp(page);
+  const panel = await openChartChat(page);
+
+  await ask(panel, `usage ${DESK}`);
+
+  // Named with the friendly name, not the entity ID.
+  await expect(chartNamed(panel, new RegExp(DESK_NAME))).toBeVisible(ANSWER);
+  await expect(panel.locator(".recharts-bar")).toHaveCount(2);
+  await expect(panel.getByText(/on \d+(h|m)/).first()).toBeVisible();
+  await expect(panel).not.toContainText(/from Home Assistant|source/i);
+  await keepScreenshot(panel, "usage-light");
+  await chooseInMenu(page, panel, "Show as table");
+  // One row per day of the 7-day range, plus the header.
+  expect(await panel.getByRole("table").getByRole("row").count()).toBeGreaterThanOrEqual(8);
+  expect(violations).toEqual([]);
+});
+
+test("says it cannot draw a chart the agent's schema rejected", async ({ page }) => {
+  const panel = await openChartChat(page);
+
+  await ask(panel, "badchart");
+
+  await expect(panel.getByText(CANNOT_DRAW)).toBeVisible(ANSWER);
+  await expect(panel.getByText("That chart did not work.")).toBeVisible(ANSWER);
+});
+
+test("draws charts and their PNG in the dark theme", async ({ page }) => {
+  const violations = await watchCsp(page);
+  const panel = await openChartChat(page, "dark");
+
+  for (const [question, name, shot] of [
+    ["bar", BAR_TITLE, "bar-dark"],
+    ["line", LINE_TITLE, "line-dark"],
+    [`usage ${DESK}`, DESK_NAME, "usage-dark"],
+  ] as const) {
+    await panel.getByRole("button", { name: "New chat" }).click();
+    await ask(panel, question);
+    await expect(chartNamed(panel, new RegExp(name))).toBeVisible(ANSWER);
+    await page.waitForTimeout(1500);
+    await keepScreenshot(panel, shot);
+  }
+  const png = await downloadFrom(page, panel, "Download PNG");
+  const image = await decodePng(page, await fileOf(png));
+
+  expect(image.colours).toBeGreaterThan(8);
+  expect(image.corner[3]).toBe(255);
+  expect(luminance(image.corner)).toBeLessThan(0.3);
+  expect(violations).toEqual([]);
 });
 
 /** The proof's Compose arguments, which it passes as a JSON list of strings. */

@@ -20,6 +20,7 @@ dashboard uses. It can:
   brightness; plugs and switches have none
 - show the changes Home Assistant recorded, and whether Home Assistant can be reached
 - list the devices in Home Assistant, with their kind
+- show a chart in the agent panel (`show_chart`); see [Charts](#charts)
 - start or stop monitoring a light, plug or switch (`monitor`, `stop_monitoring`),
   after you approve it in the chat. You can
   approve or reject the proposed change; a rejection changes nothing
@@ -88,6 +89,7 @@ LangGraph Studio and other local tools.
 
 - Answers stream in as the agent writes them. When the agent uses a tool, the
   panel shows the call collapsed; open it to see the arguments and the result.
+  A chart shows in full instead (see [Charts](#charts)).
   **Stop generating** ends an answer early.
 - When a question fails, the panel says so and puts the question back in that
   chat's message box, so you can send it again.
@@ -119,6 +121,50 @@ dashboard does not use that port, so the panel keeps working.
 Aegra's CORS allows no browser origin: the panel calls it on the dashboard's own
 origin, and no other website may read its answers. The container writes its Aegra
 config at startup; `apps/agent/aegra.json` is only for running `aegra dev` locally.
+
+## Charts
+
+When a chart helps, the agent puts one in its answer in the agent panel. The
+agent chooses the kind of chart and the data; the dashboard draws it in its own
+colors, in light and dark mode. The agent cannot set colors, sizes or fonts.
+
+| Kind           | What it shows                                                                                   |
+| -------------- | ----------------------------------------------------------------------------------------------- |
+| `bar`          | Values compared across categories, such as switch-ons per device. Up to 5 series.               |
+| `line`         | Values over ordered categories, such as minutes on per hour. Points join with straight lines.   |
+| `usage_by_day` | On time and unknown time per day for up to 5 monitored devices, stacked, with totals below.     |
+
+- For `bar` and `line`, the agent uses only numbers from its tool results.
+- For `usage_by_day`, the agent names only the devices and the range. The
+  dashboard loads the usage itself, labels each device with its name (or its
+  entity id when it has none) and shows the days in the time zone the usage
+  report names, as the History dialog does. With several devices, each device
+  has its own stack of on and unknown time per day. A range without any history
+  draws every day as unknown and says no history is recorded.
+- Hover a bar or point to see its value. Each chart has a short text summary for
+  screen readers.
+- The **⋯** menu on a chart offers:
+  - **Show as table** and **Show as chart**. The table lists the category, then
+    one column per series, each value with its unit. For `usage_by_day` it
+    lists the date, then the on and unknown time of each device.
+  - **Download PNG**: the chart with its title and legend, in the current
+    light or dark look, saved as `<title>-<YYYY-MM-DD>.png`. It is available
+    while the chart is shown.
+  - **Download CSV**: the table's columns with a header row and raw numbers
+    (usage in hours, with 2 decimals), saved as `<title>-<YYYY-MM-DD>.csv`. A
+    text cell that starts with `=`, `+`, `-` or `@` gets a leading `'`, so a
+    spreadsheet does not run it as a formula.
+- While the agent writes a chart, the panel shows a placeholder. A chart the
+  panel cannot draw says so; when its usage cannot load, the chart offers
+  **Retry**.
+- A reopened chat draws its charts again. `usage_by_day` loads the usage again,
+  so days Home Assistant has since purged show as unknown.
+- Device and series names are shown as text everywhere: in the chart, the
+  legend, the tooltip, the table and both downloads.
+- The chart code loads with the first chart, not when the panel opens.
+
+Telegram answers stay text only: a Telegram conversation's model is never
+offered `show_chart`.
 
 ## Set the model
 
@@ -155,7 +201,7 @@ credential never leave. [security.md](security.md) has the full boundary.
 ## Example questions
 
 - Which lights are you watching, and are they on?
-- How long was the desk lamp on this week, per day?
+- How long was the desk lamp on this week, per day? Show it as a chart.
 - At which hours is the reading light usually on?
 - Which light was on longest in the last 7 days?
 - Was the desk lamp unavailable at any time yesterday?
