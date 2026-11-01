@@ -25,6 +25,7 @@ from support.home_assistant import (
     realistic_device,
     realistic_entity,
     registry_entry,
+    statistics_row,
     use_transport,
 )
 
@@ -45,6 +46,7 @@ ALLOWED_FRAMES = {
     "get_config",
     "frontend/get_translations",
     "history/history_during_period",
+    "recorder/statistics_during_period",
 }
 NO_TRANSLATION = {"platform": "zha", "translation_key": None}
 ENTITIES: list[Frame] = [
@@ -115,6 +117,7 @@ class Home:
     server: StateServer
     history: dict[str, list[Frame]] = field(default_factory=dict[str, list[Frame]])
     translations: dict[str, str] = field(default_factory=dict[str, str])
+    statistics: dict[str, list[Frame]] = field(default_factory=dict[str, list[Frame]])
     sockets: list[FakeSocket] = field(default_factory=list[FakeSocket])
     # When set, the websocket connect is refused, as when Home Assistant is down.
     down: bool = False
@@ -123,7 +126,11 @@ class Home:
         if self.down:
             raise ConnectionRefusedError
         socket = FakeSocket(
-            self.entities, self.devices, self.history, translations=self.translations
+            self.entities,
+            self.devices,
+            self.history,
+            statistics=self.statistics,
+            translations=self.translations,
         )
         self.sockets.append(socket)
         return socket
@@ -305,6 +312,7 @@ def test_unreachable_home_assistant_is_a_503_with_a_safe_code(
             ("/internal/states", {"entity_id": "ha:hue"}),
             ("/internal/history", {"entity_id": "ha:hue", **WINDOW}),
             ("/internal/words", {"entity_id": "ha:hue"}),
+            ("/internal/statistics", {"entity_id": "ha:hue", **WINDOW}),
         ):
             response = client.get(path, params=params, headers=AUTH)
             assert response.status_code == 503, response.text
@@ -325,6 +333,7 @@ def test_unreachable_home_assistant_is_a_503_with_a_safe_code(
         "/internal/catalog",
         "/internal/states?entity_id=ha:hue",
         "/internal/words?entity_id=ha:hue",
+        "/internal/statistics?entity_id=ha:hue&start=2026-10-13T09:00:00Z&end=2026-10-13T10:00:00Z",
         "/internal/history?entity_id=ha:hue&start=2026-10-13T09:00:00Z&end=2026-10-13T10:00:00Z",
     ],
 )
@@ -345,6 +354,7 @@ def test_the_reader_sends_home_assistant_only_its_fixed_reads(
     reader.get("/internal/catalog", headers=AUTH)
     reader.get("/internal/states", params={"entity_id": "ha:hue"}, headers=AUTH)
     reader.get("/internal/history", params={"entity_id": "ha:hue", **WINDOW}, headers=AUTH)
+    reader.get("/internal/statistics", params={"entity_id": "ha:sensor", **WINDOW}, headers=AUTH)
     # A path-shaped id must not become another Home Assistant path.
     reader.get("/internal/states", params={"entity_id": "../services/light"}, headers=AUTH)
 
@@ -652,3 +662,127 @@ def test_http_reader_words_answers_every_requested_device_and_nothing_for_none(
         "ha:gone": ("on", "off"),
     }
     assert http_reader.words([]) == {}
+
+
+@pytest.fixture
+def power_home(home: Home) -> Home:
+    """The home plus a power meter with a state class and long-term statistics: one hourly
+    bucket now and one three hours later, and nothing between."""
+    home.entities = [
+        *ENTITIES,
+        registry_entry("power", "sensor.desk_power", platform="demo", translation_key=None),
+    ]
+    home.server.states["sensor.desk_power"] = entity_state(
+        "sensor.desk_power", "412", state_class="measurement", unit_of_measurement="W"
+    )
+    home.statistics = {
+        "sensor.desk_power": [
+            statistics_row(START, 10.5, 5, 20),
+            statistics_row(START + timedelta(hours=3), 60, 1, 90),
+        ]
+    }
+    return home
+
+
+def statistics_frames(home: Home) -> list[Frame]:
+    return [f for f in home.frames() if f["type"] == "recorder/statistics_during_period"]
+
+
+def test_statistics_reads_the_requested_devices_buckets_in_one_request(
+    reader: TestClient, power_home: Home
+) -> None:
+    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+    window = {"start": START.isoformat(), "end": (START + timedelta(days=7)).isoformat()}
+
+    response = reader.get(
+        "/internal/statistics",
+        params=[("entity_id", "ha:power"), ("entity_id", "ha:gone"), *window.items()],
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    statistics = response.json()["statistics"]
+    assert sorted(statistics) == ["ha:gone", "ha:power"]
+    assert [(b["mean"], b["min"], b["max"]) for b in statistics["ha:power"]] == [
+        (10.5, 5.0, 20.0),
+        (60.0, 1.0, 90.0),
+    ]
+    # A device Home Assistant does not have has no buckets, and is not asked for.
+    assert statistics["ha:gone"] == []
+    [frame] = statistics_frames(power_home)
+    assert frame["statistic_ids"] == ["sensor.desk_power"]
+    assert frame["period"] == "hour"
+
+
+def test_the_http_reader_returns_typed_buckets_for_every_requested_device(
+    reader: TestClient, power_home: Home, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+
+    def forward(request: httpx.Request) -> httpx.Response:
+        answer = reader.get(request.url.raw_path.decode(), headers=AUTH)
+        return httpx.Response(answer.status_code, content=answer.content)
+
+    transport = httpx.MockTransport(forward)
+    monkeypatch.setattr(reader_module.httpx, "Client", partial(httpx.Client, transport=transport))
+    http_reader = HttpReader("http://reader.internal", SERVICE_TOKEN)
+    end = START + timedelta(days=7)
+
+    buckets = http_reader.statistics(["ha:power", "ha:gone"], START, end)
+
+    assert list(buckets) == ["ha:power", "ha:gone"]
+    assert [
+        (datetime.fromisoformat(b.start), datetime.fromisoformat(b.end), b.mean, b.min, b.max)
+        for b in buckets["ha:power"]
+    ] == [
+        (START, START + timedelta(hours=1), 10.5, 5.0, 20.0),
+        (START + timedelta(hours=3), START + timedelta(hours=4), 60.0, 1.0, 90.0),
+    ]
+    assert buckets["ha:gone"] == []
+    assert http_reader.statistics([], START, end) == {}
+
+
+def test_the_http_reader_raises_the_safe_code_when_the_reader_cannot_read_statistics(
+    reader: TestClient, power_home: Home, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+    # One row without its max: Home Assistant's answer is invalid data.
+    power_home.statistics = {"sensor.desk_power": [statistics_row(START, 1, 0, None)]}
+
+    def forward(request: httpx.Request) -> httpx.Response:
+        answer = reader.get(request.url.raw_path.decode(), headers=AUTH)
+        return httpx.Response(answer.status_code, content=answer.content)
+
+    transport = httpx.MockTransport(forward)
+    monkeypatch.setattr(reader_module.httpx, "Client", partial(httpx.Client, transport=transport))
+    http_reader = HttpReader("http://reader.internal", SERVICE_TOKEN)
+
+    with pytest.raises(reader_module.ReaderUnavailable) as error:
+        http_reader.statistics(["ha:power"], START, END)
+
+    assert error.value.error == "invalid_data"
+
+
+def test_an_unavailable_measurement_has_a_null_value_its_unit_and_the_translated_label(
+    reader: TestClient, power_home: Home
+) -> None:
+    power_home.translations = {"component.sensor.entity_component._.state.unavailable": "Not here"}
+    power_home.server.states["sensor.desk_power"] = entity_state(
+        "sensor.desk_power", "unavailable", state_class="measurement", unit_of_measurement="W"
+    )
+    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+
+    response = reader.get("/internal/states", params={"entity_id": "ha:power"}, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    reading = response.json()["states"]["ha:power"]["reading"]
+    assert without_times(reading) == {
+        "device_kind": "measurement",
+        "state": "unavailable",
+        "availability": "unavailable",
+        # Home Assistant's word for the state, from its translations.
+        "label": "Not here",
+        "unit": "W",
+    }
+    # The key is there, null, for a client that reads `value: number | null`.
+    assert reading["value"] is None

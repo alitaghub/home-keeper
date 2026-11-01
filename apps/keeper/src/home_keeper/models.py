@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+import math
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
@@ -29,16 +30,25 @@ SwitchableKind = Literal["light", "switch"]
 # The kinds with on-time usage. `on_off`: a device that is only on or off, such as a fan or a
 # door sensor, which Home Keeper never switches.
 UsageKind = SwitchableKind | Literal["on_off"]
-# `state`: any other device, shown by its state text alone.
-DeviceKind = UsageKind | Literal["state"]
+# `state`: any other device, shown by its state text alone. `measurement`: a sensor whose
+# state class is `measurement`, a value Home Assistant keeps statistics for, such as a power
+# meter.
+DeviceKind = UsageKind | Literal["state", "measurement"]
 # People and trackers report where someone is, which Home Keeper does not record.
 PRESENCE_DOMAINS = frozenset({"person", "device_tracker"})
 # Domains whose state is only `on` or `off`, apart from lights and switches.
 ON_OFF_DOMAINS = frozenset({"fan", "binary_sensor", "siren", "humidifier", "remote"})
+# Domains whose entities are measurements when their state class is MEASUREMENT_STATE_CLASS.
+MEASUREMENT_DOMAINS = frozenset({"sensor"})
+# The only state class Home Assistant keeps a mean, lowest and highest value for. A `total` or
+# `total_increasing` sensor, such as an energy meter, has only a sum and stays `state`.
+MEASUREMENT_STATE_CLASS = "measurement"
 
 
 def device_kind_of(source_entity_id: str) -> DeviceKind | None:
-    """The device kind a Home Assistant domain names, or None for presence and groups."""
+    """The device kind a Home Assistant domain names, or None for presence and groups. A
+    sensor is `state` here: only its state's `state_class`, which discovery reads, makes it a
+    `measurement`."""
     match source_entity_id.partition(".")[0]:
         case "light":
             return "light"
@@ -215,10 +225,9 @@ class OnOffState(StateHeader):
     device_kind: Literal["on_off"]
 
 
-class GenericState(WireModel):
-    """Any other device: its state text and source times, with no attributes."""
+class TextStateHeader(WireModel):
+    """A state text and the source times, with no attributes."""
 
-    device_kind: Literal["state"]
     state: StateText
     last_changed: datetime | None = None
     last_updated: datetime | None = None
@@ -238,8 +247,46 @@ class GenericState(WireModel):
         return None if value is None else to_utc(value)
 
 
+class GenericState(TextStateHeader):
+    """Any other device: its state text and source times, with no attributes."""
+
+    device_kind: Literal["state"]
+
+
+# Home Assistant's unit of measurement, such as `W` or `°C`.
+MAX_UNIT_LENGTH = 32
+Unit = Annotated[str, StringConstraints(min_length=1, max_length=MAX_UNIT_LENGTH)]
+# A measured number. JSON like 1e999 parses to infinity, which no measurement is.
+Measured = Annotated[float, Field(allow_inf_nan=False)]
+
+
+def measured_value(state: str) -> float | None:
+    """A measurement's state as a finite number; None for any other text, such as
+    `unavailable`."""
+    try:
+        value = float(state)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+class MeasurementState(TextStateHeader):
+    """A sensor with the state class `measurement`: its state text, the number it holds and
+    its unit."""
+
+    device_kind: Literal["measurement"]
+    # Always the state's own number; set from the state, never from the input.
+    value: Measured | None = None
+    unit: Unit | None = None
+
+    @model_validator(mode="after")
+    def state_value(self) -> Self:
+        self.value = measured_value(self.state)
+        return self
+
+
 # A state as the connector parses it from Home Assistant.
-DeviceState = LightState | SwitchState | OnOffState | GenericState
+DeviceState = LightState | SwitchState | OnOffState | GenericState | MeasurementState
 
 
 CollectorError = Literal[
@@ -307,9 +354,7 @@ class OnOffReading(ReadingHeader):
     device_kind: Literal["on_off"]
 
 
-class StateReading(WireModel):
-    """Any other device's state as Home Assistant reports it: its text, with no attributes."""
-
+class TextReadingHeader(WireModel):
     state: StateText
     availability: Availability
     last_changed: Timestamp | None = None
@@ -317,14 +362,30 @@ class StateReading(WireModel):
     last_reported: Timestamp | None = None
     # Home Assistant's translated word for the state, else the raw state.
     label: StateText
+
+
+class StateReading(TextReadingHeader):
+    """Any other device's state as Home Assistant reports it: its text, with no attributes."""
+
     device_kind: Literal["state"]
+
+
+class MeasurementReading(TextReadingHeader):
+    """A measurement's state as Home Assistant reports it: its text, its number and unit."""
+
+    device_kind: Literal["measurement"]
+    # The state as a finite number; null when it is not one, such as `unavailable`.
+    value: Measured | None
+    # Home Assistant's `unit_of_measurement`; null when the device has none.
+    unit: Unit | None
 
 
 Reading = Annotated[
     Annotated[LightReading, Tag("light")]
     | Annotated[SwitchReading, Tag("switch")]
     | Annotated[OnOffReading, Tag("on_off")]
-    | Annotated[StateReading, Tag("state")],
+    | Annotated[StateReading, Tag("state")]
+    | Annotated[MeasurementReading, Tag("measurement")],
     Discriminator(device_kind_tag),
 ]
 
@@ -447,6 +508,64 @@ class UsageReport(WireModel):
     end: Timestamp
     timezone: str
     devices: list[DeviceUsage]
+
+
+# Home Assistant's statistics periods Home Keeper reads: 5-minute short-term statistics, or
+# hourly long-term ones.
+StatisticsPeriod = Literal["5minute", "hour"]
+# The longest range read in 5-minute statistics; a longer one is read hourly.
+SHORT_TERM_RANGE = timedelta(hours=24)
+
+
+def statistics_period(start: datetime, end: datetime) -> StatisticsPeriod:
+    """The statistics period for a range: 5-minute buckets up to 24 hours, hourly above."""
+    return "5minute" if end - start <= SHORT_TERM_RANGE else "hour"
+
+
+class Bucket(WireModel):
+    """One period of Home Assistant's statistics for a measurement: from `start` to `end`,
+    the mean, the lowest and the highest value."""
+
+    start: Timestamp
+    end: Timestamp
+    mean: Measured
+    min: Measured
+    max: Measured
+
+    @model_validator(mode="after")
+    def ordered_times(self) -> Self:
+        if _aware_time(self.start) >= _aware_time(self.end):
+            raise ValueError("A bucket must end after it starts")
+        return self
+
+
+def _aware_time(value: str) -> datetime:
+    """Raises ValueError for a malformed time or one without a timezone."""
+    return to_utc(datetime.fromisoformat(value))
+
+
+class MeasurementSeries(WireModel):
+    """One measurement's statistics over a report's range. Periods Home Assistant has no
+    statistics for have no bucket: they are gaps, not zeros."""
+
+    entity_id: Identity
+    # From the current reading; null when the device has none or cannot be read.
+    unit: Unit | None
+    period: StatisticsPeriod
+    buckets: list[Bucket]
+    # The lowest bucket minimum, the mean of the bucket means and the highest bucket maximum;
+    # null when there is no bucket.
+    min: float | None
+    mean: float | None
+    max: float | None
+    # The current reading's value; null when it is not a number or cannot be read.
+    latest: float | None
+
+
+class MeasurementReport(WireModel):
+    start: Timestamp
+    end: Timestamp
+    devices: list[MeasurementSeries]
 
 
 class ControlHeartbeat(WireModel):

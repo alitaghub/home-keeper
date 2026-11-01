@@ -14,9 +14,9 @@ port when 8000 is taken, for example
 
 ## What the demo shows
 
-The demo reader serves eight synthetic entities: two single lights, a room
-group, a smart plug, a garage door, a ceiling fan, a front door sensor, and an
-ungrouped sensor. All but the room group and the ungrouped sensor can be
+The demo reader serves nine synthetic entities: two single lights, a room
+group, a smart plug, the plug's power meter ("Desk plug power"), a garage door,
+a ceiling fan, a front door sensor, and an ungrouped sensor. All but the room group and the ungrouped sensor can be
 selected. Nothing is monitored automatically. Click **Monitor**, and the device's
 current state and a day of synthetic history appear at once: the demo reader
 generates 24 hours of history when it starts. It then plays a repeatable sequence
@@ -27,8 +27,14 @@ only, and shows under **Plugs and switches** on the Home tab. The garage door
 opens and closes with the same steps, shows "Open" or "Closed" under **Other**,
 and cannot be switched. The ceiling fan and the front door sensor follow the
 plug's steps and show under **Other on/off** with a strip and usage: the fan as
-"On" or "Off", the door sensor as "Open" or "Closed". Neither can be switched. Restarting the
-reader starts a new synthetic day; the demo keeps its history in memory only.
+"On" or "Off", the door sensor as "Open" or "Closed". Neither can be switched.
+The desk plug's power meter shows under **Measurements**: 412 W while the plug
+step is on, 0 W while it is off. Its card draws a sparkline of the last 24
+hours, and **History** opens a chart of the last 24 hours, 7 days or 30 days.
+Its statistics are synthetic and repeatable: a daily curve between about 100
+and 440 W, in 5-minute and hourly buckets for the last 30 days. It cannot be
+switched. Restarting the reader starts a new synthetic day; the demo keeps its
+history in memory only.
 
 The script-shaped name is deliberate too. The "Reading lamp" device has an
 entity name that contains a `<script>` tag. The dashboard labels lamps by device

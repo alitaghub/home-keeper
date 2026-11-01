@@ -82,6 +82,17 @@ export const frontDoor = {
   device_kind: "on_off",
 } satisfies Schemas["Entity"];
 
+// A power meter on a device of its own: a measurement, shown with its value, unit and chart.
+export const powerMeter = {
+  id: "sensor.desk_plug_power",
+  device_id: "desk-plug",
+  device_name: null,
+  name: "Desk plug power",
+  supported: true,
+  reason: null,
+  device_kind: "measurement",
+} satisfies Schemas["Entity"];
+
 export const catalog = {
   source_id: "demo",
   home_assistant_url: null,
@@ -319,6 +330,32 @@ export const monitoredOnOff = (
     missing: false,
   }) satisfies MonitoredEntity;
 
+/**
+ * A monitored measurement: Home Assistant's `state` text, its number in `unit` (null when the
+ * state is not a number), and the word for the state.
+ */
+export const monitoredMeasurement = (
+  entity: Schemas["Entity"] & { device_kind: "measurement" },
+  value: number | null,
+  unit: string | null = "W",
+  availability: Reading["availability"] = "available",
+) =>
+  ({
+    ...entity,
+    source_entity_id: entity.id,
+    state: {
+      device_kind: "measurement",
+      state: value === null ? availability : String(value),
+      value,
+      unit,
+      label: value === null ? availability : String(value),
+      availability,
+      last_changed: reportedAt,
+      last_updated: reportedAt,
+    },
+    missing: false,
+  }) satisfies MonitoredEntity;
+
 /** A monitored device while Home Assistant cannot be reached: listed, with no state. */
 export const unknownDevice = (entity: Schemas["Entity"]) =>
   ({
@@ -492,3 +529,42 @@ export const doorUsage = {
     },
   ],
 } satisfies Schemas["UsageReport"];
+
+type MeasurementSeries = Schemas["MeasurementReport"]["devices"][number];
+type Period = MeasurementSeries["period"];
+
+const MINUTE_MS = 60_000;
+
+/**
+ * Long-term statistics buckets, each [minutes before `end` it starts, mean, min, max], one
+ * period long. Times a row leaves out are gaps.
+ */
+export const bucketsBefore = (
+  end: string,
+  period: Period,
+  rows: [number, number, number, number][],
+) => {
+  const length = (period === "hour" ? 60 : 5) * MINUTE_MS;
+  return rows.map(([minutes, mean, min, max]) => {
+    const start = Date.parse(end) - minutes * MINUTE_MS;
+    return {
+      start: new Date(start).toISOString(),
+      end: new Date(start + length).toISOString(),
+      mean,
+      min,
+      max,
+    };
+  });
+};
+
+/** A report for `[start, end)` holding these series. */
+export const measurementReport = (
+  range: { start: string; end: string },
+  devices: MeasurementSeries[],
+) => ({ ...range, devices }) satisfies Schemas["MeasurementReport"];
+
+export const emptyMeasurements = {
+  start: "2026-10-11T10:00:00+00:00",
+  end: "2026-10-12T10:00:00+00:00",
+  devices: [],
+} satisfies Schemas["MeasurementReport"];

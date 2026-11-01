@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from typing import Literal
 from urllib.parse import quote
@@ -29,6 +30,7 @@ from home_keeper_agent.keeper import (
     LightOff,
     LightOn,
     LightUsage,
+    Measurements,
     Monitored,
     OnOffUsage,
     Params,
@@ -52,6 +54,12 @@ COLOR_FIELDS = (
     "rgbww_color",
 )
 COMMAND_TOOLS = ("turn_on", "turn_off")
+# The ranges get_measurements reads, back from now.
+MEASUREMENT_RANGES = {
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
 NOT_ALLOWED = "Not sent: you are not allowed to control lights."
 # The keeper's refusal text for a device that is not a light, plug or switch.
 NOT_SWITCHABLE = "This device cannot be switched."
@@ -98,6 +106,9 @@ def _reading(reading: Reading | None, colors: Sequence[str] = ()) -> str:
             value = ", ".join(number(float(part)) for part in value)  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType] -- color tuples hold numbers
         details.append(f"{field.replace('_', ' ')} {'none' if value is None else value}")
     label = _name(reading.label)
+    # A measurement's unit comes from Home Assistant, so it is quoted like the label.
+    if reading.unit:
+        label += f" {_name(reading.unit)}"
     return f"{label} ({', '.join(details)})" if details else label
 
 
@@ -192,6 +203,29 @@ def format_usage(usage: Usage) -> str:
         lines.append("No monitored device with on/off usage matches this request.")
     for device in usage.devices:
         lines.extend(_device_usage(device))
+    return "\n".join(lines)
+
+
+def format_measurements(measurements: Measurements, names: Mapping[str, str]) -> str:
+    """Each device's lowest, mean, highest and latest value with its unit, from Home
+    Assistant's statistics; "no statistics" when it has none for the range."""
+    lines = [
+        f"Measurements from {measurements.start} to {measurements.end}, from Home Assistant's "
+        "statistics. Report only these numbers."
+    ]
+    if not measurements.devices:
+        lines.append("No monitored measurement matches this request.")
+    for device in measurements.devices:
+        line = f"- {device.entity_id} {_name(names.get(device.entity_id, device.entity_id))}: "
+        if device.min is None or device.mean is None or device.max is None:
+            lines.append(line + "no statistics")
+            continue
+        latest = "unknown" if device.latest is None else number(device.latest)
+        unit = f" {_name(device.unit)}" if device.unit else ""
+        lines.append(
+            line + f"min {number(device.min)}, mean {number(device.mean)}, "
+            f"max {number(device.max)}, latest {latest}{unit}"
+        )
     return "\n".join(lines)
 
 
@@ -384,6 +418,35 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
         )
 
     @tool
+    def get_measurements(
+        range: Literal["24h", "7d", "30d"],
+        entity_ids: list[str] | None = None,
+    ) -> str:
+        """Report the lowest, mean, highest and latest value, with the unit, of monitored
+        measurements, such as a power meter. Use this for every sensor value.
+
+        Args:
+            range: How far back from now: "24h", "7d" or "30d".
+            entity_ids: Entity IDs such as sensor.desk_power; omit for all monitored
+                measurements.
+        """
+
+        def render() -> str:
+            end = datetime.now(UTC)
+            params: Params = {
+                "start": (end - MEASUREMENT_RANGES[range]).isoformat(),
+                "end": end.isoformat(),
+            }
+            if entity_ids:
+                params["entity_id"] = entity_ids
+            measurements = client.request("GET", "/api/measurements", Measurements, params=params)
+            monitored = client.request("GET", "/api/monitored", Monitored)
+            names = {device.id: device.name for device in monitored.entities}
+            return format_measurements(measurements, names)
+
+        return _guard(render)
+
+    @tool
     def get_events(start: str, end: str, entity_id: str | None = None) -> str:
         """List changes Home Assistant recorded for monitored devices in a time range, newest
         first, at most 100.
@@ -408,10 +471,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_devices() -> str:
         """List the devices in Home Assistant, with each one's kind and whether it can be
-        monitored. Kinds: light; switch, which covers plugs; on_off, another device that is
-        only on or off, such as a fan or a door sensor, which has usage but cannot be switched;
-        state, any other device, such as a thermostat or a cover, which reports a state but
-        cannot be switched."""
+        monitored. Only kinds light and switch (plugs included) can be switched."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:
@@ -481,6 +541,7 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     return [
         list_monitored,
         get_usage,
+        get_measurements,
         get_events,
         get_health,
         list_devices,

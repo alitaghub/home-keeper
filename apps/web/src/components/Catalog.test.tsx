@@ -185,3 +185,28 @@ describe("catalog groups of on/off devices", () => {
     ).toBe(true);
   });
 });
+
+describe("catalog group of measurements", () => {
+  it("lists them under Measurements, between Other on/off and Other", () => {
+    const { frontDoor, thermostat, powerMeter } = fixtures;
+    render(
+      <Catalog
+        entities={[thermostat, powerMeter, frontDoor, smartPlug, desk, ungroupedSensor]}
+        homeAssistantUrl={null}
+        selected={[]}
+        onToggle={() => {}}
+      />,
+    );
+
+    const heading = (name: string) => screen.getByRole("heading", { name });
+    const follows = (before: Node, after: Node) =>
+      Boolean(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(heading("Other on/off"), heading("Measurements"))).toBe(true);
+    expect(follows(heading("Measurements"), heading("Other"))).toBe(true);
+    const monitor = screen.getByRole("button", { name: "Monitor Desk plug power" });
+    expect(follows(heading("Measurements"), monitor)).toBe(true);
+    expect(follows(monitor, heading("Other"))).toBe(true);
+    // A measurement is not a light.
+    expect(follows(monitor, screen.getByRole("button", { name: "Monitor Desk lamp" }))).toBe(false);
+  });
+});

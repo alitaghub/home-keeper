@@ -34,7 +34,8 @@ from support.control import (
     command,
     on,
 )
-from support.reader import FakeReader, history_row
+from support.reader import FakeReader, history_row, measuring
+from support.statistics import bucket
 
 from home_keeper.api import create_app
 from home_keeper.models import Entity
@@ -385,6 +386,76 @@ def on_off_device_responses(database: str) -> dict[str, Recorded]:
     return result
 
 
+POWER: Payload = {
+    "id": "power",
+    "device_id": "device-p",
+    "device_name": "Desk plug",
+    "name": "Desk plug power",
+    "device_kind": "measurement",
+    "supported": True,
+    "reason": None,
+}
+
+
+def measurement_responses(database: str) -> dict[str, Recorded]:
+    """A measurement (a power meter) through every route it touches."""
+    clock = [NOW]
+    controller = FakeController(clock)
+    reader = FakeReader([Entity.model_validate(POWER)])
+    app = create_app(
+        database,
+        TOKEN,
+        now=lambda: clock[0],
+        reader=reader,
+        controller=controller,
+        command_wait_seconds=2,
+        control_stale_seconds=15,
+    )
+    hour = timedelta(hours=1)
+    result: dict[str, Recorded] = {}
+    with TestClient(app) as client:
+        selected = client.put("/api/selection/power", json={"selected": True}, headers=BROWSER)
+        assert selected.is_success, selected.text
+        reader.set("power", "sensor.desk_plug_power", measuring(412))
+        # Statistics for 6 and 5 hours ago, a gap, then 2 hours ago.
+        reader.record_statistics(
+            "power",
+            bucket(NOW - 6 * hour, mean=10, low=5, high=20),
+            bucket(NOW - 5 * hour, mean=20, low=8, high=40),
+            bucket(NOW - 2 * hour, mean=60, low=1, high=90),
+        )
+        result["measurement_catalog"] = record(client.get("/api/catalog"))
+        result["measurement_monitored"] = record(client.get("/api/monitored"))
+        week = usage_range(NOW - timedelta(days=7), NOW)
+        result["measurements"] = record(client.get("/api/measurements", params=week))
+        result["measurements_24_hours"] = record(
+            client.get("/api/measurements", params=usage_range(NOW - timedelta(hours=24), NOW))
+        )
+        # Nothing in the range: an empty chart and null numbers.
+        result["measurements_empty"] = record(
+            client.get(
+                "/api/measurements", params=usage_range(NOW - timedelta(days=30), NOW - hour * 100)
+            )
+        )
+        result["error_measurements_range"] = record(
+            client.get("/api/measurements", params=usage_range(NOW - timedelta(days=32), NOW))
+        )
+        # Usage leaves a measurement out.
+        usage = client.get("/api/usage", params=week)
+        result["measurement_usage"] = record(usage)
+        assert usage.json()["devices"] == []
+
+        beat(client, clock[0])
+        result["error_measurement_command"] = record(command(client, ON, entity="power"))
+        assert result["error_measurement_command"]["status"] == 409
+        assert result["error_measurement_command"]["body"]["detail"]["code"] == "not_supported"
+        assert controller.sent == []
+
+        reader.statistics_error = "connection"
+        result["measurements_unreachable"] = record(client.get("/api/measurements", params=week))
+    return result
+
+
 # pytest needs the case names before the responses exist, so the snapshot files name them.
 SNAPSHOT_NAMES = sorted(path.stem for path in SNAPSHOTS.glob("*.json"))
 
@@ -398,6 +469,7 @@ def responses(make_database: Callable[[], str]) -> dict[str, Recorded]:
         | control_responses(make_database())
         | state_device_responses(make_database())
         | on_off_device_responses(make_database())
+        | measurement_responses(make_database())
     )
 
 

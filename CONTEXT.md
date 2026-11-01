@@ -9,11 +9,11 @@ devices with a fixed command set.
 ### Seeing
 
 **Device**:
-A single thing in the home that Home Assistant exposes as one entity of a device: a light, a plug or switch, another on/off device such as a fan or a door sensor, or any other device such as a thermostat or a cover. Groups, rooms, people and settings are not devices.
+A single thing in the home that Home Assistant exposes as one entity of a device: a light, a plug or switch, another on/off device such as a fan or a door sensor, a measurement such as a power meter, or any other device such as a thermostat or a cover. Groups, rooms, people and settings are not devices.
 _Avoid_: entity (for the thing in the home), light (when other devices count too)
 
 **Device kind**:
-What a device is, which decides its shape: a light, which is on or off and can also have a brightness and color; a switch, which is only on or off (a plug is a switch); `on_off`, another device that is only on or off, such as a fan, a binary sensor, a siren, a humidifier or a remote, which has usage in Home Assistant's words for its on and off but cannot be switched; or `state`, any other device, which has only a state text in Home Assistant's words and cannot be switched.
+What a device is, which decides its shape: a light, which is on or off and can also have a brightness and color; a switch, which is only on or off (a plug is a switch); `on_off`, another device that is only on or off, such as a fan, a binary sensor, a siren, a humidifier or a remote, which has usage in Home Assistant's words for its on and off but cannot be switched; `measurement`, a sensor whose state class is `measurement`, such as a power meter or a thermometer, which has a value, a unit and statistics but cannot be switched (an energy total, with the state class `total` or `total_increasing`, is a `state` device: it is not charted yet); or `state`, any other device, which has only a state text in Home Assistant's words and cannot be switched.
 _Avoid_: domain, type
 
 **Monitored device**:
@@ -25,15 +25,19 @@ The set of monitored devices. It is the only filter: monitoring a device again s
 _Avoid_: watch list, tracked devices
 
 **Reader**:
-The process that reads Home Assistant for the API: the device list, current states and history. It holds the Home Assistant owner token, keeps no state and never changes a device.
+The process that reads Home Assistant for the API: the device list, current states, history and statistics. It holds the Home Assistant owner token, keeps no state and never changes a device.
 _Avoid_: poller, importer
 
 **History**:
 The past states of a device, as Home Assistant's recorder keeps them. Home Keeper reads it on demand and keeps no copy; how far back it goes is a Home Assistant setting.
 _Avoid_: recording, log, timeline (for the data)
 
+**Statistics**:
+Home Assistant's summary of a measurement per period: the mean, the lowest and the highest value in each 5 minutes or each hour. A period without statistics is a gap, never a zero. Home Assistant keeps hourly statistics after it purges the history, so a measurement's charts reach further back than its history.
+_Avoid_: samples, aggregates, history (for statistics)
+
 **Reading**:
-One state of a device as Home Assistant reports it, now or in its history, with Home Assistant's times and its label.
+One state of a device as Home Assistant reports it, now or in its history, with Home Assistant's times and its label. A measurement's reading also has its value, null when the state is not a number, and its unit.
 _Avoid_: sample, state update
 
 **Label**:

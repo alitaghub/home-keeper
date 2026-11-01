@@ -2056,3 +2056,49 @@ describe("agent panel", () => {
     expect(await screen.findAllByText(fixtures.desk.device_name)).not.toHaveLength(0);
   });
 });
+
+describe("History names", () => {
+  it("tells apart two entities of one device, as Home and Setup do", async () => {
+    startOn("history");
+    const { frontDoor } = fixtures;
+    const tamper = { ...frontDoor, id: "binary_sensor.front_door_tamper", name: "Tamper" };
+    const opened = (entity: typeof frontDoor, time: string) => ({
+      id: `${entity.id}@${time}`,
+      entity_id: entity.id,
+      source_entity_id: entity.id,
+      device_kind: "on_off" as const,
+      time,
+      old: {
+        device_kind: "on_off" as const,
+        availability: "available" as const,
+        state: "off" as const,
+        label: "Closed",
+      },
+      new: {
+        device_kind: "on_off" as const,
+        availability: "available" as const,
+        state: "on" as const,
+        label: "Open",
+      },
+    });
+    renderDashboard({
+      "GET /api/catalog": { ...fixtures.catalog, entities: [frontDoor, tamper] },
+      "GET /api/selection": { entity_ids: [frontDoor.id, tamper.id] },
+      "GET /api/monitored": {
+        entities: [
+          fixtures.monitoredOnOff(frontDoor, "on", "Open"),
+          fixtures.monitoredOnOff(tamper, "on", "Open"),
+        ],
+      },
+      "GET /api/events": {
+        events: [opened(tamper, "2026-10-12T09:59:59Z"), opened(frontDoor, "2026-10-12T09:59:58Z")],
+        next_cursor: null,
+      },
+    });
+
+    await waitFor(() => expect(changeRows()).toHaveLength(2));
+    const [first, second] = changeRows();
+    expect(first).toHaveTextContent("Front door · Tamper");
+    expect(second).toHaveTextContent("Front door · Door");
+  });
+});
