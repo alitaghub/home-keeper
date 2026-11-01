@@ -233,9 +233,11 @@ Docker reports the placeholder path `/nonexistent/set-HOME_KEEPER_HA_CONTROL_TOK
 ## Discover and select lights
 
 Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
-shows supported lamps by default, using their device names. Room groups, scenes,
-sensors and other entities stay in the collapsed **Show other entities** section
-on the **Setup** tab.
+shows supported devices by default, using their device names, under **Lights** and
+**Plugs and switches**. Room groups, scenes, sensors and other entities stay in the
+collapsed **Show other entities** section on the **Setup** tab. Type in **Search
+devices** to show only entities whose name or device name contains the text, in
+every section. Clear the search to see the full list again.
 Discovery retains minimal device/entity metadata exposed by Home Assistant. Any
 enabled `light.*` entity that is not a group can be monitored, whatever
 integration provides it. Smart plugs and switches are `switch.*` entities. One
@@ -244,9 +246,8 @@ and is not a group. Integrations also expose settings as switches, such as a
 plug's child lock or LED indicator. Home Assistant gives those an entity
 category of `config` or `diagnostic`, so they are left out.
 
-Discovery reads the state of each new light or switch candidate once, to detect
-groups, and keeps only that answer. It never reads the states of the whole home.
-A light or switch is a group when it comes from the
+Discovery reads every state once (`GET /api/states`) to detect groups, and keeps
+only which candidates are groups. A light or switch is a group when it comes from the
 [`group` integration](https://www.home-assistant.io/integrations/group/), when its
 state lists member entities in an `entity_id` attribute, or when an attribute such
 as `is_hue_group` or `is_deconz_group` is true. A Hue room is one example. The
@@ -266,9 +267,13 @@ For a plug or switch, Home Keeper shows its on/off state and availability only,
 with no light attributes. With the `control` profile it can switch it
 on or off.
 
-A candidate with no state yet is not a group. If a candidate's state read fails
-or returns malformed data, discovery fails rather than guessing, and the next
-read tries again.
+A candidate with no state yet is not a group. If the state read fails or returns
+malformed data, discovery fails rather than guessing, and the next read tries
+again.
+
+Discovery reads up to 5000 entity registry rows and 5000 device registry rows.
+A home with more of either cannot load its device list: discovery fails with
+`invalid_data`. You can monitor up to 500 devices at once.
 
 Select a light, plug or switch to monitor it. Its current state and all the
 history Home Assistant has for it appear at once. Devices you add to Home Assistant

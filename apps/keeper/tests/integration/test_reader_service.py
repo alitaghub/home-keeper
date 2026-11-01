@@ -7,6 +7,7 @@ routes and that it sends Home Assistant nothing beyond its fixed reads.
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +21,15 @@ from support.home_assistant import (
     history_row,
     hue_room,
     light_state,
+    realistic_device,
+    realistic_entity,
     registry_entry,
     use_transport,
 )
 
+from home_keeper import reader as reader_module
 from home_keeper.home_assistant import HomeAssistantConnector
+from home_keeper.reader import HttpReader
 from home_keeper.reader_service import HomeAssistantBackend, create_reader_app
 
 SERVICE_TOKEN = "reader-service-credential-sentinel"
@@ -187,6 +192,38 @@ def test_catalog_matches_the_collectors_discovery_of_the_same_home(
     assert served == discovered
 
 
+def test_a_5000_entity_catalog_passes_through_the_reader_service_and_http_reader(
+    home: Home, reader: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lights = [realistic_entity(number) for number in range(4000)]
+    plugs = [
+        realistic_entity(number, f"switch.plug_{number}", platform="zha", translation_key=None)
+        for number in range(4000, 4500)
+    ]
+    sensors = [
+        realistic_entity(number, f"sensor.power_{number}", platform="zha", translation_key=None)
+        for number in range(4500, 5000)
+    ]
+    home.entities = [*lights, *plugs, *sensors]
+    home.devices = [realistic_device(number) for number in range(5000)]
+
+    served = reader.get("/internal/catalog", headers=AUTH)
+    assert served.status_code == 200, served.text
+    assert len(served.json()["entities"]) == 5000
+
+    def forward(request: httpx.Request) -> httpx.Response:
+        answer = reader.get(request.url.raw_path.decode(), headers=AUTH)
+        return httpx.Response(answer.status_code, content=answer.content)
+
+    transport = httpx.MockTransport(forward)
+    monkeypatch.setattr(reader_module.httpx, "Client", partial(httpx.Client, transport=transport))
+    entities = HttpReader("http://reader.internal", SERVICE_TOKEN).catalog()
+    assert len(entities) == 5000
+    assert sum(entity.supported for entity in entities) == 4500
+    assert ("GET", "/api/states") in home.server.requests
+    assert all(path in ("/api/", "/api/states") for _, path in home.server.requests)
+
+
 def test_states_reads_each_requested_device_now_and_marks_a_missing_one(
     reader: TestClient, home: Home
 ) -> None:
@@ -306,7 +343,7 @@ def test_the_reader_sends_home_assistant_only_its_fixed_reads(
     assert home.frames(), "the catalog was not read from the registries"
     for method, path in home.server.requests:
         assert method == "GET"
-        assert path in ("/api/", "/api/states") or path.startswith("/api/states/"), path
+        assert path in ("/api/", "/api/states"), path
         assert "services" not in path
     # No other HTTP method or route exists on the reader for a caller to reach Home Assistant.
     for response in (

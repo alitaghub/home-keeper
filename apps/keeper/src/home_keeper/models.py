@@ -72,9 +72,13 @@ class Entity(WireModel):
         return self
 
 
+# The most entities a catalog holds: one per entity registry row Home Assistant may list.
+MAX_CATALOG_ENTITIES = 5000
+
+
 class Catalog(WireModel):
     source_id: SourceId
-    entities: list[Entity] = Field(max_length=500)
+    entities: list[Entity] = Field(max_length=MAX_CATALOG_ENTITIES)
 
     @model_validator(mode="after")
     def unique_ids(self) -> Self:
