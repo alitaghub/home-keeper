@@ -756,8 +756,8 @@ function parseComposeArgs(raw: string): string[] {
 test("reports an unreachable controller after you approve, while the card keeps the real state", async ({
   page,
 }) => {
-  // The replay wait, retries, a container stop and a 5 s command wait exceed the default 30 s.
-  test.setTimeout(180_000);
+  // The replay wait, retries, container stops and 5 s command waits exceed the default 30 s.
+  test.setTimeout(300_000);
   // The proof's Compose command, so the test can stop the controller mid-approval.
   const composeArgs = process.env.E2E_COMPOSE_ARGS;
   test.skip(!composeArgs, "E2E_COMPOSE_ARGS is not set: run through compose_agent_panel_proof.py");
@@ -769,50 +769,69 @@ test("reports an unreachable controller after you approve, while the card keeps 
     });
 
   await page.goto("/");
-  await expect(page.getByText("CONTROL ON")).toBeVisible(POLL);
   const panel = await openPanel(page);
-  // A demo replay phase can flip the lamp between the read and the ask, so the agent's
-  // pre-check may answer "Not sent"; ask again until a card appears.
-  let approve: Locator | null = null;
   const refusals: string[] = [];
-  for (let attempt = 0; attempt < 10 && !approve; attempt += 1) {
-    // The demo replay holds every lamp unavailable for about 30 s, and the agent rightly
-    // refuses to switch an unavailable lamp; wait for a known on/off state.
-    await expect.poll(() => deskState(page), { timeout: 60_000 }).toMatch(/^(on|off)$/);
-    const state = await deskState(page);
-    const action = state === "on" ? "off" : "on";
-    await panel.getByRole("button", { name: "New chat" }).click();
-    // Ask only in the empty new chat, so an earlier chat's refusal cannot match.
-    await expect(panel.getByText("Ask about your home")).toBeVisible();
-    await ask(panel, `turn_${action} ${DESK}`);
-    const button = panel.getByRole("button", { name: `Approve: Turn ${action} ${DESK_NAME}` });
-    const refused = panel.getByText(/Result: Not sent:/);
-    await expect(button.or(refused)).toBeVisible(ANSWER);
-    if (await button.isVisible()) approve = button;
-    else {
+  // Asks to switch the desk lamp to the state it is not in, until the agent proposes it.
+  const propose = async (): Promise<Locator | null> => {
+    // A demo replay phase can flip the lamp between the read and the ask, so the agent's
+    // pre-check may answer "Not sent"; ask again until a card appears.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      // The demo replay holds every lamp unavailable for about 30 s, and the agent rightly
+      // refuses to switch an unavailable lamp; wait for a known on/off state.
+      await expect.poll(() => deskState(page), { timeout: 60_000 }).toMatch(/^(on|off)$/);
+      const state = await deskState(page);
+      const action = state === "on" ? "off" : "on";
+      await panel.getByRole("button", { name: "New chat" }).click();
+      // Ask only in the empty new chat, so an earlier chat's refusal cannot match.
+      await expect(panel.getByText("Ask about your home")).toBeVisible();
+      await ask(panel, `turn_${action} ${DESK}`);
+      const button = panel.getByRole("button", { name: `Approve: Turn ${action} ${DESK_NAME}` });
+      const refused = panel.getByText(/Result: Not sent:/);
+      await expect(button.or(refused)).toBeVisible(ANSWER);
+      if (await button.isVisible()) return button;
       // The refusal streams in; read it once its sentence is complete.
       await expect(refused).toHaveText(/\.\s*$/, ANSWER);
       refusals.push(await refused.innerText());
     }
-  }
-  if (!approve) throw new Error(`The agent never proposed a command: ${refusals.join(" | ")}`);
+    return null;
+  };
 
-  // Control stays on for 15 seconds after the controller's last heartbeat, so the keeper
-  // still accepts the command and then cannot reach the controller.
-  compose("stop", "controller");
-  try {
-    await approve.click();
-    await expect(panel.getByText(/Result: Cannot reach the light controller/)).toBeVisible(ANSWER);
-    // The card shows what the keeper reads, not what the agent asked for.
-    await expect
-      .poll(async () => {
-        const shown = await deskCard(page).locator("[data-status]").getAttribute("data-status");
-        const state = await deskState(page);
-        // The card marks anything but on and off, such as unavailable, as unknown.
-        return shown === (state === "on" || state === "off" ? state : "unknown");
-      }, POLL)
-      .toBe(true);
-  } finally {
-    compose("start", "controller");
+  // A replay step lasts 10 s, and asking plus stopping the controller can outlast one, so
+  // the lamp can reach the asked state or go unavailable before the approval lands; the
+  // keeper then refuses the command without trying the controller. Propose again then.
+  const raced =
+    /Result: Keeper error: HTTP 409: (The light is (already in that state|unavailable)|Light control is off)/;
+  let reported = false;
+  for (let attempt = 0; attempt < 4 && !reported; attempt += 1) {
+    // After a restart, control is back on with the controller's first heartbeat.
+    await expect(page.getByText("CONTROL ON")).toBeVisible(ANSWER);
+    const approve = await propose();
+    if (!approve) throw new Error(`The agent never proposed a command: ${refusals.join(" | ")}`);
+    // Control stays on for 15 seconds after the controller's last heartbeat, so the keeper
+    // still accepts the command and then cannot reach the controller.
+    compose("stop", "controller");
+    try {
+      await approve.click();
+      const unreachable = panel.getByText(/Result: Cannot reach the light controller/);
+      const refused = panel.getByText(raced);
+      await expect(unreachable.or(refused)).toBeVisible(ANSWER);
+      if (await refused.isVisible()) {
+        refusals.push(await refused.innerText());
+        continue;
+      }
+      reported = true;
+      // The card shows what the keeper reads, not what the agent asked for.
+      await expect
+        .poll(async () => {
+          const shown = await deskCard(page).locator("[data-status]").getAttribute("data-status");
+          const state = await deskState(page);
+          // The card marks anything but on and off, such as unavailable, as unknown.
+          return shown === (state === "on" || state === "off" ? state : "unknown");
+        }, POLL)
+        .toBe(true);
+    } finally {
+      compose("start", "controller");
+    }
   }
+  if (!reported) throw new Error(`The keeper never tried the controller: ${refusals.join(" | ")}`);
 });
