@@ -32,7 +32,7 @@ export function fetchUsage(days: number, entityIds?: string[]) {
  * Runs `load` one call at a time, starting calls at least `gapMs` apart. Requests that
  * arrive meanwhile collapse into one call afterwards.
  */
-function coalesced(load: () => Promise<void>, gapMs: number) {
+export function coalesced(load: () => Promise<void>, gapMs: number) {
   let busy = false;
   let queued = false;
   let last = Number.NEGATIVE_INFINITY;

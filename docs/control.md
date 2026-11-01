@@ -103,7 +103,8 @@ The commands are fixed. The API picks the call from the device's kind:
 
 A plug or switch has no brightness. A command with `brightness_pct` for one is
 refused with `not_supported`. Any other device kind, such as an `on_off` device
-like a fan or a door sensor, or a `state` device like a thermostat, takes no
+like a fan or a door sensor, a `measurement` like a power meter, or a `state`
+device like a thermostat, takes no
 command: the API refuses every command for it with
 `not_supported`, "This device cannot be switched.", whatever its state.
 

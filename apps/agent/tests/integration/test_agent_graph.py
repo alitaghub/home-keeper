@@ -803,3 +803,70 @@ def test_a_command_for_an_on_off_device_ends_with_the_refusal_and_asks_nothing(
     assert not agent.get_state(config).interrupts
     assert "cannot be switched" in tool_result(agent.get_state(config))
     assert command_requests(keeper) == []
+
+
+def test_prompt_no_longer_says_power_is_invisible_and_points_to_get_measurements() -> None:
+    model = RecordingChatModel(responses=[AIMessage("Hello.")])
+    agent = build_agent(model, FakeKeeper().client())
+
+    asyncio.run(agent.ainvoke({"messages": [HumanMessage("Hi")]}))  # pyright: ignore[reportUnknownMemberType] -- langgraph leaves Command's type parameter unparameterized
+
+    [system] = model.seen
+    assert "cannot see power" not in system
+    assert re.search(r"\bget_measurements\b", system)
+
+
+def test_the_agent_answers_a_power_question_with_the_numbers_of_get_measurements() -> None:
+    keeper = FakeKeeper(
+        {
+            "/api/measurements": snapshot("measurements"),
+            "/api/monitored": snapshot("measurement_monitored"),
+            "/api/catalog": snapshot("measurement_catalog"),
+        }
+    )
+    model = ScriptedChatModel(
+        responses=[
+            AIMessage(
+                "",
+                tool_calls=[
+                    {"name": "get_measurements", "args": {"range": "7d"}, "id": "call-power"}
+                ],
+            ),
+            AIMessage("Your desk plug drew 30 W on average this week, up to 90 W."),
+        ]
+    )
+    agent = build_agent(model, keeper.client())
+
+    state = agent.invoke({"messages": [HumanMessage("How much power does my desk plug use?")]})  # pyright: ignore[reportUnknownMemberType] -- langgraph leaves Command's type parameter unparameterized
+
+    [result] = [message for message in state["messages"] if isinstance(message, ToolMessage)]
+    assert result.tool_call_id == "call-power"
+    assert not result.text.startswith("Keeper error:"), result.text
+    assert re.search(r'min 1(\.0)?, mean 30(\.0)?, max 90(\.0)?, latest 412(\.0)? "W"', result.text)
+    assert "/api/measurements" in keeper.paths()
+    assert (
+        state["messages"][-1].text == "Your desk plug drew 30 W on average this week, up to 90 W."
+    )
+
+
+@pytest.mark.parametrize("control", ["on", "off"])
+@pytest.mark.parametrize("name", ["turn_on", "turn_off"])
+def test_a_command_for_a_measurement_is_refused_before_any_approval_and_sends_nothing(
+    name: str, control: str
+) -> None:
+    keeper = FakeKeeper(
+        {
+            "/api/monitored": snapshot("measurement_monitored"),
+            # The device cannot be switched whether or not control is on.
+            "/api/control": control_response(control),
+        }
+    )
+    call: ToolCall = {"name": name, "args": {"entity_id": "power"}, "id": "call-power"}
+
+    agent, config = agent_after_light_call(keeper, call)
+
+    assert agent.get_state(config).interrupts == ()
+    result = tool_result(agent.get_state(config))
+    assert "cannot be switched" in result
+    assert "control is off" not in result
+    assert command_requests(keeper) == []

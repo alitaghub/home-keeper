@@ -54,12 +54,18 @@ function changedFields(event: ChangeRecord): Field[] {
 
 /**
  * One plain sentence for the change, such as "turned on at 40%". Any other device, on/off
- * ones included, shows Home Assistant's words for its old and new state.
+ * ones and measurements included, shows Home Assistant's words for its old and new state.
  */
 function summary(event: ChangeRecord, fields: Field[]) {
   const reading = event.new;
-  if (reading.device_kind === "state" || reading.device_kind === "on_off") {
-    return `${event.old.label} → ${reading.label}`;
+  if (
+    reading.device_kind === "state" ||
+    reading.device_kind === "on_off" ||
+    reading.device_kind === "measurement"
+  ) {
+    // A measurement's unit, such as W, follows its new value.
+    const unit = reading.device_kind === "measurement" && reading.unit ? ` ${reading.unit}` : "";
+    return `${event.old.label} → ${reading.label}${unit}`;
   }
   const brightness = fieldValue(reading, "brightness");
   const percent = typeof brightness === "number" ? ` at ${brightnessPercent(brightness)}%` : "";

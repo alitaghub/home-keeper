@@ -23,8 +23,8 @@ This starts five services:
 - `web`: the dashboard, published on <http://127.0.0.1:8000> (set
   `HOME_KEEPER_PORT` to change the port). It forwards `/api` to the API.
 - `api`: the Home Keeper API. It publishes no port.
-- `reader`: reads devices, their states and their history from Home Assistant
-  for the API. It publishes no port.
+- `reader`: reads devices, their states, their history and statistics from
+  Home Assistant for the API. It publishes no port.
 
 With `--profile control`, a sixth service, `controller`, switches monitored
 lights, plugs and switches. See [Switch lights](#switch-lights).
@@ -98,8 +98,9 @@ times out. Check it with `docker compose logs ha-setup`.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
 supports. Home Keeper can monitor any single device from any brand: lights, smart
-plugs and switches, other on/off devices such as fans and door sensors, and any
-other device, such as a thermostat. Groups, rooms,
+plugs and switches, other on/off devices such as fans and door sensors,
+measurements such as power meters and thermometers, and any other device, such
+as a thermostat. Groups, rooms,
 people, settings and other entities appear under **Show other entities**. When no supported device exists
 yet, the dashboard links to the Home Assistant integrations page.
 
@@ -157,15 +158,24 @@ example `docker compose exec homeassistant vi /config/configuration.yaml`, then
 Home Keeper keeps no copy of device history, so this one setting decides how far
 back History and usage go.
 
+A measurement's charts come from Home Assistant's statistics instead. Home
+Assistant keeps its 5-minute statistics as long as `purge_keep_days`, and its
+hourly statistics until you delete them, so the 7-day and 30-day charts reach
+past the history. The 24-hour chart and the card's sparkline use the 5-minute
+statistics. Home Assistant writes a period's statistics after it ends, so the
+newest period appears a few minutes late.
+
 Each history read asks Home Assistant for the lights, plugs and switches in one
-request, and for every other device in a request of its own. Three limits apply
-to one history read:
+request, with their attributes, and for every other device without attributes,
+up to 25 devices to a request. A measurement's statistics read asks for up to 50
+devices to a request. The requests of one read share one connection, and three
+limits apply to the whole read:
 
 - One answer can be at most 16 MiB.
 - All answers of the read together can be at most 64 MiB.
-- The whole read must finish within 8 seconds.
+- The whole read, connecting included, must finish within 8 seconds.
 
-A device that changes very often, such as a busy power sensor, can exceed the
+A device that changes very often, such as a busy text sensor, can exceed the
 size limits over a long range. Then the whole read fails with `invalid_data`. A
 read that takes longer than 8 seconds fails with `timeout`. In both cases History
 and usage cannot load for that range. Choose a shorter range, or stop monitoring
@@ -183,10 +193,11 @@ Create a dedicated Home Assistant user with permission to read the required
 registries and selected entities, then generate a long-lived access token from
 that user's profile. Home Assistant tokens do not provide a per-token read-only
 entity scope. Treat the token as a powerful credential. The reader restricts
-its own operations to fixed discovery, state reads and history reads of the
-devices the API asks for, and a reachability check. Its WebSocket requests are
-limited to `config/entity_registry/list`, `config/device_registry/list`,
-`get_config`, `frontend/get_translations` and `history/history_during_period`.
+its own operations to fixed discovery, state reads, and history and statistics
+reads of the devices the API asks for, and a reachability check. Its WebSocket
+requests are limited to `config/entity_registry/list`,
+`config/device_registry/list`, `get_config`, `frontend/get_translations`,
+`history/history_during_period` and `recorder/statistics_during_period`.
 
 Save the token alone in a local file outside this repository. Do not put it in
 `.env`, a URL, a shell command argument, the dashboard, or a Compose environment
@@ -252,8 +263,9 @@ Docker reports the placeholder path `/nonexistent/set-HOME_KEEPER_HA_CONTROL_TOK
 
 Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
 shows supported devices by default, using their device names, under **Lights**,
-**Plugs and switches**, **Other on/off** and **Other**. An on/off or other device
-that has its own entity name adds it to the device name, such as
+**Plugs and switches**, **Other on/off**, **Measurements** and **Other**. An
+on/off device, a measurement or another device that has its own entity name adds
+it to the device name, such as
 "Front door · Door", on **Setup** and on its **Home** card, so two entities of
 one device are told apart. Room groups, people, settings and other
 entities stay in the collapsed **Show other entities** section on the **Setup**
@@ -275,21 +287,32 @@ The catalog marks each entity with its `device_kind`:
   a humidifier or a remote. Home Keeper shows its state in Home Assistant's own
   words, such as "Open" for a door sensor that is on, with a plug's strip and
   usage numbers. It cannot switch it.
-- `state`: any other device, such as a thermostat (`climate.*`), a cover or a
-  text sensor. Home Keeper shows its state, in Home Assistant's own words, and
-  its history of changes. It cannot switch it, and it has no usage numbers.
+- `measurement`: a sensor (`sensor.*`) whose state class is `measurement`,
+  such as a power meter or a thermometer. Home Keeper shows its value with its
+  `unit_of_measurement` and charts from Home Assistant's statistics. It cannot
+  switch it, and it has no usage numbers.
+- `state`: any other device, such as a thermostat (`climate.*`), a cover, a
+  text sensor, or a sensor with another state class. An energy meter, with the
+  state class `total` or `total_increasing`, is a `state` device: Home Keeper
+  does not chart energy totals yet. A `number.*` entity is a `state` device
+  too. Home Keeper shows its
+  state, in Home Assistant's own words, and its history of changes. It cannot
+  switch it, and it has no usage numbers.
 
-A device monitored as `state` before Home Keeper knew its domain as `on_off`
-becomes an `on_off` device at the next catalog read, without selecting it again.
+A device monitored as `state` before Home Keeper knew its domain as `on_off`, or
+before it knew a sensor with the state class `measurement` as a `measurement`, takes its new
+kind at the next catalog read, without selecting it again.
 
-An entity of any other domain is an `on_off` or `state` device when Home
+An entity of any other domain is an `on_off`, `measurement` or `state` device when Home
 Assistant's registry shows that it is a device the household uses: it is enabled, belongs to
 a device, has no entity category, is not hidden and is not a group. People
 (`person.*`) and trackers (`device_tracker.*`) are never monitored.
 
-Discovery reads every state once (`GET /api/states`) to detect groups and to
-read each device's `device_class`, which picks its translated state words. It
-keeps only which candidates are groups and the device classes. A device is a
+Discovery reads every state once (`GET /api/states`) to detect groups, to
+read each device's `device_class`, which picks its translated state words, and
+to find each sensor's `state_class` and `unit_of_measurement`. It keeps only
+which candidates are groups, the device classes, and which sensors have the
+state class `measurement`, with their units. A device is a
 group when it comes from the
 [`group` integration](https://www.home-assistant.io/integrations/group/), when its
 state lists member entities in an `entity_id` attribute, or when an attribute such
@@ -313,7 +336,23 @@ For a plug or switch, Home Keeper shows its on/off state and availability only,
 with no light attributes. With the `control` profile it can switch it
 on or off. For an `on_off` device it keeps the on/off state and availability, and
 no attributes. For a `state` device it keeps the state text, at most 255
-characters, and no attributes.
+characters, and no attributes. For a `measurement` it keeps the state text, the
+state as a finite number (null for a state such as `unavailable`) and the unit,
+at most 32 characters; a longer unit is left out.
+
+### Statistics
+
+For a measurement's charts, the reader sends `recorder/statistics_during_period`
+with the measurements' entity IDs as `statistic_ids`, the range as `start_time`
+and `end_time`, `period` `5minute` for a range up to 24 hours or `hour` for a
+longer one, and `types` `mean`, `min` and `max`. Each device's answer is a list
+of rows with `start` and `end` in Unix milliseconds and the three values. A row
+without one of them, or with null, fails the read with `invalid_data`. Home
+Assistant keeps a mean, a lowest and a highest value only for sensors with the
+state class `measurement`, so only those are measurements. A sensor with the
+state class `total` or `total_increasing`, such as an energy meter, has only a
+sum; it stays a `state` device and is not charted yet.
+The shape of this answer is not yet checked against Home Assistant 2026.10.1.
 
 A candidate with no state yet is not a group. If the state read fails or returns
 malformed data, discovery fails rather than guessing, and the next read tries

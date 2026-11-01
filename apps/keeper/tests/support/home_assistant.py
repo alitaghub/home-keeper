@@ -3,6 +3,7 @@
 import json
 from collections import deque
 from collections.abc import Callable, Iterable
+from datetime import datetime, timedelta
 from typing import Any, Self
 
 import httpx
@@ -37,13 +38,9 @@ class FakeClock:
 
 
 class FakeSocket:
-    """A scripted Home Assistant websocket that records every frame the adapter sends.
-
-    It answers each read by its command type, so request order does not matter. `failing`
-    names command types that get an error result; `silent` names those answered only after
-    the receive times out. Like Home Assistant, it refuses a request
-    whose ID does not exceed every earlier ID on the connection.
-    """
+    """A scripted Home Assistant websocket that records every frame the adapter sends and
+    answers by command type. `failing` types get an error result, `silent` types answer after
+    the receive times out; like Home Assistant, it refuses a non-increasing request ID."""
 
     def __init__(
         self,
@@ -51,6 +48,7 @@ class FakeSocket:
         devices: Iterable[Frame] = (),
         history: dict[str, list[Frame]] | None = None,
         *,
+        statistics: dict[str, list[Frame]] | None = None,
         language: str = "en",
         translations: dict[str, str] | None = None,
         failing: Iterable[str] = (),
@@ -72,6 +70,9 @@ class FakeSocket:
         )
         self.sent: list[Frame] = []
         self.history: dict[str, list[Frame]] = history or {}
+        # Long-term statistics rows by statistic ID, as `recorder/statistics_during_period`
+        # returns them: `start` and `end` in epoch milliseconds, then `mean`, `min`, `max`.
+        self.statistics: dict[str, list[Frame]] = statistics or {}
         self.language = language
         self.translations: dict[str, str] = translations or {}
         self.failing = set(failing)
@@ -155,6 +156,12 @@ class FakeSocket:
                 entity_id: self.history[entity_id]
                 for entity_id in frame.get("entity_ids", [])
                 if entity_id in self.history
+            }
+        elif command == "recorder/statistics_during_period":
+            result = {
+                statistic_id: self.statistics[statistic_id]
+                for statistic_id in frame.get("statistic_ids", [])
+                if statistic_id in self.statistics
             }
         elif command == "get_config":
             result = {"language": self.language}
@@ -356,6 +363,17 @@ def state_changed(entity: str = "light.bulb", **changes: Any) -> Frame:
                 | {"attributes": {"brightness": 180, "untrusted": "PRIVATE_SENTINEL"}, **changes},
             },
         },
+    }
+
+
+def statistics_row(start: datetime, mean: Any, low: Any, high: Any, *, hours: float = 1) -> Frame:
+    """A `recorder/statistics_during_period` row: `hours` from `start`, times in epoch ms."""
+    return {
+        "start": start.timestamp() * 1000,
+        "end": (start + timedelta(hours=hours)).timestamp() * 1000,
+        "mean": mean,
+        "min": low,
+        "max": high,
     }
 
 

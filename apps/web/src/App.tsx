@@ -11,9 +11,10 @@ import {
   unwrap,
 } from "./api/client";
 import { AgentSlot } from "./components/AgentSlot";
-import { Catalog, deviceName, lightName } from "./components/Catalog";
+import { Catalog, deviceName } from "./components/Catalog";
 import { Commands } from "./components/Commands";
 import { HistoryDialog } from "./components/History";
+import { MeasurementDialog } from "./components/Measurements";
 import { type DeviceCommand, Monitored } from "./components/Monitored";
 import { Timeline } from "./components/Timeline";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
@@ -25,6 +26,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { date, time } from "./format";
 import { cn } from "./lib/utils";
 import { useAgentPanel } from "./useAgentPanel";
+import { useRecentMeasurements } from "./useMeasurements";
 import { useCommands, useTimeline } from "./useTimeline";
 import { useRecentUsage } from "./useUsage";
 import { useWideScreen } from "./useWideScreen";
@@ -88,7 +90,7 @@ async function sendDeviceCommand(
   entity: Schemas["MonitoredEntity"],
   command: DeviceCommand,
 ): Promise<CommandResult> {
-  const name = lightName(entity);
+  const name = deviceName(entity);
   const { data, error, response } = await api.POST("/api/devices/{entity_id}/command", {
     params: { path: { entity_id: entity.id } },
     body: { command, sender: { kind: "dashboard" } },
@@ -302,20 +304,31 @@ export function App() {
     ) ?? null;
   const names = new Map(
     [...(snapshot?.catalog?.entities ?? []), ...(snapshot?.monitored.entities ?? [])].map(
-      (entity) => [entity.id, lightName(entity)],
+      (entity) => [entity.id, deviceName(entity)],
     ),
   );
 
   // The strips reload when what the cards show changes: a selection, a state or a brightness.
+  // A measurement changes its state often and has no strip, so it is left out.
   const usage = useRecentUsage(
     snapshot &&
       JSON.stringify(
-        snapshot.monitored.entities.map(({ id, state }) => [
-          id,
-          state?.state,
-          state?.device_kind === "light" ? state.brightness : null,
-        ]),
+        snapshot.monitored.entities
+          .filter(({ device_kind }) => device_kind !== "measurement")
+          .map(({ id, state }) => [
+            id,
+            state?.state,
+            state?.device_kind === "light" ? state.brightness : null,
+          ]),
       ),
+  );
+  // The sparklines reload each minute, and when the monitored measurements change. Without
+  // one, nothing loads.
+  const measuredIds = (snapshot?.monitored.entities ?? [])
+    .filter(({ device_kind }) => device_kind === "measurement")
+    .map(({ id }) => id);
+  const measurements = useRecentMeasurements(
+    measuredIds.length ? JSON.stringify(measuredIds) : null,
   );
 
   const panel = (id: Tab) => ({
@@ -407,6 +420,7 @@ export function App() {
           <Monitored
             entities={monitoredEntities}
             usage={usage}
+            measurements={measurements}
             onHistory={setHistoryFor}
             onStop={(id) => void toggle(id, false)}
             onSwitch={
@@ -591,13 +605,22 @@ export function App() {
             </Card>
           </section>
         </TabsContent>
-        {historyFor && (
-          <HistoryDialog
+        {historyFor?.device_kind === "measurement" ? (
+          <MeasurementDialog
             key={historyFor.id}
             entityId={historyFor.id}
             name={deviceName(historyFor)}
             onClose={() => setHistoryFor(null)}
           />
+        ) : (
+          historyFor && (
+            <HistoryDialog
+              key={historyFor.id}
+              entityId={historyFor.id}
+              name={deviceName(historyFor)}
+              onClose={() => setHistoryFor(null)}
+            />
+          )
         )}
         <footer className="border-t pt-4 text-xs text-muted-foreground">
           History comes from Home Assistant · Changes show what happened, not why
