@@ -15,13 +15,17 @@ type Frame = dict[str, Any]
 type Handler = Callable[[httpx.Request], httpx.Response]
 
 
-class FakeSocket:
-    """Replays the two registry answers and records every frame the adapter sends.
+# Registry reads: the scripted answer for each, whatever order the adapter asks in.
+REGISTRY_READS = ("config/entity_registry/list", "config/device_registry/list")
 
-    It answers `history/history_during_period` from `history`: Home Assistant's compressed
-    rows by entity ID, returned as they are for each requested entity it has. Like Home
-    Assistant, it refuses a request whose ID does not exceed every earlier ID on the
-    connection.
+
+class FakeSocket:
+    """A scripted Home Assistant websocket that records every frame the adapter sends.
+
+    It answers each read by its command type, so request order does not matter. `failing`
+    names command types that get an error result; `silent` names those answered only after
+    the receive times out. Like Home Assistant, it refuses a request
+    whose ID does not exceed every earlier ID on the connection.
     """
 
     def __init__(
@@ -29,6 +33,11 @@ class FakeSocket:
         entities: list[Frame],
         devices: Iterable[Frame] = (),
         history: dict[str, list[Frame]] | None = None,
+        *,
+        language: str = "en",
+        translations: dict[str, str] | None = None,
+        failing: Iterable[str] = (),
+        silent: Iterable[str] = (),
     ) -> None:
         self.messages: deque[Frame] = deque(
             [
@@ -40,6 +49,16 @@ class FakeSocket:
         )
         self.sent: list[Frame] = []
         self.history: dict[str, list[Frame]] = history or {}
+        self.language = language
+        self.translations: dict[str, str] = translations or {}
+        self.failing = set(failing)
+        # Command types whose answer does not come within the wait, but arrives late.
+        self.silent = set(silent)
+        # The wait, in seconds, of each receive that timed out.
+        self.waits: list[float | None] = []
+        self._late: list[Frame] = []
+        # The scripted registry answers; a test may edit them in place before discovery.
+        self._registries = dict(zip(REGISTRY_READS, list(self.messages)[2:], strict=True))
         self._last_id = 0
 
     def __enter__(self) -> Self:
@@ -49,8 +68,16 @@ class FakeSocket:
         pass
 
     def recv(self, timeout: float | None = None) -> str:
+        if self._late:
+            # A late answer to an earlier request comes before the next request's answer.
+            return json.dumps(self._late.pop(0))
         assert self.messages, f"No scripted answer for {self.sent[-1:]}"
-        return json.dumps(self.messages.popleft())
+        message = self.messages.popleft()
+        if "late" in message:
+            self.waits.append(timeout)
+            self._late.append(message["late"])
+            raise TimeoutError
+        return json.dumps(message)
 
     def send(self, value: str) -> None:
         frame = json.loads(value)
@@ -68,15 +95,41 @@ class FakeSocket:
             )
             return
         self._last_id = identity
-        if frame.get("type") == "history/history_during_period":
+        reply = self._answer(identity, frame)
+        if reply is None:
+            return
+        if frame.get("type") in self.silent:
+            # Home Assistant never answers in time; the answer may still arrive late.
+            self.messages.appendleft({"late": reply})
+        else:
+            self.messages.appendleft(reply)
+
+    def _answer(self, identity: int, frame: Frame) -> Frame | None:
+        command = frame.get("type")
+        if command in self.failing:
+            error = {"code": "unknown_error", "message": "Scripted failure."}
+            return {"id": identity, "type": "result", "success": False, "error": error}
+        result: Any
+        if command in self._registries:
+            scripted = self._registries[command]
+            for position, message in enumerate(self.messages):
+                if message is scripted:
+                    del self.messages[position]
+                    break
+            return scripted | {"id": identity}
+        if command == "history/history_during_period":
             result = {
                 entity_id: self.history[entity_id]
                 for entity_id in frame.get("entity_ids", [])
                 if entity_id in self.history
             }
-            self.messages.appendleft(
-                {"id": identity, "type": "result", "success": True, "result": result}
-            )
+        elif command == "get_config":
+            result = {"language": self.language}
+        elif command == "frontend/get_translations":
+            result = {"resources": self.translations}
+        else:
+            return None
+        return {"id": identity, "type": "result", "success": True, "result": result}
 
     def close(self) -> None:
         pass
@@ -198,6 +251,11 @@ def light_state(entity: str = "light.bulb", **attributes: Any) -> Frame:
         "last_updated": "2026-10-13T10:00:00Z",
         "context": {"id": "context1", "parent_id": None, "user_id": None},
     }
+
+
+def entity_state(entity: str, state: str, **attributes: Any) -> Frame:
+    """One entity state, as `GET /api/states` reports any domain."""
+    return light_state(entity, **attributes) | {"state": state}
 
 
 def hue_room(entity: str = "light.living_room") -> Frame:

@@ -96,7 +96,7 @@ def lights(count: int) -> list[Entity]:
 
 def test_a_501st_device_cannot_be_selected(database: str) -> None:
     reader = FakeReader(lights(501))
-    with TestClient(app_for(database, reader=reader), raise_server_exceptions=False) as client:
+    with TestClient(app_for(database, reader=reader)) as client:
         for number in range(500):
             selected = client.put(
                 f"/api/selection/bulb-{number:04}", json={"selected": True}, headers=BROWSER
@@ -104,7 +104,8 @@ def test_a_501st_device_cannot_be_selected(database: str) -> None:
             assert selected.status_code == 200
         refused = client.put("/api/selection/bulb-0500", json={"selected": True}, headers=BROWSER)
 
-        assert refused.status_code >= 400
+        assert refused.status_code == 422, refused.text
+        assert refused.json() == {"detail": "Selection is full"}
         selection = client.get("/api/selection").json()["entity_ids"]
         assert len(selection) == 500
         assert "bulb-0500" not in selection

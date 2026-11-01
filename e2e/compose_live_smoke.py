@@ -104,6 +104,9 @@ def main() -> None:
                 assert monitored["source_entity_id"] == "light.fixture"
                 assert monitored["state"]["state"] == "on"
                 assert monitored["state"]["brightness"] == 180
+                # The fixture Home Assistant answers neither get_config nor translations, so the
+                # label is the raw state: a failed translations read leaves discovery working.
+                assert monitored["state"]["label"] == "on"
                 assert monitored["missing"] is False
                 # History comes from Home Assistant's recorder: the fixture's brightness
                 # change from before Home Keeper started.

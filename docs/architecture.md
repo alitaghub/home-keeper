@@ -182,7 +182,7 @@ Device history is not stored here. Home Assistant's recorder keeps it.
 | Source      | Where data comes from: `demo` or `home_assistant`. One database holds one source.             |
 | Catalog     | The devices and entities the reader lists from Home Assistant, with whether each one can be monitored. |
 | Device kind | What a device is, from its Home Assistant domain: `light` or `switch` (plugs too).           |
-| Selection   | The lights, plugs and switches you chose to monitor. The only filter for history, usage and the agent. |
+| Selection   | The devices you chose to monitor. The only filter for history, usage and the agent. |
 | Reader      | The service that reads Home Assistant for the API: catalog, current state, history and reachability. |
 | History     | A device's past states as Home Assistant's recorder keeps them. Read on demand, never copied. |
 | Change      | Two consecutive history rows of a monitored device that differ in state, availability, brightness or color, at Home Assistant's time. |

@@ -102,7 +102,9 @@ The commands are fixed. The API picks the call from the device's kind:
 | `switch`    | `{"action": "off"}`                         | `switch.turn_off`                          |
 
 A plug or switch has no brightness. A command with `brightness_pct` for one is
-refused with `not_supported`.
+refused with `not_supported`. Any other device kind, such as a `state` device
+like a thermostat, takes no command: the API refuses every command for it with
+`not_supported`, "This device cannot be switched.", whatever its state.
 
 `sender` names who asked: `{"kind": "dashboard"}` for the device cards,
 `{"kind": "browser_chat"}` for the agent after you approve in the dashboard's
@@ -140,7 +142,8 @@ The API refuses these before it sends anything. It records nothing for them.
 | Status | `detail`                                  | When                                                        |
 | ------ | ----------------------------------------- | ----------------------------------------------------------- |
 | 404    | `Unknown entity`                          | The ID is not in the catalog.                               |
-| 422    | `Entity is unsupported`                   | Home Keeper cannot monitor this entity.                     |
+| 409    | code `not_monitored` or `not_supported`   | The device is not a light, plug or switch, such as a thermostat: `not_monitored` when you do not monitor it, else `not_supported`, even when Home Keeper can no longer monitor it. |
+| 422    | `Entity is unsupported`                   | Home Keeper cannot monitor this light, plug or switch, or this entity of no device kind.                     |
 | 409    | code `control_off`                        | `GET /api/control` says `off`.                              |
 | 409    | code `not_monitored`                      | You do not monitor the device. Monitor it first.            |
 | 409    | code `state_unknown`                      | Home Assistant cannot be reached or has no such entity, or the state is `unknown`. |

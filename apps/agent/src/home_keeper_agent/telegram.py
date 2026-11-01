@@ -321,8 +321,8 @@ class PollError(TransportError):
 
 
 HELP = (
-    "Ask a text question about your home. Monitoring and switching lights, plugs and switches "
-    "need Approve or Reject. Only people on the control list can approve switching. "
+    "Ask a text question about your home. Monitoring a device and switching a light, plug or "
+    "switch need Approve or Reject. Only people on the control list can approve switching. "
     "Use /new to start a fresh conversation; old history is kept."
 )
 UNCERTAIN = (

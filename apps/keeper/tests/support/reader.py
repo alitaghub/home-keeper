@@ -16,15 +16,18 @@ CHANGED_AT = "2026-10-12T09:00:00+00:00"
 
 
 def live(source_entity_id: str, state: Payload) -> LiveState:
-    """What Home Assistant reports for `source_entity_id`: a light's state, or a switch's
-    when `state` names `device_kind` "switch". Availability follows the state."""
+    """What Home Assistant reports for `source_entity_id`: a light's state, or a switch's or a
+    generic device's when `state` names `device_kind` "switch" or "state". Availability follows
+    the state. The label is `state`'s own `label`, else the state with a capital letter, as
+    Home Assistant translates `on` to "On"."""
     value = state["state"]
     return LiveState(
         source_entity_id=source_entity_id,
         reading=reading_of.validate_python(
             {
                 "device_kind": "light",
-                "availability": "available" if value in ("on", "off") else value,
+                "availability": value if value in ("unavailable", "unknown") else "available",
+                "label": str(value).capitalize(),
                 "last_changed": CHANGED_AT,
                 "last_updated": CHANGED_AT,
             }
@@ -84,6 +87,8 @@ class FakeReader:
         self.entities = list(entities)
         self.live: dict[str, LiveState] = dict(states or {})
         self.error: ReaderError | None = None
+        # Set to fail only the live-state reads, while the catalog and history still answer.
+        self.states_error: ReaderError | None = None
         self.on_read: Callable[[], object] | None = None
         # The entity ids of each `states` call, in order.
         self.reads: list[list[str]] = []
@@ -106,6 +111,8 @@ class FakeReader:
         if self.on_read is not None:
             self.on_read()
         self._check()
+        if self.states_error is not None:
+            raise ReaderUnavailable(self.states_error)
         return {entity_id: self.live.get(entity_id) for entity_id in entity_ids}
 
     def history(
