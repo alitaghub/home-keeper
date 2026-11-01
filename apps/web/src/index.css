@@ -35,6 +35,15 @@
   --warning-muted: oklch(0.97 0.04 80);
   --danger: oklch(0.577 0.245 27.325);
   --danger-muted: oklch(0.97 0.02 25);
+
+  /* Agent charts: the app owns every series color; the agent only picks the data. One hue,
+     the app's data color: series 1 is the "on" amber, the rest step darker and lighter, so
+     no series reads as unknown grey, warning or danger. */
+  --chart-1: var(--status-on);
+  --chart-2: oklch(0.55 0.12 65);
+  --chart-3: oklch(0.88 0.12 85);
+  --chart-4: oklch(0.42 0.08 60);
+  --chart-5: oklch(0.67 0.15 70);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -67,6 +76,12 @@
     --warning-muted: oklch(0.3 0.05 65);
     --danger: oklch(0.704 0.191 22.216);
     --danger-muted: oklch(0.3 0.07 25);
+
+    --chart-1: var(--status-on);
+    --chart-2: oklch(0.6 0.13 65);
+    --chart-3: oklch(0.93 0.08 88);
+    --chart-4: oklch(0.47 0.09 60);
+    --chart-5: oklch(0.72 0.15 72);
   }
 }
 
@@ -102,6 +117,11 @@
   --color-warning-muted: var(--warning-muted);
   --color-danger: var(--danger);
   --color-danger-muted: var(--danger-muted);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
 }
 
 @layer base {

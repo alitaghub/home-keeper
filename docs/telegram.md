@@ -161,7 +161,8 @@ data or Aegra's conversations.
 
 Only private text chats and approval buttons are supported. Groups, channels,
 message edits, voice, photos, and proactive notifications are outside scope.
-Long replies are split into plain-text messages. Device names are displayed as
+Long replies are split into plain-text messages. Answers have no charts; the
+agent offers charts only in the dashboard's agent panel. Device names are displayed as
 text, without interpreting their HTML or Markdown.
 
 ## What leaves your machine
