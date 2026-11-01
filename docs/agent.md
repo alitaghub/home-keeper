@@ -13,19 +13,22 @@ nothing below runs.
 The agent reaches Home Keeper only through the public API, the same one the
 dashboard uses. It can:
 
-- list the lights, plugs and switches you monitor (`list_monitored`), with each
-  one's kind (`kind=light` or `kind=switch`) and current state
+- list the devices you monitor (`list_monitored`), with each one's kind
+  (`kind=light`, `kind=switch` or `kind=state` for any other device) and its
+  current state in Home Assistant's words, such as "Heat"
 - report usage over a time range for lights, plugs and switches: on-time per
   day and per hour, switch-ons, and unknown time. Lights also get their average
   brightness; plugs and switches have none
 - show the changes Home Assistant recorded, and whether Home Assistant can be reached
 - list the devices in Home Assistant, with their kind
-- start or stop monitoring a light, plug or switch (`monitor`, `stop_monitoring`),
+- start or stop monitoring a device (`monitor`, `stop_monitoring`),
   after you approve it in the chat. You can
   approve or reject the proposed change; a rejection changes nothing
 - turn a monitored light, plug or switch on or off (`turn_on`, `turn_off`),
   after you approve it in the chat. A light can also take a brightness from 1
-  to 100 percent; a plug or switch cannot. This needs the `control` profile
+  to 100 percent; a plug or switch cannot. No other device can be switched: a
+  command for a `state` device answers "This device cannot be switched." This
+  needs the `control` profile
   (see [control.md](control.md)). The agent reports what Home Keeper then
   observed: the change, no change within 5 seconds, a refusal from Home
   Assistant, or an unreachable controller. A rejection sends nothing

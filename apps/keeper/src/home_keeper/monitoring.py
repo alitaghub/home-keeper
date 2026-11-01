@@ -1,11 +1,14 @@
 """The selection: which devices the user monitors, and what Home Assistant reports for each.
 
-Selecting a device checks Home Assistant's catalog through the reader.
+Selecting a device checks Home Assistant's catalog through the reader. A monitored device's
+kind follows the catalog; the stored kind is only for when Home Assistant cannot be read.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from home_keeper.models import (
+    MAX_SELECTION,
     DeviceKind,
     Entity,
     MonitoredEntities,
@@ -28,6 +31,11 @@ class UnsupportedEntity:
     pass
 
 
+@dataclass(frozen=True)
+class SelectionFull:
+    """Already MAX_SELECTION devices are monitored."""
+
+
 class Monitoring:
     def __init__(self, store: Store, reader: Reader) -> None:
         self.store = store
@@ -39,7 +47,7 @@ class Monitoring:
 
     def select(
         self, entity_id: str, *, selected: bool
-    ) -> Selection | UnknownEntity | UnsupportedEntity:
+    ) -> Selection | UnknownEntity | UnsupportedEntity | SelectionFull:
         """Start or stop monitoring a device. Starting checks Home Assistant's catalog and
         raises ReaderUnavailable when it cannot be read; stopping needs no reader, so a
         device that left Home Assistant can still be stopped."""
@@ -54,6 +62,11 @@ class Monitoring:
         store = self.store
         with store.transaction() as db:
             if selected:
+                # Held to the commit, so two selections at once cannot both take the last place.
+                db.execute("LOCK TABLE selection IN SHARE ROW EXCLUSIVE MODE")
+                current = store.selected(db)
+                if entity_id not in current and len(current) >= MAX_SELECTION:
+                    return SelectionFull()
                 db.execute(
                     "INSERT INTO selection(id, device_kind) VALUES(%s, %s) ON CONFLICT DO NOTHING",
                     (entity_id, kind),
@@ -63,17 +76,47 @@ class Monitoring:
             return Selection(entity_ids=store.selected(db))
 
     def kinds(self) -> dict[str, DeviceKind | None]:
-        """Each monitored device with the kind it was selected as, in ID order."""
+        """Each monitored device with its kind in Home Assistant's catalog, in ID order. While
+        Home Assistant cannot be read, or no longer lists a device, its stored kind."""
+        stored = self._stored_kinds()
+        try:
+            catalog = {entity.id: entity for entity in self.reader.catalog()}
+        except ReaderUnavailable:
+            return stored
+        return self._follow(stored, catalog)
+
+    def _stored_kinds(self) -> dict[str, DeviceKind | None]:
         with self.store.transaction() as db:
             rows = db.execute("SELECT id, device_kind FROM selection ORDER BY id").fetchall()
         return {row[0]: stored_kind.validate_python(row[1]) for row in rows}
 
+    def _follow(
+        self, stored: Mapping[str, DeviceKind | None], catalog: Mapping[str, Entity]
+    ) -> dict[str, DeviceKind | None]:
+        """The catalog's kind for each device it lists with one, stored for later."""
+        kinds = dict(stored)
+        for entity_id in kinds:
+            entity = catalog.get(entity_id)
+            if entity is not None and entity.device_kind is not None:
+                kinds[entity_id] = entity.device_kind
+        changed = [
+            (kind, entity_id) for entity_id, kind in kinds.items() if kind != stored[entity_id]
+        ]
+        if changed:
+            with self.store.transaction() as db:
+                # A device stopped meanwhile stays stopped: an UPDATE adds no row.
+                db.cursor().executemany("UPDATE selection SET device_kind=%s WHERE id=%s", changed)
+        return kinds
+
     def devices(self) -> MonitoredEntities:
         """Every monitored device with what Home Assistant reports for it now. While Home
-        Assistant cannot be read, each device is listed by its ID with no state."""
-        kinds = self.kinds()
+        Assistant cannot be read, each device is listed by its ID with no state, by the kind
+        the catalog gave it, if the catalog answered, else its stored kind."""
+        kinds = self._stored_kinds()
         try:
             catalog = {entity.id: entity for entity in self.reader.catalog()}
+            # Stored as soon as the catalog answers, whether or not the states can be read.
+            kinds = self._follow(kinds, catalog)
             states = self.reader.states(list(kinds))
         except ReaderUnavailable:
             return MonitoredEntities(

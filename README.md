@@ -74,18 +74,23 @@ your questions and replies.
 
 1. The **reader** lists the devices in Home Assistant, and the dashboard shows
    them.
-2. You pick the lights, plugs and switches to monitor. Home Keeper shows nothing
-   about a device before you do.
+2. You pick the devices to monitor: lights, plugs and switches, and any other
+   device Home Assistant registers, such as a thermostat or a cover. Home Keeper
+   shows nothing about a device before you do.
 3. When you open a tab, the **API** asks the reader for what it needs: the state
    Home Assistant reports now, or the history Home Assistant's recorder keeps.
    History covers on/off and availability, plus brightness and color for a light.
+   For any other device it covers the state, in Home Assistant's own words.
    How far back it goes depends on Home Assistant's
    [recorder settings](docs/home-assistant.md#history-retention).
 4. The API stores only what is its own in Postgres: which devices you monitor and
    the commands it sent. If Home Assistant cannot be reached, every tab says so
    and states show as unknown.
-5. The **dashboard** has three tabs. **Home** shows each monitored light and
-   switches it, then each monitored plug or switch under **Plugs and switches**.
+5. The **dashboard** has three tabs. **Home** shows each monitored light under
+   **Lights** and switches it, then each monitored plug or switch under **Plugs
+   and switches**, then every other device under **Other**, with its state in
+   Home Assistant's words and when it last changed. Other devices cannot be
+   switched and have no usage.
    A card's status badge is warm when the device is on, grey when it is off, and
    dashed when its state is unknown. Each card draws its last 24 hours as a
    strip: on, as high as the light's brightness, and off. Time Home Assistant reported the device unavailable is
@@ -142,9 +147,11 @@ token for the reader. Then:
 
 2. Open Home Assistant at <http://127.0.0.1:8123>, log in, and add your devices
    under **Settings → Devices & services → Add integration**. Home Assistant owns
-   every device connection. Home Keeper can monitor any single light, smart plug
-   or switch that Home Assistant shows, from any brand. It does not monitor
-   groups or rooms.
+   every device connection. Home Keeper can monitor any single device that Home
+   Assistant shows, from any brand: lights, smart plugs and switches, and any
+   other device, such as a thermostat. It does not monitor groups, rooms, people
+   or settings. [Home Assistant](docs/home-assistant.md#discover-and-select-devices)
+   lists the rules.
    Pairing a Hue Bridge, for example, needs one press of its button.
 3. Open the dashboard at <http://localhost:8000>. On the **Setup** tab, click
    **Monitor** on a lamp.

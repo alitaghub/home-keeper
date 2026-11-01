@@ -2,7 +2,8 @@
 model access.
 
 With the `control` profile, the demo controller forwards light and switch commands to the
-demo reader, and they switch the synthetic home's lights and plug.
+demo reader, and they switch the synthetic home's lights and plug. The garage door is a
+generic device: it only reports open or closed, and no command switches it.
 """
 
 from datetime import datetime
@@ -11,6 +12,8 @@ from typing import TypedDict, overload
 
 from home_keeper.models import (
     DeviceKind,
+    DeviceState,
+    GenericState,
     LightCommand,
     LightState,
     SwitchState,
@@ -27,6 +30,15 @@ from home_keeper_light_command import (
 
 # A switched light keeps its commanded state for this many replay passes.
 HELD_PASSES = 3
+# The words Home Assistant's English translations give the demo's states.
+DEMO_LABELS = {"on": "On", "off": "Off", "open": "Open", "closed": "Closed"}
+# The garage door's state for each replay step's on, off or unavailable.
+DOOR_STATES = {"on": "open", "off": "closed", "unavailable": "unavailable"}
+
+
+def demo_label(state: str) -> str:
+    """A demo state's translated word, else the state itself, as for Home Assistant."""
+    return DEMO_LABELS.get(state, state)
 
 
 class DemoEntity(TypedDict):
@@ -77,13 +89,22 @@ ENTITIES: list[DemoEntity] = [
         "reason": None,
     },
     {
+        "id": "cover.garage_door",
+        "device_id": "garage-door",
+        "device_name": "Garage door",
+        "name": "Door",
+        "device_kind": "state",
+        "supported": True,
+        "reason": None,
+    },
+    {
         "id": "sensor.ungrouped",
         "device_id": None,
         "device_name": None,
         "name": "Ungrouped sensor",
-        "device_kind": None,
+        "device_kind": "state",
         "supported": False,
-        "reason": "Only lights, plugs and switches are supported",
+        "reason": "Only entities of a device are recorded",
     },
 ]
 
@@ -100,20 +121,28 @@ class DemoReplay:
         # Each light's brightness from when it was last on, which an off state does not carry.
         self.last_brightness: dict[str, int] = {}
         since = {"last_changed": "2025-01-01T12:00:00Z", "last_updated": "2025-01-01T12:00:00Z"}
-        self.states: dict[str, LightState | SwitchState] = {
-            entity["id"]: SwitchState.model_validate(
-                since | {"state": "on", "device_kind": "switch"}
-            )
-            if entity["device_kind"] == "switch"
-            else LightState.model_validate(
-                since
-                | {"state": "on", "brightness": 180 if entity["id"] == "light.hue_desk" else 100}
-            )
+        self.states: dict[str, DeviceState] = {
+            entity["id"]: self._initial(entity["id"], entity["device_kind"], since)
             for entity in ENTITIES
             if entity["supported"]
         }
 
-    def advance(self, event_time: datetime) -> dict[str, LightState | SwitchState]:
+    @staticmethod
+    def _initial(identity: str, kind: DeviceKind | None, since: dict[str, str]) -> DeviceState:
+        if kind == "switch":
+            return SwitchState.model_validate(
+                since | {"state": "on", "device_kind": "switch", "label": demo_label("on")}
+            )
+        if kind == "state":
+            return GenericState.model_validate(
+                since | {"state": "open", "device_kind": "state", "label": demo_label("open")}
+            )
+        brightness = 180 if identity == "light.hue_desk" else 100
+        return LightState.model_validate(
+            since | {"state": "on", "brightness": brightness, "label": demo_label("on")}
+        )
+
+    def advance(self, event_time: datetime) -> dict[str, DeviceState]:
         sequence: tuple[dict[str, object], ...] = (
             {"state": "off"},
             {"state": "on", "brightness": 100},
@@ -139,17 +168,24 @@ class DemoReplay:
         return previous
 
     @staticmethod
-    def _next[State: LightState | SwitchState](
+    def _next[State: DeviceState](
         old: State, value: dict[str, object], event_time: datetime
     ) -> State:
         times = {
             "last_changed": event_time if old.state != value["state"] else old.last_changed,
             "last_updated": event_time,
             "last_reported": event_time,
+            "label": demo_label(str(value["state"])),
         }
         if isinstance(old, SwitchState):
             # A plug follows the lights' on, off and unavailable steps, without their attributes.
             return old.model_validate({"state": value["state"], "device_kind": "switch"} | times)
+        if isinstance(old, GenericState):
+            # The garage door opens and closes with the lights' on and off steps.
+            state = DOOR_STATES.get(str(value["state"]), old.state)
+            times["last_changed"] = event_time if old.state != state else old.last_changed
+            times["label"] = demo_label(state)
+            return old.model_validate({"state": state, "device_kind": "state"} | times)
         return old.model_validate(value | times)
 
     @overload
@@ -165,7 +201,8 @@ class DemoReplay:
     ) -> tuple[LightState, LightState] | tuple[SwitchState, SwitchState] | None:
         """Apply a command and hold the device; returns (old, new), or None if it cannot switch."""
         old = self.states.get(identity)
-        if old is None or old.state not in ("on", "off"):
+        # No command switches a generic device.
+        if old is None or isinstance(old, GenericState) or old.state not in ("on", "off"):
             return None
         if isinstance(old, SwitchState):
             if not isinstance(command, SwitchOn | SwitchOff):

@@ -18,12 +18,15 @@ class KeeperError(Exception):
     """The keeper could not be reached or did not answer as expected."""
 
 
-# What a device is; None for a domain the keeper does not record, such as a sensor.
-DeviceKind = Literal["light", "switch"] | None
+# What a device is; None for a domain the keeper does not record, such as a person.
+# `state`: any other device, which reports a state but cannot be switched.
+DeviceKind = Literal["light", "switch", "state"] | None
 
 
 class Reading(Wire):
     state: str
+    # Home Assistant's translated word for the state, else the raw state.
+    label: str
     # Plugs and switches have no brightness or color.
     brightness: int | None = None
     color_mode: str | None = None

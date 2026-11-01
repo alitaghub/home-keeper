@@ -37,6 +37,7 @@ from support.control import (
 from support.reader import FakeReader, history_row
 
 from home_keeper.api import create_app
+from home_keeper.models import Entity
 
 SNAPSHOTS = Path(__file__).parent / "snapshots" / "api"
 UPDATE = os.environ.get("UPDATE_SNAPSHOTS") == "1"
@@ -243,6 +244,80 @@ def control_responses(database: str) -> dict[str, Recorded]:
     return result
 
 
+THERMOSTAT: Payload = {
+    "id": "thermostat",
+    "device_id": "device-t",
+    "device_name": "Hall thermostat",
+    "name": "Hall heating",
+    "device_kind": "state",
+    "supported": True,
+    "reason": None,
+}
+# A text sensor whose state and label are markup: the API returns both as plain strings.
+NOTE: Payload = THERMOSTAT | {"id": "note", "device_id": "device-n", "name": "Note"}
+PERSON: Payload = {
+    "id": "ali",
+    "device_id": None,
+    "device_name": None,
+    "name": "Ali",
+    "supported": False,
+    "reason": "Presence is not recorded",
+}
+MARKUP = "<img src=x onerror=alert(1)>"
+
+
+def heating(state: str) -> Payload:
+    return {"device_kind": "state", "state": state, "label": state.capitalize()}
+
+
+def state_device_responses(database: str) -> dict[str, Recorded]:
+    """A generic state device through every route it touches."""
+    clock = [NOW]
+    controller = FakeController(clock)
+    reader = FakeReader([Entity.model_validate(entry) for entry in (THERMOSTAT, NOTE, PERSON)])
+    app = create_app(
+        database,
+        TOKEN,
+        now=lambda: clock[0],
+        reader=reader,
+        controller=controller,
+        command_wait_seconds=2,
+        control_stale_seconds=15,
+    )
+    result: dict[str, Recorded] = {}
+    with TestClient(app) as client:
+        for entity in ("thermostat", "note"):
+            selected = client.put(
+                f"/api/selection/{entity}", json={"selected": True}, headers=BROWSER
+            )
+            assert selected.is_success, selected.text
+        for seconds, state in ((50, "off"), (30, "heat"), (10, "off")):
+            reader.record(
+                "thermostat",
+                history_row("climate.hall", NOW - timedelta(seconds=seconds), heating(state)),
+            )
+        reader.set("thermostat", "climate.hall", heating("off"))
+        reader.set(
+            "note", "sensor.note", {"device_kind": "state", "state": MARKUP, "label": MARKUP}
+        )
+
+        clock[0] = NOW + timedelta(seconds=10)
+        result["state_catalog"] = record(client.get("/api/catalog"))
+        result["state_monitored"] = record(client.get("/api/monitored"))
+        result["state_events"] = record(client.get("/api/events"))
+        usage = client.get("/api/usage", params=usage_range(NOW - timedelta(minutes=1), clock[0]))
+        result["state_usage"] = record(usage)
+        # Usage covers lights, plugs and switches only.
+        assert usage.json()["devices"] == []
+
+        beat(client, clock[0])
+        result["error_state_command"] = record(command(client, ON, entity="thermostat"))
+        assert result["error_state_command"]["status"] == 409
+        assert result["error_state_command"]["body"]["detail"]["code"] == "not_supported"
+        assert controller.sent == []
+    return result
+
+
 # pytest needs the case names before the responses exist, so the snapshot files name them.
 SNAPSHOT_NAMES = sorted(path.stem for path in SNAPSHOTS.glob("*.json"))
 
@@ -254,6 +329,7 @@ def responses(make_database: Callable[[], str]) -> dict[str, Recorded]:
         | seeded_responses(make_database())
         | unreachable_responses(make_database())
         | control_responses(make_database())
+        | state_device_responses(make_database())
     )
 
 

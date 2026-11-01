@@ -60,6 +60,17 @@ export const smartPlug = {
   device_kind: "switch",
 } satisfies Schemas["Entity"];
 
+// A thermostat: a generic device Home Keeper shows with Home Assistant's own words.
+export const thermostat = {
+  id: "climate.hall",
+  device_id: "hall-thermostat",
+  device_name: "Hall thermostat",
+  name: "Heating",
+  supported: true,
+  reason: null,
+  device_kind: "state",
+} satisfies Schemas["Entity"];
+
 export const catalog = {
   source_id: "demo",
   home_assistant_url: null,
@@ -113,20 +124,32 @@ const change = (
 
 export const change3 = change({
   time: "2026-10-12T09:59:50Z",
-  old: { device_kind: "light", availability: "available", state: "off" },
-  new: { device_kind: "light", availability: "available", state: "on", brightness: 150 },
+  old: { device_kind: "light", availability: "available", state: "off", label: "Off" },
+  new: {
+    device_kind: "light",
+    availability: "available",
+    state: "on",
+    label: "On",
+    brightness: 150,
+  },
 });
 
 export const change2 = change({
   time: "2026-10-12T09:59:40Z",
-  old: { device_kind: "light", availability: "available", state: "on" },
-  new: { device_kind: "light", availability: "available", state: "off" },
+  old: { device_kind: "light", availability: "available", state: "on", label: "On" },
+  new: { device_kind: "light", availability: "available", state: "off", label: "Off" },
 });
 
 export const change1 = change({
   time: "2026-10-12T09:59:30Z",
-  old: { device_kind: "light", availability: "available", state: "off" },
-  new: { device_kind: "light", availability: "available", state: "on", brightness: 50 },
+  old: { device_kind: "light", availability: "available", state: "off", label: "Off" },
+  new: {
+    device_kind: "light",
+    availability: "available",
+    state: "on",
+    label: "On",
+    brightness: 50,
+  },
 });
 
 // A different Home Assistant entity ID, so the details show which one changed.
@@ -137,6 +160,7 @@ export const colorChange = change({
     device_kind: "light",
     availability: "available",
     state: "on",
+    label: "On",
     brightness: 150,
     xy_color: [0.3, 0.32],
   },
@@ -144,6 +168,7 @@ export const colorChange = change({
     device_kind: "light",
     availability: "available",
     state: "on",
+    label: "On",
     brightness: 150,
     xy_color: [0.45, 0.41],
   },
@@ -154,9 +179,22 @@ export const plugChange = change({
   device_kind: "switch",
   entity_id: smartPlug.id,
   time: "2026-10-12T09:59:58Z",
-  old: { device_kind: "switch", availability: "available", state: "off" },
-  new: { device_kind: "switch", availability: "available", state: "on" },
+  old: { device_kind: "switch", availability: "available", state: "off", label: "Off" },
+  new: { device_kind: "switch", availability: "available", state: "on", label: "On" },
 });
+
+/** A thermostat changing from one state to another, with each state's label. */
+export const stateChange = (
+  old: { state: string; label: string },
+  next: { state: string; label: string },
+) =>
+  change({
+    device_kind: "state",
+    entity_id: thermostat.id,
+    time: "2026-10-12T09:59:59Z",
+    old: { device_kind: "state", availability: "available", ...old },
+    new: { device_kind: "state", availability: "available", ...next },
+  });
 
 export const eventsPage1 = {
   events: [change3, change2],
@@ -189,7 +227,7 @@ const reportedAt = "2026-10-12T10:00:06+00:00";
 /** A monitored light in the state Home Assistant reports now. */
 export const monitoredLight = (
   entity: Schemas["Entity"],
-  state: Reading["state"],
+  state: Schemas["LightReading"]["state"],
   availability: Reading["availability"] = "available",
   brightness?: number,
 ) =>
@@ -199,6 +237,7 @@ export const monitoredLight = (
     state: {
       device_kind: "light",
       state,
+      label: state[0]?.toUpperCase() + state.slice(1),
       availability,
       last_changed: reportedAt,
       last_updated: reportedAt,
@@ -210,7 +249,7 @@ export const monitoredLight = (
 /** A monitored plug or switch in the state Home Assistant reports now. */
 export const monitoredSwitch = (
   entity: Schemas["Entity"] & { device_kind: "switch" },
-  state: Reading["state"],
+  state: Schemas["SwitchReading"]["state"],
   availability: Reading["availability"] = "available",
 ) =>
   ({
@@ -219,6 +258,28 @@ export const monitoredSwitch = (
     state: {
       device_kind: "switch",
       state,
+      label: state[0]?.toUpperCase() + state.slice(1),
+      availability,
+      last_changed: reportedAt,
+      last_updated: reportedAt,
+    },
+    missing: false,
+  }) satisfies MonitoredEntity;
+
+/** A monitored generic device: Home Assistant's `state`, worded as `label` in its language. */
+export const monitoredState = (
+  entity: Schemas["Entity"] & { device_kind: "state" },
+  state: string,
+  label: string,
+  availability: Reading["availability"] = "available",
+) =>
+  ({
+    ...entity,
+    source_entity_id: entity.id,
+    state: {
+      device_kind: "state",
+      state,
+      label,
       availability,
       last_changed: reportedAt,
       last_updated: reportedAt,

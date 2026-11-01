@@ -1,4 +1,5 @@
-"""How long selected lights, plugs and switches were on, from Home Assistant's history.
+"""How long selected lights, plugs and switches were on, from Home Assistant's history. Other
+devices have no on-time.
 
 Time the history cannot vouch for is unknown, never on or off.
 """
@@ -12,12 +13,11 @@ from zoneinfo import ZoneInfo
 
 from home_keeper.models import (
     DayUsage,
-    DeviceKind,
     DeviceUsage,
     LightPeriod,
     LightReading,
-    LightStateValue,
     LightUsage,
+    SwitchableKind,
     SwitchPeriod,
     SwitchUsage,
     UnknownInterval,
@@ -31,7 +31,8 @@ class Evidence:
     """A state the device had from `at` until the next evidence."""
 
     at: datetime
-    state: LightStateValue
+    # A light's or switch's state; any other text counts as unknown.
+    state: str
     brightness: int | None
 
 
@@ -90,7 +91,7 @@ def local_dates(start: datetime, end: datetime, timezone: ZoneInfo) -> list[date
 
 def device_usage(
     entity_id: str,
-    device_kind: DeviceKind,
+    device_kind: SwitchableKind,
     *,
     start: datetime,
     end: datetime,

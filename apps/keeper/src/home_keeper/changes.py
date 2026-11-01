@@ -13,8 +13,9 @@ from pydantic import AwareDatetime, model_validator
 from home_keeper.models import ChangeRecord, EventsPage, Identity, Reading, WireModel, to_utc
 from home_keeper.reader import HistoryRow, Reader
 
-# Fields that do not tell one state from another.
-_SOURCE_TIMES = frozenset({"last_changed", "last_updated", "last_reported"})
+# Fields that do not tell one state from another: the source times, and the label, which
+# only words the state.
+_NOT_MEANING = frozenset({"last_changed", "last_updated", "last_reported", "label"})
 # History is read from just before a range's start, so a change at exactly the start has the
 # row before it.
 BEFORE_START = timedelta(milliseconds=1)
@@ -127,7 +128,7 @@ def read_cursor(cursor: str) -> EventsCursor:
 
 
 def _meaning(reading: Reading) -> dict[str, object]:
-    return reading.model_dump(exclude=set(_SOURCE_TIMES), exclude_none=True)
+    return reading.model_dump(exclude=set(_NOT_MEANING), exclude_none=True)
 
 
 def _position(change: ChangeRecord) -> tuple[datetime, str]:
