@@ -10,13 +10,11 @@ type Entity = Schemas["Entity"];
 export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
   entity.device_name || entity.name;
 
-/**
- * A catalog row's name. A light or plug is named by its device, as today; one device can
- * have several other entities, such as a temperature and a humidity sensor, so those add the
- * entity's own name when it differs.
- */
-const rowName = (entity: Entity) =>
-  entity.device_kind === "state" && entity.device_name && entity.name !== entity.device_name
+/** A device's name; an on/off or other entity adds its own, since one device can have several. */
+export const deviceName = (entity: Pick<Entity, "device_kind" | "device_name" | "name">) =>
+  (entity.device_kind === "state" || entity.device_kind === "on_off") &&
+  entity.device_name &&
+  entity.name !== entity.device_name
     ? `${entity.device_name} · ${entity.name}`
     : lightName(entity);
 
@@ -26,9 +24,13 @@ const UNGROUPED = "__ungrouped";
 const KINDS = [
   {
     heading: "Lights",
-    has: (entity: Entity) => entity.device_kind !== "switch" && entity.device_kind !== "state",
+    has: (entity: Entity) =>
+      entity.device_kind !== "switch" &&
+      entity.device_kind !== "on_off" &&
+      entity.device_kind !== "state",
   },
   { heading: "Plugs and switches", has: (entity: Entity) => entity.device_kind === "switch" },
+  { heading: "Other on/off", has: (entity: Entity) => entity.device_kind === "on_off" },
   { heading: "Other", has: (entity: Entity) => entity.device_kind === "state" },
 ];
 
@@ -116,7 +118,7 @@ export function Catalog({
             <h4 className="text-sm font-semibold">{group.heading}</h4>
             <div className="grid gap-2 sm:grid-cols-2">
               {group.entities.map((entity) => {
-                const name = rowName(entity);
+                const name = deviceName(entity);
                 const checked = selected.includes(entity.id);
                 const action = checked ? "Stop monitoring" : "Monitor";
                 return (

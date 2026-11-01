@@ -1,0 +1,18 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "device_id": "device-d",
+        "device_kind": "on_off",
+        "device_name": "Door sensor",
+        "id": "door",
+        "name": "Front door",
+        "reason": null,
+        "supported": true
+      }
+    ],
+    "home_assistant_url": null,
+    "source_id": "demo"
+  }
+}

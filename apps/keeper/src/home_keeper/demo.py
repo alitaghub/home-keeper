@@ -3,7 +3,8 @@ model access.
 
 With the `control` profile, the demo controller forwards light and switch commands to the
 demo reader, and they switch the synthetic home's lights and plug. The garage door is a
-generic device: it only reports open or closed, and no command switches it.
+generic device: it only reports open or closed. The ceiling fan and the front door sensor are
+on/off devices with usage. No command switches any of these three.
 """
 
 from datetime import datetime
@@ -16,6 +17,7 @@ from home_keeper.models import (
     GenericState,
     LightCommand,
     LightState,
+    OnOffState,
     SwitchState,
 )
 from home_keeper_light_command import (
@@ -32,13 +34,17 @@ from home_keeper_light_command import (
 HELD_PASSES = 3
 # The words Home Assistant's English translations give the demo's states.
 DEMO_LABELS = {"on": "On", "off": "Off", "open": "Open", "closed": "Closed"}
+# Devices whose words depend on their device class, as Home Assistant's translations do: a
+# door sensor's on and off are "Open" and "Closed".
+DEVICE_CLASS_LABELS = {"binary_sensor.front_door": {"on": "Open", "off": "Closed"}}
 # The garage door's state for each replay step's on, off or unavailable.
 DOOR_STATES = {"on": "open", "off": "closed", "unavailable": "unavailable"}
 
 
-def demo_label(state: str) -> str:
+def demo_label(state: str, identity: str | None = None) -> str:
     """A demo state's translated word, else the state itself, as for Home Assistant."""
-    return DEMO_LABELS.get(state, state)
+    words = DEVICE_CLASS_LABELS.get(identity or "", {})
+    return words.get(state) or DEMO_LABELS.get(state, state)
 
 
 class DemoEntity(TypedDict):
@@ -98,6 +104,24 @@ ENTITIES: list[DemoEntity] = [
         "reason": None,
     },
     {
+        "id": "fan.ceiling_fan",
+        "device_id": "ceiling-fan",
+        "device_name": "Ceiling fan",
+        "name": "Fan",
+        "device_kind": "on_off",
+        "supported": True,
+        "reason": None,
+    },
+    {
+        "id": "binary_sensor.front_door",
+        "device_id": "front-door",
+        "device_name": "Front door",
+        "name": "Door",
+        "device_kind": "on_off",
+        "supported": True,
+        "reason": None,
+    },
+    {
         "id": "sensor.ungrouped",
         "device_id": None,
         "device_name": None,
@@ -133,6 +157,11 @@ class DemoReplay:
             return SwitchState.model_validate(
                 since | {"state": "on", "device_kind": "switch", "label": demo_label("on")}
             )
+        if kind == "on_off":
+            return OnOffState.model_validate(
+                since
+                | {"state": "on", "device_kind": "on_off", "label": demo_label("on", identity)}
+            )
         if kind == "state":
             return GenericState.model_validate(
                 since | {"state": "open", "device_kind": "state", "label": demo_label("open")}
@@ -161,7 +190,7 @@ class DemoReplay:
             if isinstance(old, LightState) and old.brightness is not None
         }
         self.states = {
-            identity: old if identity in self.held else self._next(old, value, event_time)
+            identity: old if identity in self.held else self._next(identity, old, value, event_time)
             for identity, old in previous.items()
         }
         self.held = {identity: passes - 1 for identity, passes in self.held.items() if passes > 1}
@@ -169,17 +198,20 @@ class DemoReplay:
 
     @staticmethod
     def _next[State: DeviceState](
-        old: State, value: dict[str, object], event_time: datetime
+        identity: str, old: State, value: dict[str, object], event_time: datetime
     ) -> State:
         times = {
             "last_changed": event_time if old.state != value["state"] else old.last_changed,
             "last_updated": event_time,
             "last_reported": event_time,
-            "label": demo_label(str(value["state"])),
+            "label": demo_label(str(value["state"]), identity),
         }
-        if isinstance(old, SwitchState):
-            # A plug follows the lights' on, off and unavailable steps, without their attributes.
-            return old.model_validate({"state": value["state"], "device_kind": "switch"} | times)
+        if isinstance(old, SwitchState | OnOffState):
+            # A plug, the fan and the door sensor follow the lights' on, off and unavailable
+            # steps, without their attributes.
+            return old.model_validate(
+                {"state": value["state"], "device_kind": old.device_kind} | times
+            )
         if isinstance(old, GenericState):
             # The garage door opens and closes with the lights' on and off steps.
             state = DOOR_STATES.get(str(value["state"]), old.state)
@@ -201,13 +233,17 @@ class DemoReplay:
     ) -> tuple[LightState, LightState] | tuple[SwitchState, SwitchState] | None:
         """Apply a command and hold the device; returns (old, new), or None if it cannot switch."""
         old = self.states.get(identity)
-        # No command switches a generic device.
-        if old is None or isinstance(old, GenericState) or old.state not in ("on", "off"):
+        # No command switches a generic or other on/off device.
+        if (
+            old is None
+            or isinstance(old, GenericState | OnOffState)
+            or old.state not in ("on", "off")
+        ):
             return None
         if isinstance(old, SwitchState):
             if not isinstance(command, SwitchOn | SwitchOff):
                 return None
-            switched = self._next(old, {"state": command.action}, event_time)
+            switched = self._next(identity, old, {"state": command.action}, event_time)
             self.states[identity] = switched
             self.held[identity] = HELD_PASSES
             return old, switched
@@ -225,7 +261,7 @@ class DemoReplay:
                 else self.last_brightness.get(identity, BRIGHTNESS_MAX)
             )
             value = {"state": "on", "brightness": brightness, "color_mode": "brightness"}
-        new = self._next(old, value, event_time)
+        new = self._next(identity, old, value, event_time)
         self.states[identity] = new
         self.held[identity] = HELD_PASSES
         return old, new

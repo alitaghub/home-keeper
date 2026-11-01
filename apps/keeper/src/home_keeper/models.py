@@ -24,12 +24,17 @@ Name = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 StoredName = Annotated[str, StringConstraints(min_length=1, max_length=256, pattern=r"^[^\x00]*$")]
 SourceId = Literal["demo", "home_assistant"]
 # What a device is, from its Home Assistant domain. Separate from a record's `kind`.
-# The kinds Home Keeper can switch, and that have usage.
+# The kinds Home Keeper can switch.
 SwitchableKind = Literal["light", "switch"]
+# The kinds with on-time usage. `on_off`: a device that is only on or off, such as a fan or a
+# door sensor, which Home Keeper never switches.
+UsageKind = SwitchableKind | Literal["on_off"]
 # `state`: any other device, shown by its state text alone.
-DeviceKind = SwitchableKind | Literal["state"]
+DeviceKind = UsageKind | Literal["state"]
 # People and trackers report where someone is, which Home Keeper does not record.
 PRESENCE_DOMAINS = frozenset({"person", "device_tracker"})
+# Domains whose state is only `on` or `off`, apart from lights and switches.
+ON_OFF_DOMAINS = frozenset({"fan", "binary_sensor", "siren", "humidifier", "remote"})
 
 
 def device_kind_of(source_entity_id: str) -> DeviceKind | None:
@@ -39,6 +44,8 @@ def device_kind_of(source_entity_id: str) -> DeviceKind | None:
             return "light"
         case "switch":
             return "switch"
+        case domain if domain in ON_OFF_DOMAINS:
+            return "on_off"
         case domain if domain in PRESENCE_DOMAINS or domain == "group":
             return None
         case _:
@@ -202,6 +209,12 @@ class SwitchState(StateHeader):
     device_kind: Literal["switch"]
 
 
+class OnOffState(StateHeader):
+    """Any other device that is only on or off, such as a fan or a door sensor."""
+
+    device_kind: Literal["on_off"]
+
+
 class GenericState(WireModel):
     """Any other device: its state text and source times, with no attributes."""
 
@@ -226,7 +239,7 @@ class GenericState(WireModel):
 
 
 # A state as the connector parses it from Home Assistant.
-DeviceState = LightState | SwitchState | GenericState
+DeviceState = LightState | SwitchState | OnOffState | GenericState
 
 
 CollectorError = Literal[
@@ -287,6 +300,13 @@ class SwitchReading(ReadingHeader):
     device_kind: Literal["switch"]
 
 
+class OnOffReading(ReadingHeader):
+    """Any other on/off device's state as stored, such as a fan or a door sensor: no
+    attributes."""
+
+    device_kind: Literal["on_off"]
+
+
 class StateReading(WireModel):
     """Any other device's state as Home Assistant reports it: its text, with no attributes."""
 
@@ -303,6 +323,7 @@ class StateReading(WireModel):
 Reading = Annotated[
     Annotated[LightReading, Tag("light")]
     | Annotated[SwitchReading, Tag("switch")]
+    | Annotated[OnOffReading, Tag("on_off")]
     | Annotated[StateReading, Tag("state")],
     Discriminator(device_kind_tag),
 ]
@@ -406,7 +427,19 @@ class SwitchUsage(UsageFields):
     periods: list[SwitchPeriod]
 
 
-DeviceUsage = Annotated[LightUsage | SwitchUsage, Field(discriminator="device_kind")]
+class OnOffUsage(UsageFields):
+    """Any other on/off device, such as a fan or a door sensor: a plug's numbers, with Home
+    Assistant's words for its on and off."""
+
+    device_kind: Literal["on_off"]
+    periods: list[SwitchPeriod]
+    # Home Assistant's translated words for `on` and `off`, such as "Open" and "Closed" for a
+    # door, else the raw state.
+    on_label: StateText
+    off_label: StateText
+
+
+DeviceUsage = Annotated[LightUsage | SwitchUsage | OnOffUsage, Field(discriminator="device_kind")]
 
 
 class UsageReport(WireModel):

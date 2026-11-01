@@ -1,5 +1,8 @@
 """The catalog comes live from the reader; the selection is Home Keeper's own record."""
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 from fastapi.testclient import TestClient
 from support.api import BROWSER, CATALOG_ENTITIES, NOW, TOKEN, app_for, catalog_reader
 from support.reader import FakeReader
@@ -109,3 +112,37 @@ def test_a_501st_device_cannot_be_selected(database: str) -> None:
         selection = client.get("/api/selection").json()["entity_ids"]
         assert len(selection) == 500
         assert "bulb-0500" not in selection
+
+
+def test_two_overlapping_selections_at_499_devices_store_exactly_500(database: str) -> None:
+    reader = FakeReader(lights(502))
+    with TestClient(app_for(database, reader=reader)) as client:
+        for number in range(499):
+            selected = client.put(
+                f"/api/selection/bulb-{number:04}", json={"selected": True}, headers=BROWSER
+            )
+            assert selected.status_code == 200
+
+        def select(entity_id: str, start: Barrier) -> int:
+            start.wait()
+            return client.put(
+                f"/api/selection/{entity_id}", json={"selected": True}, headers=BROWSER
+            ).status_code
+
+        # Repeat the race: each round starts again from 499 devices.
+        for _ in range(10):
+            start = Barrier(2)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(select, "bulb-0499", start)
+                second = pool.submit(select, "bulb-0500", start)
+                statuses = sorted([first.result(), second.result()])
+
+            selection = client.get("/api/selection").json()["entity_ids"]
+            assert statuses == [200, 422]
+            assert len(selection) == 500
+            for entity_id in ("bulb-0499", "bulb-0500"):
+                if entity_id in selection:
+                    client.put(
+                        f"/api/selection/{entity_id}", json={"selected": False}, headers=BROWSER
+                    ).raise_for_status()
+            assert len(client.get("/api/selection").json()["entity_ids"]) == 499

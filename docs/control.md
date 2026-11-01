@@ -102,8 +102,9 @@ The commands are fixed. The API picks the call from the device's kind:
 | `switch`    | `{"action": "off"}`                         | `switch.turn_off`                          |
 
 A plug or switch has no brightness. A command with `brightness_pct` for one is
-refused with `not_supported`. Any other device kind, such as a `state` device
-like a thermostat, takes no command: the API refuses every command for it with
+refused with `not_supported`. Any other device kind, such as an `on_off` device
+like a fan or a door sensor, or a `state` device like a thermostat, takes no
+command: the API refuses every command for it with
 `not_supported`, "This device cannot be switched.", whatever its state.
 
 `sender` names who asked: `{"kind": "dashboard"}` for the device cards,

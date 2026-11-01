@@ -16,6 +16,7 @@ from home_keeper.models import (
     Identity,
     ReaderError,
     Reading,
+    StateText,
     WireModel,
     to_utc,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "HistoryRow",
     "HttpReader",
     "LiveState",
+    "OnOffWords",
     "Reader",
     "ReaderError",
     "ReaderUnavailable",
@@ -47,6 +49,18 @@ class LiveState(WireModel):
 
     source_entity_id: Identity
     reading: Reading
+
+
+class OnOffWords(WireModel):
+    """Home Assistant's words for a device's `on` and `off`, such as "Open" and "Closed" for a
+    door sensor; the raw state where it has no translation."""
+
+    on: StateText
+    off: StateText
+
+
+# The words of a device Home Assistant does not translate.
+RAW_WORDS = OnOffWords(on="on", off="off")
 
 
 class HistoryRow(WireModel):
@@ -99,6 +113,12 @@ class Reader(Protocol):
         Raises ReaderUnavailable."""
         ...
 
+    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
+        """One key per requested ID: Home Assistant's words for its on and off, by its device
+        class first, then its domain's own. RAW_WORDS for an ID it does not translate or does
+        not have. Raises ReaderUnavailable."""
+        ...
+
 
 # The reader service's internal bodies, shared by the service and HttpReader.
 class ReaderHealthy(WireModel):
@@ -121,6 +141,10 @@ class ReaderStates(WireModel):
 
 class ReaderHistory(WireModel):
     history: dict[Identity, list[HistoryRow]]
+
+
+class ReaderWords(WireModel):
+    words: dict[Identity, OnOffWords]
 
 
 class HttpReader:
@@ -163,6 +187,14 @@ class HttpReader:
             },
         ).history
         return {entity_id: history.get(entity_id, []) for entity_id in entity_ids}
+
+    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
+        if not entity_ids:
+            return {}
+        words = self._get(
+            "/internal/words", ReaderWords, params={"entity_id": list(entity_ids)}
+        ).words
+        return {entity_id: words.get(entity_id, RAW_WORDS) for entity_id in entity_ids}
 
     def _get[T: BaseModel](
         self, path: str, model: type[T], params: dict[str, list[str]] | None = None

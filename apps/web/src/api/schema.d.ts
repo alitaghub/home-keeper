@@ -170,8 +170,9 @@ export interface paths {
         };
         /**
          * Usage
-         * @description On-time, switch-ons and brightness of selected lights, plugs and switches in
-         *     `[start, end)`, from Home Assistant's history. Other devices have no entry.
+         * @description On-time, switch-ons and brightness of selected lights, plugs, switches and other
+         *     on/off devices in `[start, end)`, from Home Assistant's history. An on/off device also
+         *     has Home Assistant's words for its on and off. Devices of kind `state` have no entry.
          */
         get: operations["usage_api_usage_get"];
         put?: never;
@@ -213,15 +214,15 @@ export interface components {
          */
         ChangeRecord: {
             /** Device Kind */
-            device_kind: ("light" | "switch") | "state";
+            device_kind: ("light" | "switch") | "on_off" | "state";
             /** Entity Id */
             entity_id: string;
             /** Id */
             id: string;
             /** New */
-            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["StateReading"];
+            new: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"];
             /** Old */
-            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["StateReading"];
+            old: components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"];
             /** Source Entity Id */
             source_entity_id: string;
             /**
@@ -298,7 +299,7 @@ export interface components {
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
-            device_kind?: ("light" | "switch") | "state" | null;
+            device_kind?: ("light" | "switch") | "on_off" | "state" | null;
             /** Device Name */
             device_name?: string | null;
             /** Id */
@@ -512,7 +513,7 @@ export interface components {
             /** Device Id */
             device_id?: string | null;
             /** Device Kind */
-            device_kind?: ("light" | "switch") | "state" | null;
+            device_kind?: ("light" | "switch") | "on_off" | "state" | null;
             /** Device Name */
             device_name?: string | null;
             /** Id */
@@ -526,9 +527,71 @@ export interface components {
             /** Source Entity Id */
             source_entity_id: string | null;
             /** State */
-            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["StateReading"]) | null;
+            state: (components["schemas"]["LightReading"] | components["schemas"]["SwitchReading"] | components["schemas"]["OnOffReading"] | components["schemas"]["StateReading"]) | null;
             /** Supported */
             supported: boolean;
+        };
+        /**
+         * OnOffReading
+         * @description Any other on/off device's state as stored, such as a fan or a door sensor: no
+         *     attributes.
+         */
+        OnOffReading: {
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "unavailable" | "unknown";
+            /**
+             * Device Kind
+             * @constant
+             */
+            device_kind: "on_off";
+            /** Label */
+            label: string;
+            /** Last Changed */
+            last_changed?: string | null;
+            /** Last Reported */
+            last_reported?: string | null;
+            /** Last Updated */
+            last_updated?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "on" | "off" | "unavailable" | "unknown";
+        };
+        /**
+         * OnOffUsage
+         * @description Any other on/off device, such as a fan or a door sensor: a plug's numbers, with Home
+         *     Assistant's words for its on and off.
+         */
+        OnOffUsage: {
+            /** Days */
+            days: components["schemas"]["DayUsage"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            device_kind: "on_off";
+            /** Entity Id */
+            entity_id: string;
+            /** Hours */
+            hours: number[];
+            /** Off Label */
+            off_label: string;
+            /** On Label */
+            on_label: string;
+            /** On Seconds */
+            on_seconds: number;
+            /** Periods */
+            periods: components["schemas"]["SwitchPeriod"][];
+            /** Switch Ons */
+            switch_ons: number;
+            /** Unknown Intervals */
+            unknown_intervals: components["schemas"]["UnknownInterval"][];
+            /** Unknown Seconds */
+            unknown_seconds: number;
         };
         /**
          * Selection
@@ -734,7 +797,7 @@ export interface components {
         /** UsageReport */
         UsageReport: {
             /** Devices */
-            devices: (components["schemas"]["LightUsage"] | components["schemas"]["SwitchUsage"])[];
+            devices: (components["schemas"]["LightUsage"] | components["schemas"]["SwitchUsage"] | components["schemas"]["OnOffUsage"])[];
             /**
              * End
              * Format: date-time

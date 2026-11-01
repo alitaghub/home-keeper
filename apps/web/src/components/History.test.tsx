@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Schemas } from "../api/client";
+import { installFakeApi } from "../test/fake-api";
 import * as fixtures from "../test/fixtures";
-import { UsageStrip } from "./History";
+import { HistoryDialog, UsageStrip } from "./History";
 import { Timeline } from "./Timeline";
 
 type LightUsage = Schemas["LightUsage"];
@@ -111,5 +112,30 @@ describe("changes of a generic device", () => {
     expect(
       screen.getByText((text) => text.includes(`<b>Heat</b> → ${markup}`)),
     ).toBeInTheDocument();
+  });
+});
+
+describe("usage dialog of an on/off device", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("words on time with Home Assistant's word for on, and has no brightness", async () => {
+    installFakeApi({ "GET /api/usage": fixtures.doorUsage });
+    render(<HistoryDialog entityId={fixtures.frontDoor.id} name="Front door" onClose={() => {}} />);
+
+    const dialog = screen.getByRole("dialog", { name: "Front door" });
+    const totals = await within(dialog).findByText("2 times");
+    expect(totals).toBeVisible();
+    // The totals and the legend say Open and Closed; the strip says Open too.
+    expect(within(dialog).getByText("Open", { selector: "dt" })).toBeVisible();
+    expect(within(dialog).queryByText("On", { selector: "dt" })).toBeNull();
+    expect(within(dialog).getByText("Closed")).toBeVisible();
+    expect(within(dialog).queryByText("Off")).toBeNull();
+    expect(within(dialog).getByRole("img", { name: /^Last 24 hours/ })).toHaveAccessibleName(
+      /Open/,
+    );
+    expect(within(dialog).queryByText("Average brightness")).toBeNull();
+    expect(within(dialog).queryByText(/brightness/i)).toBeNull();
   });
 });

@@ -30,6 +30,7 @@ from home_keeper_agent.keeper import (
     LightOn,
     LightUsage,
     Monitored,
+    OnOffUsage,
     Params,
     Reading,
     Selection,
@@ -144,9 +145,18 @@ def format_monitored(monitored: Monitored) -> str:
 
 
 def _device_usage(device: DeviceUsage) -> list[str]:
+    # An on/off device's on and off are Home Assistant's words, such as "Open" for a door,
+    # quoted like names.
+    if isinstance(device, OnOffUsage):
+        on = _name(device.on_label)
+        words = f" (on is {on}, off is {_name(device.off_label)})"
+        on_for, switched_on, on_time = f"{on} for", f"became {on}", f"{on} time"
+    else:
+        words, on_for, switched_on, on_time = "", "on", "switched on", "on-time"
     line = (
-        f"- {device.entity_id}{_kind(device.device_kind)}: on {duration(device.on_seconds)}, "
-        f"unknown {duration(device.unknown_seconds)}, switched on {device.switch_ons} time(s)"
+        f"- {device.entity_id}{_kind(device.device_kind)}{words}: {on_for} "
+        f"{duration(device.on_seconds)}, unknown {duration(device.unknown_seconds)}, "
+        f"{switched_on} {device.switch_ons} time(s)"
     )
     # Plugs and switches have no brightness, so their line never mentions it.
     if isinstance(device, LightUsage):
@@ -156,13 +166,14 @@ def _device_usage(device: DeviceUsage) -> list[str]:
         )
     lines = [line]
     lines.extend(
-        f"  {day.date}: on {duration(day.on_seconds)}, unknown {duration(day.unknown_seconds)}"
+        f"  {day.date}: {on_for} {duration(day.on_seconds)}, "
+        f"unknown {duration(day.unknown_seconds)}"
         for day in device.days
     )
     hours = [
         f"{hour:02d}:00 {duration(seconds)}" for hour, seconds in enumerate(device.hours) if seconds
     ]
-    lines.append(f"  on-time by hour of day: {', '.join(hours) or 'none'}")
+    lines.append(f"  {on_time} by hour of day: {', '.join(hours) or 'none'}")
     lines.extend(
         f"  unknown {interval.start} to {interval.end} ({interval.reason})"
         for interval in device.unknown_intervals
@@ -178,7 +189,7 @@ def format_usage(usage: Usage) -> str:
         "unavailable."
     ]
     if not usage.devices:
-        lines.append("No monitored lights, plugs or switches match this request.")
+        lines.append("No monitored device with on/off usage matches this request.")
     for device in usage.devices:
         lines.extend(_device_usage(device))
     return "\n".join(lines)
@@ -355,8 +366,9 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def get_usage(start: str, end: str, entity_ids: list[str] | None = None) -> str:
         """Report on-time, unknown time, switch-ons, and per-day and per-hour on-time for
-        monitored lights, plugs and switches, and average brightness for lights. Use this for
-        every usage number.
+        monitored lights, plugs, switches and other on/off devices, and average brightness for
+        lights. An on/off device's on is worded in Home Assistant's words, such as "Open" for
+        a door. Use this for every usage number.
 
         Args:
             start: Range start, ISO 8601 with a UTC offset, e.g. 2026-10-12T00:00:00+00:00.
@@ -396,8 +408,10 @@ def keeper_tools(client: KeeperClient) -> list[BaseTool]:
     @tool
     def list_devices() -> str:
         """List the devices in Home Assistant, with each one's kind and whether it can be
-        monitored. Kinds: light; switch, which covers plugs; state, any other device, such as
-        a thermostat or a cover, which reports a state but cannot be switched."""
+        monitored. Kinds: light; switch, which covers plugs; on_off, another device that is
+        only on or off, such as a fan or a door sensor, which has usage but cannot be switched;
+        state, any other device, such as a thermostat or a cover, which reports a state but
+        cannot be switched."""
         return _guard(lambda: format_devices(client.request("GET", "/api/catalog", Catalog)))
 
     def select(entity_id: str, selected: bool) -> str:

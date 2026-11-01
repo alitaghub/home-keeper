@@ -98,7 +98,8 @@ times out. Check it with `docker compose logs ha-setup`.
 
 Setup is not specific to Hue. You can add any integration Home Assistant
 supports. Home Keeper can monitor any single device from any brand: lights, smart
-plugs and switches, and any other device, such as a thermostat. Groups, rooms,
+plugs and switches, other on/off devices such as fans and door sensors, and any
+other device, such as a thermostat. Groups, rooms,
 people, settings and other entities appear under **Show other entities**. When no supported device exists
 yet, the dashboard links to the Home Assistant integrations page.
 
@@ -157,11 +158,18 @@ Home Keeper keeps no copy of device history, so this one setting decides how far
 back History and usage go.
 
 Each history read asks Home Assistant for the lights, plugs and switches in one
-request, and for every other device in a request of its own. One answer can be at
-most 16 MiB. A device that changes very often, such as a busy power sensor, can
-exceed that over a long range. Then the whole read fails with `invalid_data`, and
-History and usage cannot load for that range. Choose a shorter range or stop
-monitoring that device.
+request, and for every other device in a request of its own. Three limits apply
+to one history read:
+
+- One answer can be at most 16 MiB.
+- All answers of the read together can be at most 64 MiB.
+- The whole read must finish within 8 seconds.
+
+A device that changes very often, such as a busy power sensor, can exceed the
+size limits over a long range. Then the whole read fails with `invalid_data`. A
+read that takes longer than 8 seconds fails with `timeout`. In both cases History
+and usage cannot load for that range. Choose a shorter range, or stop monitoring
+the busy device.
 
 ## Use your own Home Assistant
 
@@ -244,7 +252,10 @@ Docker reports the placeholder path `/nonexistent/set-HOME_KEEPER_HA_CONTROL_TOK
 
 Open <http://127.0.0.1:8000>. The header identifies Home Assistant mode. Discovery
 shows supported devices by default, using their device names, under **Lights**,
-**Plugs and switches** and **Other**. Room groups, people, settings and other
+**Plugs and switches**, **Other on/off** and **Other**. An on/off or other device
+that has its own entity name adds it to the device name, such as
+"Front door · Door", on **Setup** and on its **Home** card, so two entities of
+one device are told apart. Room groups, people, settings and other
 entities stay in the collapsed **Show other entities** section on the **Setup**
 tab. Type in **Search devices** to show only entities whose name or device name
 contains the text, in every section. Clear the search to see the full list again.
@@ -259,12 +270,20 @@ The catalog marks each entity with its `device_kind`:
   group. Integrations also expose settings as switches, such as a plug's child
   lock or LED indicator. Home Assistant gives those an entity category of
   `config` or `diagnostic`, so they are left out.
+- `on_off`: another device that is only on or off: a fan (`fan.*`), a binary
+  sensor such as a door, motion or moisture sensor (`binary_sensor.*`), a siren,
+  a humidifier or a remote. Home Keeper shows its state in Home Assistant's own
+  words, such as "Open" for a door sensor that is on, with a plug's strip and
+  usage numbers. It cannot switch it.
 - `state`: any other device, such as a thermostat (`climate.*`), a cover or a
   text sensor. Home Keeper shows its state, in Home Assistant's own words, and
   its history of changes. It cannot switch it, and it has no usage numbers.
 
-An entity of any other domain is a `state` device when Home Assistant's
-registry shows that it is a device the household uses: it is enabled, belongs to
+A device monitored as `state` before Home Keeper knew its domain as `on_off`
+becomes an `on_off` device at the next catalog read, without selecting it again.
+
+An entity of any other domain is an `on_off` or `state` device when Home
+Assistant's registry shows that it is a device the household uses: it is enabled, belongs to
 a device, has no entity category, is not hidden and is not a group. People
 (`person.*`) and trackers (`device_tracker.*`) are never monitored.
 
@@ -292,8 +311,9 @@ The dashboard gives the reason for each entity it cannot monitor:
 
 For a plug or switch, Home Keeper shows its on/off state and availability only,
 with no light attributes. With the `control` profile it can switch it
-on or off. For a `state` device it keeps the state text, at most 255 characters,
-and no attributes.
+on or off. For an `on_off` device it keeps the on/off state and availability, and
+no attributes. For a `state` device it keeps the state text, at most 255
+characters, and no attributes.
 
 A candidate with no state yet is not a group. If the state read fails or returns
 malformed data, discovery fails rather than guessing, and the next read tries

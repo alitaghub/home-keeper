@@ -57,12 +57,14 @@ so one busy device cannot fill the answer for the others.
 [History retention](home-assistant.md#history-retention) gives the size limit.
 A change is two consecutive history rows whose state, availability, brightness or
 color differ. Each row says the change in words, such as "Desk lamp turned on at
-40%", at Home Assistant's time. A change of any other device shows Home
-Assistant's words for the old and new state, such as "Thermostat Heat → Off". Its **Details** show the source entity, the stable
+40%", at Home Assistant's time. A change of any other device, on/off devices
+included, shows Home Assistant's words for the old and new state, such as
+"Thermostat Heat → Off" or "Front door Closed → Open". Its **Details** show the source entity, the stable
 registry identity, the old and new values and that time.
 
-The reader keeps only approved light fields. For a plug or switch it keeps only
-the on/off state and availability, so a plug that reports a brightness never shows
+The reader keeps only approved light fields. For a plug, switch or other on/off
+device, such as a fan or a door sensor, it keeps only the on/off state and
+availability, so a plug that reports a brightness never shows
 one. For any other device it keeps only the state text, at most 255 characters,
 and availability. It drops unrelated attributes, account identifiers and raw logs.
 Every reading also carries a `label`, Home Assistant's translated word for the
@@ -89,12 +91,20 @@ nothing happened.
 
 ## Usage numbers
 
-The read-only `GET /api/usage` endpoint reports, per monitored light, plug or
-switch, how long it was on and how often it was switched on, split by local day
-and local hour of day. Other devices, which report a state but no on or off,
-have no entry. Each entry in `devices` names its `device_kind`. A light
-also carries its average brightness while on; a plug or switch has no
-brightness field. The endpoint needs timezone-aware `start` and `end`
+The read-only `GET /api/usage` endpoint reports, per monitored light, plug,
+switch or other on/off device, how long it was on and how often it was switched
+on, split by local day and local hour of day. Devices of kind `state`, which
+report a state but no on or off, have no entry. Each entry in `devices` names
+its `device_kind`. A light also carries its average brightness while on; a plug
+or switch has no brightness field.
+
+An `on_off` device, such as a fan or a door sensor, gets a plug's numbers, with
+no brightness, and two more fields: `on_label` and `off_label`, Home Assistant's
+words for its on and off, such as "Open" and "Closed" for a door. The dashboard
+and the agent use them: a door sensor's card reads "Open 3h 12m", not "on". The
+words come from Home Assistant's translations for the device, by its device
+class first, then its domain's own, even for a state the range never shows. A
+device Home Assistant does not translate has the raw words `on` and `off`. The endpoint needs timezone-aware `start` and `end`
 timestamps. Repeat `entity_id` to limit the report to some devices; without it,
 the report covers every monitored device. Devices that are not monitored are left
 out.

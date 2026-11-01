@@ -143,3 +143,45 @@ describe("catalog on the Setup tab", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("catalog groups of on/off devices", () => {
+  it("lists them under Other on/off, between Plugs and switches and Other, named by device and entity", () => {
+    const { frontDoor, thermostat } = fixtures;
+    render(
+      <Catalog
+        entities={[
+          thermostat,
+          { ...frontDoor, id: "binary_sensor.front_door_tamper", name: "Tamper" },
+          frontDoor,
+          smartPlug,
+          desk,
+          ungroupedSensor,
+        ]}
+        homeAssistantUrl={null}
+        selected={[]}
+        onToggle={() => {}}
+      />,
+    );
+
+    const heading = (name: string) => screen.getByRole("heading", { name });
+    const follows = (before: Node, after: Node) =>
+      Boolean(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(heading("Plugs and switches"), heading("Other on/off"))).toBe(true);
+    expect(follows(heading("Other on/off"), heading("Other"))).toBe(true);
+    // The door's own entity and a second entity of the same device are told apart.
+    expect(screen.getByRole("button", { name: "Monitor Front door · Door" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Monitor Front door · Tamper" })).toBeInTheDocument();
+    expect(
+      follows(
+        heading("Other on/off"),
+        screen.getByRole("button", { name: "Monitor Front door · Tamper" }),
+      ),
+    ).toBe(true);
+    expect(
+      follows(
+        screen.getByRole("button", { name: "Monitor Front door · Tamper" }),
+        heading("Other"),
+      ),
+    ).toBe(true);
+  });
+});
