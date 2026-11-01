@@ -1,7 +1,9 @@
 import { ChevronDown } from "lucide-react";
+import { useState } from "react";
 import type { Schemas } from "../api/client";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 
 type Entity = Schemas["Entity"];
 
@@ -9,6 +11,22 @@ export const lightName = (entity: Pick<Entity, "device_name" | "name">) =>
   entity.device_name || entity.name;
 
 const UNGROUPED = "__ungrouped";
+
+// A supported entity without a kind counts as a light, as the API does.
+const KINDS = [
+  { heading: "Lights", has: (entity: Entity) => entity.device_kind !== "switch" },
+  { heading: "Plugs and switches", has: (entity: Entity) => entity.device_kind === "switch" },
+];
+
+// Case-insensitive substring match on the entity's or its device's name.
+function matches(entity: Entity, query: string) {
+  const needle = query.trim().toLocaleLowerCase();
+  return (
+    !needle ||
+    entity.name.toLocaleLowerCase().includes(needle) ||
+    (entity.device_name?.toLocaleLowerCase().includes(needle) ?? false)
+  );
+}
 
 function groupByDevice(entities: Entity[]) {
   const groups = new Map<string, Entity[]>();
@@ -30,13 +48,28 @@ export function Catalog({
   selected: string[];
   onToggle: (id: string, selected: boolean) => void;
 }) {
-  const lights = entities?.filter((entity) => entity.supported) ?? [];
-  const others = entities?.filter((entity) => !entity.supported) ?? [];
+  const [query, setQuery] = useState("");
+  const supported = entities?.filter((entity) => entity.supported) ?? [];
+  const found = entities?.filter((entity) => matches(entity, query)) ?? [];
+  const others = found.filter((entity) => !entity.supported);
+  const kinds = KINDS.map(({ heading, has }) => ({
+    heading,
+    entities: found.filter((entity) => entity.supported && has(entity)),
+  })).filter((group) => group.entities.length);
   return (
     <>
-      <div id="catalog" className="grid gap-2 sm:grid-cols-2">
-        {entities && !lights.length && (
-          <p className="col-span-full text-sm text-muted-foreground">
+      {!!entities?.length && (
+        <Input
+          type="search"
+          aria-label="Search devices"
+          placeholder="Search devices"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      )}
+      <div id="catalog" className="grid gap-4">
+        {entities && !supported.length && (
+          <p className="text-sm text-muted-foreground">
             {homeAssistantUrl ? (
               <>
                 No supported devices yet.{" "}
@@ -59,28 +92,40 @@ export function Catalog({
             )}
           </p>
         )}
-        {lights.map((entity) => {
-          const name = lightName(entity);
-          const checked = selected.includes(entity.id);
-          const action = checked ? "Stop monitoring" : "Monitor";
-          return (
-            <div
-              key={entity.id}
-              className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
-            >
-              <strong className="min-w-0 text-sm font-medium break-words">{name}</strong>
-              <Button
-                type="button"
-                size="sm"
-                variant={checked ? "outline" : "default"}
-                aria-label={`${action} ${name}`}
-                onClick={() => onToggle(entity.id, !checked)}
-              >
-                {action}
-              </Button>
+        {!!query.trim() && !kinds.length && (
+          <p className="text-sm text-muted-foreground">
+            {found.length ? "No supported devices match" : "No devices match"} “{query.trim()}”.
+          </p>
+        )}
+        {kinds.map((group) => (
+          <section key={group.heading} className="grid gap-2">
+            <h4 className="text-sm font-semibold">{group.heading}</h4>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {group.entities.map((entity) => {
+                const name = lightName(entity);
+                const checked = selected.includes(entity.id);
+                const action = checked ? "Stop monitoring" : "Monitor";
+                return (
+                  <div
+                    key={entity.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+                  >
+                    <strong className="min-w-0 text-sm font-medium break-words">{name}</strong>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={checked ? "outline" : "default"}
+                      aria-label={`${action} ${name}`}
+                      onClick={() => onToggle(entity.id, !checked)}
+                    >
+                      {action}
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </section>
+        ))}
       </div>
       <details id="other-entities" className="group" hidden={!others.length}>
         <summary

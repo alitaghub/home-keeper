@@ -93,7 +93,8 @@ your questions and replies.
    opens that device's last 24 hours, 7 days or 30 days, with its totals and its
    on-time per day and per hour of day.
    **History** lists commands and changes in plain words, with the details behind
-   **Details**. **Setup** chooses which devices to monitor.
+   **Details**. **Setup** chooses which devices to monitor, with a search by
+   name, for homes of up to 5000 entities.
    The dashboard follows your system's light or dark setting.
 
 [docs/architecture.md](docs/architecture.md) has the full picture, the selection
