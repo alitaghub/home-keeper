@@ -9,11 +9,11 @@ devices with a fixed command set.
 ### Seeing
 
 **Device**:
-A single thing in the home that Home Assistant exposes as one entity of a device: a light, a plug or switch, or any other device such as a thermostat or a cover. Groups, rooms, people and settings are not devices.
+A single thing in the home that Home Assistant exposes as one entity of a device: a light, a plug or switch, another on/off device such as a fan or a door sensor, or any other device such as a thermostat or a cover. Groups, rooms, people and settings are not devices.
 _Avoid_: entity (for the thing in the home), light (when other devices count too)
 
 **Device kind**:
-What a device is, which decides its shape: a light, which is on or off and can also have a brightness and color; a switch, which is only on or off (a plug is a switch); or `state`, any other device, which has only a state text in Home Assistant's words and cannot be switched.
+What a device is, which decides its shape: a light, which is on or off and can also have a brightness and color; a switch, which is only on or off (a plug is a switch); `on_off`, another device that is only on or off, such as a fan, a binary sensor, a siren, a humidifier or a remote, which has usage in Home Assistant's words for its on and off but cannot be switched; or `state`, any other device, which has only a state text in Home Assistant's words and cannot be switched.
 _Avoid_: domain, type
 
 **Monitored device**:
@@ -37,7 +37,7 @@ One state of a device as Home Assistant reports it, now or in its history, with 
 _Avoid_: sample, state update
 
 **Label**:
-Home Assistant's translated word for a reading's state, such as "Heat", else the raw state.
+Home Assistant's translated word for a reading's state, such as "Heat", or "Open" for a door sensor that is on, else the raw state.
 _Avoid_: display state, friendly state
 
 ### Control

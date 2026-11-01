@@ -17,9 +17,19 @@ const RANGES = [
 ] as const;
 type Days = (typeof RANGES)[number]["days"];
 
+/**
+ * The words for a device's on and off, capitalized and inline: Home Assistant's words for an
+ * on/off device, such as "Open" and "Closed" for a door, else plain on and off.
+ */
+function wordsOf(device: DeviceUsage) {
+  return device.device_kind === "on_off"
+    ? { On: device.on_label, Off: device.off_label, on: device.on_label, off: device.off_label }
+    : { On: "On", Off: "Off", on: "on", off: "off" };
+}
+
 /** How tall each known period draws, from 0 to 1. Off is a thin line; on is its brightness. */
 function levels(device: DeviceUsage) {
-  if (device.device_kind === "switch") {
+  if (device.device_kind !== "light") {
     return device.periods.map((period) => ({ ...period, level: period.state === "on" ? 1 : 0 }));
   }
   return device.periods.map(({ brightness, ...period }) => ({
@@ -74,7 +84,7 @@ export function UsageStrip({
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={`${caption}: on ${duration(device.on_seconds)}, unknown ${duration(device.unknown_seconds)}`}
+      aria-label={`${caption}: ${wordsOf(device).on} ${duration(device.on_seconds)}, unknown ${duration(device.unknown_seconds)}`}
     >
       <defs>
         <pattern
@@ -143,14 +153,17 @@ const totalValue = "text-lg font-semibold tabular-nums";
 const subheading = "mb-2 text-sm font-semibold";
 
 function Totals({ device }: { device: DeviceUsage }) {
+  const words = wordsOf(device);
   return (
     <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       <div className={total}>
-        <dt className={totalLabel}>On</dt>
+        <dt className={totalLabel}>{words.On}</dt>
         <dd className={totalValue}>{duration(device.on_seconds)}</dd>
       </div>
       <div className={total}>
-        <dt className={totalLabel}>Switched on</dt>
+        <dt className={totalLabel}>
+          {device.device_kind === "on_off" ? `Became ${words.On}` : "Switched on"}
+        </dt>
         <dd className={totalValue}>
           {device.switch_ons === 1 ? "1 time" : `${device.switch_ons} times`}
         </dd>
@@ -177,7 +190,7 @@ function Days({ device }: { device: DeviceUsage }) {
   return (
     <section aria-labelledby="usage-days-heading">
       <h3 id="usage-days-heading" className={subheading}>
-        On per day
+        {`${wordsOf(device).On} per day`}
       </h3>
       <ol className="grid gap-1 text-xs">
         {device.days.map((day) => (
@@ -200,10 +213,11 @@ function Days({ device }: { device: DeviceUsage }) {
 
 function Hours({ device }: { device: DeviceUsage }) {
   const most = Math.max(...device.hours);
+  const words = wordsOf(device);
   return (
     <section aria-labelledby="usage-hours-heading">
       <h3 id="usage-hours-heading" className={subheading}>
-        On by hour of day
+        {`${words.On} by hour of day`}
       </h3>
       <ol className="flex h-20 items-end gap-px rounded-md bg-muted/50 p-1">
         {device.hours
@@ -212,7 +226,7 @@ function Hours({ device }: { device: DeviceUsage }) {
             <li
               key={hour}
               title={`${String(hour).padStart(2, "0")}:00 · ${duration(seconds)}`}
-              aria-label={`${String(hour).padStart(2, "0")}:00, on ${duration(seconds)}`}
+              aria-label={`${String(hour).padStart(2, "0")}:00, ${words.on} ${duration(seconds)}`}
               className="flex h-full flex-1 items-end"
             >
               <span
@@ -345,11 +359,11 @@ export function HistoryDialog({
             <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <li className={legend}>
                 <span className={cn(swatch, "bg-status-on")} aria-hidden="true" />
-                {device.device_kind === "light" ? "On, by brightness" : "On"}
+                {device.device_kind === "light" ? "On, by brightness" : wordsOf(device).On}
               </li>
               <li className={legend}>
                 <span className={cn(swatch, "h-0.5 bg-muted-foreground")} aria-hidden="true" />
-                Off
+                {wordsOf(device).Off}
               </li>
               <li className={legend}>
                 <span
@@ -370,7 +384,7 @@ export function HistoryDialog({
             {days > 1 && <Days device={device} />}
             <Hours device={device} />
             <p className="text-xs text-muted-foreground">
-              {`Days and hours use the ${report.timezone} time zone. Unknown time counts as neither on nor off.`}
+              {`Days and hours use the ${report.timezone} time zone. Unknown time counts as neither ${wordsOf(device).on} nor ${wordsOf(device).off}.`}
             </p>
           </>
         )}

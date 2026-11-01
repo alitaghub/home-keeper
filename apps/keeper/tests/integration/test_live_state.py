@@ -14,11 +14,11 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from support.api import BROWSER, NOW, TOKEN
 from support.control import ON, FakeController, beat, command
-from support.reader import FakeReader, live
+from support.reader import FakeReader, Payload, history_row, live
 
 from home_keeper.api import create_app
 from home_keeper.models import DeviceKind, Entity
-from home_keeper.reader import ReaderError
+from home_keeper.reader import OnOffWords, ReaderError
 
 DESK = Entity(
     id="ha:desk",
@@ -289,3 +289,53 @@ def test_a_new_kind_is_kept_when_the_catalog_answers_but_the_live_state_read_fai
         home.reader.states_error = None
         home.reader.error = "connection"
         assert home.monitored()[DESK.id]["device_kind"] == "state"
+
+
+def test_a_state_device_the_catalog_now_calls_on_off_becomes_on_off_with_usage_unselected(
+    database: str,
+) -> None:
+    door = Entity(
+        id="ha:door",
+        device_id="ha:door-device",
+        device_name="Door sensor",
+        name="Front door",
+        device_kind="state",
+        supported=True,
+    )
+    with house(database) as home:
+        home.reader.entities.append(door)
+        # Monitored while Home Assistant's sort still called it a generic state device.
+        home.reader.set(door.id, "binary_sensor.front", {"device_kind": "state", "state": "on"})
+        assert home.select(door.id).is_success
+        assert home.monitored()[door.id]["device_kind"] == "state"
+
+        # The catalog now sorts it as on/off; nobody selects it again.
+        home.reader.entities = [
+            entity.model_copy(update={"device_kind": "on_off"}) if entity.id == door.id else entity
+            for entity in home.reader.entities
+        ]
+        opened: Payload = {"device_kind": "on_off", "state": "on", "label": "Open"}
+        home.reader.word_list[door.id] = OnOffWords(on="Open", off="Closed")
+        home.reader.set(door.id, "binary_sensor.front", opened)
+        home.reader.record(
+            door.id,
+            history_row("binary_sensor.front", NOW - timedelta(minutes=30), opened),
+        )
+        monitored = home.monitored()[door.id]
+        assert monitored["device_kind"] == "on_off"
+        assert monitored["state"]["device_kind"] == "on_off"
+        assert monitored["state"]["label"] == "Open"
+
+        # Usage now covers it, with Home Assistant's word for on.
+        window = {"start": (NOW - timedelta(hours=1)).isoformat(), "end": NOW.isoformat()}
+        used = {
+            device["entity_id"]: device
+            for device in home.client.get("/api/usage", params=window).json()["devices"]
+        }
+        assert used[door.id]["device_kind"] == "on_off"
+        assert used[door.id]["on_seconds"] == 1800
+        assert used[door.id]["on_label"] == "Open"
+
+        # The kind kept for when Home Assistant cannot be read is the new one.
+        home.reader.error = "connection"
+        assert home.monitored()[door.id]["device_kind"] == "on_off"

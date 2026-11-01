@@ -4,7 +4,7 @@ import type { Schemas } from "../api/client";
 import { ago, brightnessPercent, date } from "../format";
 import { cn } from "../lib/utils";
 import type { DeviceUsage, Usage } from "../useUsage";
-import { lightName } from "./Catalog";
+import { deviceName } from "./Catalog";
 import { UsageStrip } from "./History";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
@@ -25,6 +25,8 @@ function stateText(state: State | null) {
   if (state.availability !== "available") {
     return state.availability === "unavailable" ? "Unavailable" : "Unknown";
   }
+  // Home Assistant's word for an on/off device's state, such as "Open" for a door.
+  if (state.device_kind === "on_off") return state.label;
   if (state.state === "on") {
     const brightness = brightnessOf(state);
     return brightness == null ? "On" : `On · ${brightnessPercent(brightness)}%`;
@@ -201,7 +203,7 @@ function Tile({
   onHistory: (entity: Schemas["MonitoredEntity"]) => void;
   busy: boolean;
 }) {
-  const name = lightName(entity);
+  const name = deviceName(entity);
   const { state } = entity;
   // Only an available device with a known on/off state can be switched.
   const recorded = state?.availability === "available" ? state.state : null;
@@ -305,7 +307,7 @@ function OtherTile({
   entity: Schemas["MonitoredEntity"];
   onStop: (id: string) => void;
 }) {
-  const name = lightName(entity);
+  const name = deviceName(entity);
   const { state } = entity;
   return (
     <article className="min-w-0">
@@ -382,7 +384,8 @@ export function Monitored({
   /** The last day's usage, for each card's strip; null until it loads. */
   usage: Usage | null;
   onStop: (id: string) => void;
-  /** Null while control is off: no light, plug or switch gets a switch. Other devices never do. */
+  /** Null while control is off: no light, plug or switch gets a switch. Other devices, on/off
+   * ones included, never do. */
   onSwitch: Switch | null;
   onHistory: (entity: Schemas["MonitoredEntity"]) => void;
   onChooseLights: () => void;
@@ -392,20 +395,25 @@ export function Monitored({
   const all = entities ?? [];
   const empty = entities !== null && !entities.length;
   const switches = all.filter((entity) => entity.device_kind === "switch");
+  const onOffs = all.filter((entity) => entity.device_kind === "on_off");
   const others = all.filter((entity) => entity.device_kind === "state");
   // A device without a kind counts as a light, as the API does.
   const lights = all.filter(
-    (entity) => entity.device_kind !== "switch" && entity.device_kind !== "state",
+    (entity) =>
+      entity.device_kind !== "switch" &&
+      entity.device_kind !== "on_off" &&
+      entity.device_kind !== "state",
   );
   const devices = new Map(usage?.devices.map((device) => [device.entity_id, device]));
   const recent = (id: string): Recent | null => usage && { range: usage, device: devices.get(id) };
+  // An on/off device, such as a fan or a door sensor, has a plug's card without a switch.
   const tile = (entity: Schemas["MonitoredEntity"]) => (
     <Tile
       key={entity.id}
       entity={entity}
       recent={recent(entity.id)}
       onStop={onStop}
-      onSwitch={onSwitch}
+      onSwitch={entity.device_kind === "on_off" ? null : onSwitch}
       onHistory={onHistory}
       busy={sending.has(entity.id)}
     />
@@ -442,6 +450,9 @@ export function Monitored({
         gridId="monitored-switches"
       >
         {switches.map(tile)}
+      </Section>
+      <Section heading="Other on/off" headingId="onoff-heading" gridId="monitored-onoff">
+        {onOffs.map(tile)}
       </Section>
       <Section heading="Other" headingId="other-heading" gridId="monitored-other">
         {others.map((entity) => (

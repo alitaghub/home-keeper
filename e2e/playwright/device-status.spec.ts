@@ -86,3 +86,30 @@ test("the usage strip's track, on, off and unavailable spans each look different
     expect(new Set(Object.values(fills)).size, `${colorScheme}: ${JSON.stringify(fills)}`).toBe(4);
   }
 });
+
+test("a monitored door sensor shows under Other on/off with a strip and no command buttons", async ({
+  page,
+}) => {
+  const door = fixtures.monitoredOnOff(fixtures.frontDoor, "on", "Open");
+  await page.route("**/api/monitored", (route) => route.fulfill({ json: { entities: [door] } }));
+  await page.route("**/api/usage**", (route) => route.fulfill({ json: fixtures.doorUsage }));
+  // Control on, so a light or plug would show its switch.
+  await page.route("**/api/control", (route) => route.fulfill({ json: fixtures.controlOn }));
+
+  await page.goto("/");
+
+  const section = page.locator("section", {
+    has: page.getByRole("heading", { level: 2, name: "Other on/off" }),
+  });
+  const card = section.locator("#monitored-onoff article", { hasText: "Front door · Door" });
+  await expect(card).toBeVisible();
+  await expect(card.getByText("Open").first()).toBeVisible();
+  await expect(card.getByRole("img", { name: /^Last 24 hours/ })).toBeVisible();
+  await expect(
+    card.getByRole("button", { name: "Usage history of Front door · Door" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Turn (on|off)/ })).toHaveCount(0);
+  await expect(page.getByRole("slider")).toHaveCount(0);
+  // It is not a light or a plug.
+  await expect(page.locator("#monitored article")).toHaveCount(0);
+});

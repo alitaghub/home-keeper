@@ -66,6 +66,7 @@ class Device:
 LIGHT = Device("bulb-a", "light.desk", "light", "light")
 PLUG = Device("plug-a", "switch.kettle", "switch", "device")
 THERMOSTAT = Device("state-a", "climate.hall", "state", "device")
+DOOR = Device("door-a", "binary_sensor.front_door", "on_off", "device")
 OTHER_LIGHT = Device("bulb-b", "light.other", "light", "light")
 DEVICES = [pytest.param(LIGHT, id="light"), pytest.param(PLUG, id="plug")]
 
@@ -534,6 +535,39 @@ async def test_a_command_for_a_state_device_is_refused_before_every_other_check_
     result = await switch(house, THERMOSTAT, action)
 
     assert result == Refusal("not_supported", "This device cannot be switched.")
+    assert house.controller.sent == []
+    assert house.audit() == []
+
+
+@pytest.mark.parametrize("reported", [IS_ON, IS_OFF, IS_UNAVAILABLE, None], ids=str)
+@pytest.mark.parametrize("selected_as", ["state", "on_off", None])
+async def test_a_command_for_an_on_off_device_is_not_supported_whatever_its_state_and_sends_nothing(
+    store: Store, *, reported: Payload | None, selected_as: DeviceKind | None
+) -> None:
+    house = home(store)
+    # The catalog calls the device on/off now, whatever it was monitored as.
+    house.reader.entities.append(
+        Entity(
+            id=DOOR.entity_id,
+            device_id="device-d",
+            name="Front door",
+            device_kind="on_off",
+            supported=True,
+        )
+    )
+    if selected_as:
+        house.select(replace(DOOR, kind=selected_as))
+    if reported is not None:
+        house.report(DOOR, reported)
+    assert house.commands.heartbeat(NOW)
+
+    result = await switch(house, DOOR, ON)
+
+    assert result == (
+        Refusal("not_supported", "This device cannot be switched.")
+        if selected_as
+        else Refusal("not_monitored", "Monitor this device before switching it")
+    )
     assert house.controller.sent == []
     assert house.audit() == []
 

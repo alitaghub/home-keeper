@@ -15,6 +15,7 @@ from agent_support import (
     command_response,
     control_response,
     lights_response,
+    on_off_device_response,
     snapshot,
     state_device_response,
     switch_response,
@@ -782,4 +783,23 @@ def test_a_command_for_a_state_device_is_refused_before_any_approval_and_sends_n
     result = tool_result(agent.get_state(config))
     assert "cannot be switched" in result
     assert "control is off" not in result
+    assert command_requests(keeper) == []
+
+
+@pytest.mark.parametrize("name", ["turn_on", "turn_off"])
+def test_a_command_for_an_on_off_device_ends_with_the_refusal_and_asks_nothing(
+    name: str,
+) -> None:
+    keeper = FakeKeeper(
+        {
+            "/api/monitored": on_off_device_response("on", "Open"),
+            "/api/control": control_response("on"),
+        }
+    )
+    call: ToolCall = {"name": name, "args": {"entity_id": "door-a"}, "id": "call-door"}
+    agent, config = agent_after_light_call(keeper, call)
+
+    # The agent refuses before it asks for approval and before it sends the keeper a command.
+    assert not agent.get_state(config).interrupts
+    assert "cannot be switched" in tool_result(agent.get_state(config))
     assert command_requests(keeper) == []

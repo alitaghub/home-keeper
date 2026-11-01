@@ -38,6 +38,7 @@ from support.reader import FakeReader, history_row
 
 from home_keeper.api import create_app
 from home_keeper.models import Entity
+from home_keeper.reader import OnOffWords
 
 SNAPSHOTS = Path(__file__).parent / "snapshots" / "api"
 UPDATE = os.environ.get("UPDATE_SNAPSHOTS") == "1"
@@ -307,13 +308,79 @@ def state_device_responses(database: str) -> dict[str, Recorded]:
         result["state_events"] = record(client.get("/api/events"))
         usage = client.get("/api/usage", params=usage_range(NOW - timedelta(minutes=1), clock[0]))
         result["state_usage"] = record(usage)
-        # Usage covers lights, plugs and switches only.
+        # A device of kind `state` has no usage entry.
         assert usage.json()["devices"] == []
 
         beat(client, clock[0])
         result["error_state_command"] = record(command(client, ON, entity="thermostat"))
         assert result["error_state_command"]["status"] == 409
         assert result["error_state_command"]["body"]["detail"]["code"] == "not_supported"
+        assert controller.sent == []
+    return result
+
+
+DOOR: Payload = {
+    "id": "door",
+    "device_id": "device-d",
+    "device_name": "Door sensor",
+    "name": "Front door",
+    "device_kind": "on_off",
+    "supported": True,
+    "reason": None,
+}
+
+
+def door_reading(state: str) -> Payload:
+    words = {"on": "Open", "off": "Closed"}
+    return {"device_kind": "on_off", "state": state, "label": words[state]}
+
+
+def on_off_device_responses(database: str) -> dict[str, Recorded]:
+    """An on/off device (a door sensor) through every route it touches."""
+    clock = [NOW]
+    controller = FakeController(clock)
+    reader = FakeReader([Entity.model_validate(DOOR)])
+    reader.word_list["door"] = OnOffWords(on="Open", off="Closed")
+    app = create_app(
+        database,
+        TOKEN,
+        now=lambda: clock[0],
+        reader=reader,
+        controller=controller,
+        command_wait_seconds=2,
+        control_stale_seconds=15,
+    )
+    result: dict[str, Recorded] = {}
+    with TestClient(app) as client:
+        selected = client.put("/api/selection/door", json={"selected": True}, headers=BROWSER)
+        assert selected.is_success, selected.text
+        for seconds, state in ((50, "off"), (30, "on"), (10, "off")):
+            reader.record(
+                "door",
+                history_row(
+                    "binary_sensor.front", NOW - timedelta(seconds=seconds), door_reading(state)
+                ),
+            )
+        reader.set("door", "binary_sensor.front", door_reading("off"))
+
+        clock[0] = NOW + timedelta(seconds=10)
+        result["on_off_catalog"] = record(client.get("/api/catalog"))
+        result["on_off_monitored"] = record(client.get("/api/monitored"))
+        result["on_off_events"] = record(client.get("/api/events"))
+        usage = client.get("/api/usage", params=usage_range(NOW - timedelta(minutes=1), clock[0]))
+        result["on_off_usage"] = record(usage)
+        # Usage covers on/off devices with the switch numbers, the translated words and no
+        # brightness.
+        [door] = usage.json()["devices"]
+        assert door["device_kind"] == "on_off"
+        assert (door["on_label"], door["off_label"]) == ("Open", "Closed")
+        assert door["on_seconds"] == 20
+        assert "average_brightness" not in door
+
+        beat(client, clock[0])
+        result["error_on_off_command"] = record(command(client, ON, entity="door"))
+        assert result["error_on_off_command"]["status"] == 409
+        assert result["error_on_off_command"]["body"]["detail"]["code"] == "not_supported"
         assert controller.sent == []
     return result
 
@@ -330,6 +397,7 @@ def responses(make_database: Callable[[], str]) -> dict[str, Recorded]:
         | unreachable_responses(make_database())
         | control_responses(make_database())
         | state_device_responses(make_database())
+        | on_off_device_responses(make_database())
     )
 
 

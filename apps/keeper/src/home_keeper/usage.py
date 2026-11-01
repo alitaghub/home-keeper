@@ -1,5 +1,5 @@
-"""How long selected lights, plugs and switches were on, from Home Assistant's history. Other
-devices have no on-time.
+"""How long selected lights, plugs, switches and other on/off devices were on, from Home
+Assistant's history. Devices of kind `state` have no on-time.
 
 Time the history cannot vouch for is unknown, never on or off.
 """
@@ -17,13 +17,14 @@ from home_keeper.models import (
     LightPeriod,
     LightReading,
     LightUsage,
-    SwitchableKind,
+    OnOffUsage,
     SwitchPeriod,
     SwitchUsage,
     UnknownInterval,
     UnknownReason,
+    UsageKind,
 )
-from home_keeper.reader import HistoryRow
+from home_keeper.reader import RAW_WORDS, HistoryRow, OnOffWords
 
 
 @dataclass(frozen=True)
@@ -91,18 +92,21 @@ def local_dates(start: datetime, end: datetime, timezone: ZoneInfo) -> list[date
 
 def device_usage(
     entity_id: str,
-    device_kind: SwitchableKind,
+    device_kind: UsageKind,
     *,
     start: datetime,
     end: datetime,
     now: datetime,
     timezone: ZoneInfo,
     rows: Sequence[HistoryRow],
+    words: OnOffWords = RAW_WORDS,
 ) -> DeviceUsage:
     """Usage of one device from its Home Assistant history rows, oldest first. The first row
     may be the state at `start`.
 
-    Plugs and switches get the same numbers as lights, without brightness."""
+    Plugs, switches and other on/off devices get the same numbers as lights, without
+    brightness. An on/off device also carries `words`, Home Assistant's words for its on and
+    off."""
     evidence = sorted((row_evidence(row) for row in rows), key=lambda item: item.at)
     moments = [item.at for item in evidence]
 
@@ -181,6 +185,9 @@ def device_usage(
         DayUsage(date=day.isoformat(), on_seconds=on, unknown_seconds=unknown)
         for day, (on, unknown) in days.items()
     ]
+    switch_periods = [
+        SwitchPeriod(start=period.start, end=period.end, state=period.state) for period in periods
+    ]
     if device_kind == "switch":
         return SwitchUsage(
             device_kind="switch",
@@ -191,10 +198,21 @@ def device_usage(
             days=day_usage,
             hours=hours,
             unknown_intervals=unknown_intervals,
-            periods=[
-                SwitchPeriod(start=period.start, end=period.end, state=period.state)
-                for period in periods
-            ],
+            periods=switch_periods,
+        )
+    if device_kind == "on_off":
+        return OnOffUsage(
+            device_kind="on_off",
+            entity_id=entity_id,
+            on_seconds=on_seconds,
+            unknown_seconds=unknown_seconds,
+            switch_ons=switch_ons,
+            days=day_usage,
+            hours=hours,
+            unknown_intervals=unknown_intervals,
+            periods=switch_periods,
+            on_label=words.on,
+            off_label=words.off,
         )
     return LightUsage(
         device_kind="light",

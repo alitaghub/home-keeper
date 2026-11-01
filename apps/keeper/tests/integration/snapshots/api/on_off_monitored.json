@@ -1,0 +1,26 @@
+{
+  "status": 200,
+  "body": {
+    "entities": [
+      {
+        "device_id": "device-d",
+        "device_kind": "on_off",
+        "device_name": "Door sensor",
+        "id": "door",
+        "missing": false,
+        "name": "Front door",
+        "reason": null,
+        "source_entity_id": "binary_sensor.front",
+        "state": {
+          "availability": "available",
+          "device_kind": "on_off",
+          "label": "Closed",
+          "last_changed": "2026-10-12T09:00:00+00:00",
+          "last_updated": "2026-10-12T09:00:00+00:00",
+          "state": "off"
+        },
+        "supported": true
+      }
+    ]
+  }
+}

@@ -172,6 +172,20 @@ def state_device_response(
     return status, body
 
 
+def on_off_device_response(
+    state: str = "on", label: str = "Open", *, entity_id: str = "door-a"
+) -> tuple[int, object]:
+    """A /api/monitored response with one monitored door sensor, an `on_off` device, in `state`,
+    which Home Assistant words as `label`. The reading has no light attributes."""
+    status, recorded = lights_response("on", entity_id=entity_id)
+    body: dict[str, Any] = json.loads(json.dumps(recorded))
+    [device] = body["entities"]
+    device["device_kind"] = "on_off"
+    reading = {key: value for key, value in device["state"].items() if key not in LIGHT_ATTRIBUTES}
+    device["state"] = reading | {"device_kind": "on_off", "state": state, "label": label}
+    return status, body
+
+
 def control_response(state: str) -> tuple[int, object]:
     return snapshot(f"control_{state}")
 

@@ -9,9 +9,12 @@ from pathlib import Path
 import httpx
 import pytest
 from support.home_assistant import (
+    FakeClock,
     FakeSocket,
     Frame,
+    ProtocolSocket,
     StateServer,
+    Utf8Socket,
     entity_state,
     hue_room,
     install_socket,
@@ -21,9 +24,13 @@ from support.home_assistant import (
     registry_entry,
     use_transport,
 )
+from websockets.client import ClientProtocol
+from websockets.protocol import OPEN
+from websockets.uri import parse_uri
 
 from home_keeper.home_assistant import (
     HISTORY_MAX_PAYLOAD,
+    HISTORY_MAX_TOTAL,
     MAX_PAYLOAD,
     STATES_MAX_PAYLOAD,
     ConnectorError,
@@ -62,6 +69,8 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
         translations: dict[str, str] | None = None,
         failing: Iterable[str] = (),
         silent: Iterable[str] = (),
+        delays: dict[str, float] | None = None,
+        clock: FakeClock | None = None,
     ) -> FakeSocket:
         socket = FakeSocket(
             entities,
@@ -71,6 +80,8 @@ def connector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Conne
             translations=translations,
             failing=failing,
             silent=silent,
+            delays=delays,
+            clock=clock,
         )
         install_socket(monkeypatch, socket)
         server.states = {state["entity_id"]: state for state in states}
@@ -924,9 +935,12 @@ def test_history_of_a_state_device_is_read_without_attributes_and_a_light_keeps_
 
 
 def test_busy_sensors_each_get_their_history_and_the_light_keeps_its_attributes(
-    connector: Connector,
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, install, _ = connector
+    # Parsing tens of MiB takes real time, more under coverage; only simulated time counts
+    # against the history deadline.
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
     start = datetime(2026, 10, 13, tzinfo=UTC)
     end = start + timedelta(days=1)
     rows = 43_000
@@ -1001,3 +1015,324 @@ def test_discovery_gives_up_on_unanswered_language_and_translation_reads_within_
         "heat",
         "on",
     ]
+
+
+ON_OFF_DOMAINS = ["fan", "binary_sensor", "siren", "humidifier", "remote"]
+
+
+@pytest.mark.parametrize("domain", ON_OFF_DOMAINS)
+def test_a_fan_sensor_siren_humidifier_or_remote_on_a_device_is_a_supported_on_off_device(
+    connector: Connector, domain: str
+) -> None:
+    client, install, _ = connector
+    demo = {"platform": "demo", "translation_key": None}
+    install(
+        [
+            registry_entry("ok", f"{domain}.hall", **demo),
+            registry_entry("config", f"{domain}.setting", entity_category="config", **demo),
+            registry_entry("hidden", f"{domain}.spare", hidden_by="user", **demo),
+            registry_entry("loose", f"{domain}.loose", device_id=None, **demo),
+            registry_entry("disabled", f"{domain}.off", disabled_by="user", **demo),
+            registry_entry("helper", f"{domain}.helper", platform="group"),
+            registry_entry("members", f"{domain}.zones", **demo),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        states=[
+            entity_state(f"{domain}.hall", "on"),
+            entity_state(f"{domain}.zones", "on", entity_id=[f"{domain}.hall"]),
+        ],
+    )
+
+    catalog = client.discover()
+
+    by_id = {entity.id: entity for entity in catalog.entities}
+    # The registry rule is the one of state devices.
+    assert {key: (entity.supported, entity.reason) for key, entity in by_id.items()} == {
+        "ha:ok": (True, None),
+        "ha:config": (False, CATEGORY),
+        "ha:hidden": (False, HIDDEN),
+        "ha:loose": (False, NO_DEVICE_ENTITY),
+        "ha:disabled": (False, DISABLED),
+        "ha:helper": (False, GROUP),
+        "ha:members": (False, GROUP),
+    }
+    # The kind is set on unsupported entities of the domain too.
+    assert {entity.model_dump()["device_kind"] for entity in by_id.values()} == {"on_off"}
+
+
+DOOR_TRANSLATIONS = {
+    "component.binary_sensor.entity_component.door.state.on": "Open",
+    "component.binary_sensor.entity_component.door.state.off": "Closed",
+    "component.binary_sensor.entity_component._.state.on": "Detected",
+    "component.fan.entity_component._.state.on": "On",
+}
+
+
+def test_an_on_off_reading_has_no_attributes_and_is_labeled_by_its_device_class(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    demo = {"platform": "demo", "translation_key": None}
+    install(
+        [
+            registry_entry("door", "binary_sensor.front", **demo),
+            registry_entry("fan", "fan.ceiling", **demo),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        [
+            entity_state(
+                "binary_sensor.front", "on", device_class="door", secret="PRIVATE_SENTINEL"
+            ),
+            entity_state("binary_sensor.back", "off", device_class="door"),
+            entity_state("fan.ceiling", "on", percentage=50, preset_mode="PRIVATE_SENTINEL"),
+        ],
+        translations=DOOR_TRANSLATIONS,
+    )
+    client.discover()
+
+    readings = client.read_states(["binary_sensor.front", "fan.ceiling"])
+
+    door, fan = readings["binary_sensor.front"], readings["fan.ceiling"]
+    assert door is not None
+    assert fan is not None
+    for reading in (door, fan):
+        encoded = reading.model_dump(exclude_none=True)
+        assert encoded["device_kind"] == "on_off"
+        assert encoded["state"] == "on"
+        assert encoded["availability"] == "available"
+        assert set(encoded) <= {
+            "device_kind",
+            "state",
+            "availability",
+            "label",
+            "last_changed",
+            "last_updated",
+            "last_reported",
+        }
+        assert "PRIVATE_SENTINEL" not in reading.model_dump_json()
+    assert door.model_dump()["label"] == "Open"
+    assert fan.model_dump()["label"] == "On"
+
+
+@pytest.mark.parametrize("word", ["unavailable", "unknown"])
+def test_an_on_off_device_that_reports_unavailable_or_unknown_is_not_available(
+    connector: Connector, word: str
+) -> None:
+    client, install, _ = connector
+    install([], states=[entity_state("binary_sensor.front", word)])
+
+    reading = client.read_states(["binary_sensor.front"])["binary_sensor.front"]
+
+    assert reading is not None
+    assert reading.model_dump()["device_kind"] == "on_off"
+    assert reading.model_dump()["availability"] == word
+
+
+def test_history_of_on_off_devices_is_read_one_device_per_request_without_attributes(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    end = datetime(2026, 10, 13, 10, tzinfo=UTC)
+    at = start.timestamp()
+    install(
+        [registry_entry("door", "binary_sensor.front", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Hall"}],
+        [entity_state("binary_sensor.front", "on", device_class="door")],
+        translations=DOOR_TRANSLATIONS,
+    )
+    client.discover()
+    # A fresh connection for the history read; the labels learned in discovery stay.
+    socket = install(
+        [],
+        history={
+            "binary_sensor.front": [{"s": "off", "lu": at}, {"s": "on", "lu": at + 60}],
+            "fan.ceiling": [{"s": "on", "lu": at}],
+            "light.desk": [{"s": "on", "a": {"brightness": 120}, "lu": at}],
+        },
+    )
+
+    history = client.history(["binary_sensor.front", "fan.ceiling", "light.desk"], start, end)
+
+    door = history["binary_sensor.front"]
+    assert [(row.model_dump()["state"], row.model_dump()["label"]) for row in door] == [
+        ("off", "Closed"),
+        ("on", "Open"),
+    ]
+    assert {row.model_dump()["device_kind"] for row in door + history["fan.ceiling"]} == {"on_off"}
+    assert history["light.desk"][0].model_dump()["brightness"] == 120
+    requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
+    assert sorted(r["entity_ids"] for r in requests) == [
+        ["binary_sensor.front"],
+        ["fan.ceiling"],
+        ["light.desk"],
+    ]
+    for request in requests:
+        assert request["no_attributes"] is (request["entity_ids"] != ["light.desk"])
+
+
+def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, install, _ = connector
+    clock = FakeClock()
+    monkeypatch.setattr("home_keeper.home_assistant.time", clock)
+    devices = [f"sensor.slow_{number}" for number in range(10)]
+    # Each device answers in 3 s: alone fast enough, together far too slow.
+    install(
+        [],
+        history={device: [{"s": "1", "lu": 1.0}] for device in devices},
+        delays={"history/history_during_period": 3.0},
+        clock=clock,
+    )
+    started = clock.monotonic()
+
+    with pytest.raises(ConnectorError) as error:
+        client.history(
+            devices, datetime(2026, 10, 13, 9, tzinfo=UTC), datetime(2026, 10, 13, 10, tzinfo=UTC)
+        )
+
+    assert error.value.code == "timeout"
+    assert clock.monotonic() - started <= 8
+
+
+def test_history_answers_that_together_pass_64_mib_are_invalid_data(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, install, _ = connector
+    # Parsing tens of MiB takes real time, more under coverage; only simulated time counts
+    # against the history deadline.
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
+    # About 13.5 MiB of rows per device: each answer is under the 16 MiB cap, five are over 64.
+    row = {"s": "x" * 250, "lu": 1_760_000_000.0}
+    rows = [row] * (13_500_000 // len(json.dumps(row)))
+    devices = [f"sensor.busy_{number}" for number in range(5)]
+    install([], history=dict.fromkeys(devices, rows))
+    assert len(json.dumps({"x": rows})) < HISTORY_MAX_PAYLOAD
+    assert 5 * len(json.dumps(rows)) > 64 * 1024 * 1024
+
+    with pytest.raises(ConnectorError) as error:
+        client.history(
+            devices, datetime(2026, 10, 13, tzinfo=UTC), datetime(2026, 10, 14, tzinfo=UTC)
+        )
+
+    assert error.value.code == "invalid_data"
+
+
+def test_discovery_waits_only_the_budget_for_silent_translations_when_the_language_answers(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    socket = install(
+        [registry_entry("climate", "climate.hall", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Hall"}],
+        [entity_state("climate.hall", "heat")],
+        translations=TRANSLATIONS,
+        silent=["frontend/get_translations"],
+    )
+
+    catalog = client.discover()
+
+    assert [entity.supported for entity in catalog.entities] == [True]
+    # The language read answered and the translations read was sent, then abandoned.
+    assert [
+        r["type"] for r in socket.sent if r["type"] in ("get_config", "frontend/get_translations")
+    ] == [
+        "get_config",
+        "frontend/get_translations",
+    ]
+    assert socket.waits
+    assert sum(wait for wait in socket.waits if wait is not None) <= 2
+    # Without translations the label is the raw state.
+    [reading] = client.read_states(["climate.hall"]).values()
+    assert reading is not None
+    assert reading.model_dump()["label"] == "heat"
+
+
+def note_history(count: int, character: str) -> list[Frame]:
+    """History rows of valid 250-character state text, one per second inside the day."""
+    start = datetime(2026, 10, 13, tzinfo=UTC).timestamp()
+    return [{"s": character * 249 + str(index % 2), "lu": start + index} for index in range(count)]
+
+
+DAY_START = datetime(2026, 10, 13, tzinfo=UTC)
+DAY_END = DAY_START + timedelta(days=1)
+
+
+def test_the_64_mib_history_budget_counts_utf8_bytes_not_characters(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, _ = connector
+    sources = [f"sensor.note_{number}" for number in range(5)]
+    rows = note_history(18_000, "温")
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
+    one = Utf8Socket([], history=dict.fromkeys(sources, rows))
+    install_socket(monkeypatch, one)
+    # One device alone is fine, and each answer is under the per-answer cap.
+    assert len(client.history(sources[:1], DAY_START, DAY_END)[sources[0]]) == len(rows)
+    [answer] = one.answer_bytes
+    assert answer < HISTORY_MAX_PAYLOAD
+    # Five of them are over the total in bytes (though under it counted in characters).
+    assert answer * len(sources) > HISTORY_MAX_TOTAL
+
+    install_socket(monkeypatch, Utf8Socket([], history=dict.fromkeys(sources, rows)))
+    with pytest.raises(ConnectorError) as error:
+        client.history(sources, DAY_START, DAY_END)
+
+    assert error.value.code == "invalid_data"
+
+
+def test_slow_connect_and_authentication_count_toward_the_8_second_history_deadline(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, _ = connector
+    clock = FakeClock()
+    monkeypatch.setattr("home_keeper.home_assistant.time", clock)
+    socket = FakeSocket(
+        [], history={"fan.ceiling": [{"s": "on", "lu": DAY_START.timestamp()}]}, clock=clock
+    )
+    # Each frame arrives within the 5 s receive timeout, but together they take 9 s.
+    socket.messages.clear()
+    socket.messages.extend(
+        [
+            {"slow": 4.5, "reply": {"type": "auth_required"}},
+            {"slow": 4.5, "reply": {"type": "auth_ok"}},
+        ]
+    )
+    install_socket(monkeypatch, socket)
+    started = clock.monotonic()
+
+    with pytest.raises(ConnectorError) as error:
+        client.history(["fan.ceiling"], DAY_START, DAY_END)
+
+    assert error.value.code == "timeout"
+    assert clock.monotonic() - started <= 8
+
+
+@pytest.mark.parametrize(("count", "code"), [(3, None), (65_000, "invalid_data")])
+def test_a_history_answer_over_the_message_size_limit_is_invalid_data_not_a_connection_fault(
+    connector: Connector, monkeypatch: pytest.MonkeyPatch, count: int, code: str | None
+) -> None:
+    client, _, _ = connector
+    source = "sensor.note"
+    socket = ProtocolSocket([], history={source: note_history(count, "a")})
+
+    def connect(*_args: object, **kwargs: object) -> ProtocolSocket:
+        # The adapter hands the library its per-message limit; the real parser enforces it.
+        assert kwargs["max_size"] == HISTORY_MAX_PAYLOAD
+        socket.protocol = ClientProtocol(
+            parse_uri("ws://ha.example/api/websocket"), state=OPEN, max_size=HISTORY_MAX_PAYLOAD
+        )
+        return socket
+
+    monkeypatch.setattr("home_keeper.home_assistant.connect", connect)
+    monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
+    if code is None:
+        assert len(client.history([source], DAY_START, DAY_END)[source]) == count
+        return
+    assert len(json.dumps(socket.history).encode()) > HISTORY_MAX_PAYLOAD
+
+    with pytest.raises(ConnectorError) as error:
+        client.history([source], DAY_START, DAY_END)
+
+    assert error.value.code == code

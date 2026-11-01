@@ -14,9 +14,10 @@ port when 8000 is taken, for example
 
 ## What the demo shows
 
-The demo reader serves six synthetic entities: two single lights, a room group,
-a smart plug, a garage door, and an ungrouped sensor. The two lights, the plug
-and the garage door can be selected. Nothing is monitored automatically. Click **Monitor**, and the device's
+The demo reader serves eight synthetic entities: two single lights, a room
+group, a smart plug, a garage door, a ceiling fan, a front door sensor, and an
+ungrouped sensor. All but the room group and the ungrouped sensor can be
+selected. Nothing is monitored automatically. Click **Monitor**, and the device's
 current state and a day of synthetic history appear at once: the demo reader
 generates 24 hours of history when it starts. It then plays a repeatable sequence
 of on/off, brightness, color-temperature, XY color and unavailable changes, one
@@ -24,7 +25,9 @@ step every 10 seconds, and adds each step to the history, as Home Assistant's
 recorder would. The plug follows the same steps with on, off and unavailable
 only, and shows under **Plugs and switches** on the Home tab. The garage door
 opens and closes with the same steps, shows "Open" or "Closed" under **Other**,
-and cannot be switched. Restarting the
+and cannot be switched. The ceiling fan and the front door sensor follow the
+plug's steps and show under **Other on/off** with a strip and usage: the fan as
+"On" or "Off", the door sensor as "Open" or "Closed". Neither can be switched. Restarting the
 reader starts a new synthetic day; the demo keeps its history in memory only.
 
 The script-shaped name is deliberate too. The "Reading lamp" device has an
