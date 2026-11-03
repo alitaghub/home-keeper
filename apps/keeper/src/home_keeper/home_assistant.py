@@ -41,6 +41,7 @@ from home_keeper.models import (
     DeviceState,
     Entity,
     Identity,
+    StatisticsPeriod,
     Unit,
     device_kind_of,
     statistics_period,
@@ -272,13 +273,15 @@ class HomeAssistantConnector:
 
     def statistics(
         self, profiles: Sequence[MeasurementProfile], start: datetime, end: datetime
-    ) -> dict[str, list[Bucket]]:
-        """Each measurement's statistics from `start` to `end`, oldest first, by its Home
-        Assistant entity ID, STATISTICS_BATCH measurements to a request: 5-minute buckets for a
-        range up to 24 hours, else hourly ones. An entity with no statistics has []."""
+    ) -> tuple[StatisticsPeriod, dict[str, list[Bucket]]]:
+        """The period read in, and each measurement's statistics from `start` to `end`, oldest
+        first, by its Home Assistant entity ID, STATISTICS_BATCH measurements to a request:
+        5-minute buckets for a range up to 24 hours, else hourly ones. An entity with no
+        statistics has []."""
+        period = statistics_period(start, end)
         source_entity_ids = list(_by_source(profiles))
         if not source_entity_ids:
-            return {}
+            return period, {}
         # The whole read, connecting included, ends within HISTORY_SECONDS, as a history read.
         deadline = time.monotonic() + HISTORY_SECONDS
         statistics: dict[str, list[Bucket]] = {}
@@ -292,12 +295,12 @@ class HomeAssistantConnector:
                     start_time=start.isoformat(),
                     end_time=end.isoformat(),
                     statistic_ids=list(batch),
-                    period=statistics_period(start, end),
+                    period=period,
                     types=["mean", "min", "max"],
                 )
                 # Parsed inside the session, so malformed data leaves as ConnectorError.
                 statistics |= statistics_buckets(result, batch)
-        return statistics
+        return period, statistics
 
     @contextlib.contextmanager
     def _session(

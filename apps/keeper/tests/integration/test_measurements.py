@@ -15,7 +15,7 @@ from support.reader import FakeReader, Payload, history_row, live, measuring
 from support.statistics import bucket
 
 from home_keeper.api import create_app
-from home_keeper.models import Entity
+from home_keeper.models import Entity, StatisticsPeriod
 
 POWER = Entity(
     id="power-a",
@@ -155,21 +155,13 @@ def test_a_week_of_hourly_buckets_leaves_gaps_empty_and_gives_the_exact_overall_
     assert house.reader.statistics_reads == [([POWER.id], start, end)]
 
 
-@pytest.mark.parametrize(
-    ("span", "period"),
-    [
-        (HOUR, "5minute"),
-        (DAY, "5minute"),
-        (DAY + timedelta(seconds=1), "hour"),
-        (7 * DAY, "hour"),
-        (31 * DAY, "hour"),
-    ],
-)
-def test_the_period_is_5_minutes_up_to_24_hours_and_an_hour_above(
-    database: str, span: timedelta, period: str
+@pytest.mark.parametrize("period", ["5minute", "hour"])
+def test_each_series_has_the_period_the_reader_read_its_statistics_in(
+    database: str, period: StatisticsPeriod
 ) -> None:
     with home(database) as house:
-        series = house.measurements(NOW - span, NOW)[POWER.id]
+        house.reader.statistics_period = period
+        series = house.measurements(NOW - 7 * DAY, NOW)[POWER.id]
 
     assert series["period"] == period
 

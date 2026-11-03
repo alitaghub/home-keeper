@@ -9,14 +9,16 @@ from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
-from home_keeper.models import Entity, Reading
+from home_keeper.models import Entity, Reading, StatisticsPeriod
 from home_keeper.reader import (
     RAW_WORDS,
+    DeviceHistory,
     HistoryRow,
     LiveState,
     OnOffWords,
     ReaderError,
     ReaderUnavailable,
+    Statistics,
 )
 
 if TYPE_CHECKING:
@@ -116,16 +118,14 @@ class FakeReader:
         self.history_reads: list[tuple[list[str], datetime, datetime]] = []
         # Home Assistant's words for on and off by entity ID; a device not listed has none.
         self.word_list: dict[str, OnOffWords] = {}
-        # Set to fail only the words reads, while the catalog, states and history still answer.
-        self.words_error: ReaderError | None = None
-        # The entity IDs of each `words` call, in order.
-        self.word_reads: list[list[str]] = []
         # Home Assistant's long-term statistics by entity ID, in any order.
         self.buckets: dict[str, list[Bucket]] = {}
         # The (entity IDs, start, end) of each `statistics` call, in order.
         self.statistics_reads: list[tuple[list[str], datetime, datetime]] = []
         # Set to fail only the statistics reads, while everything else still answers.
         self.statistics_error: ReaderError | None = None
+        # The period the reader says it read statistics in, whatever the range.
+        self.statistics_period: StatisticsPeriod = "hour"
 
     def health(self) -> None:
         self._check()
@@ -147,40 +147,37 @@ class FakeReader:
 
     def history(
         self, entity_ids: Sequence[str], start: datetime, end: datetime
-    ) -> dict[str, list[HistoryRow]]:
+    ) -> dict[str, DeviceHistory]:
         self.history_reads.append((list(entity_ids), start, end))
         self._check()
         return {
-            entity_id: period(self.recorded.get(entity_id, []), start, end)
+            entity_id: DeviceHistory(
+                rows=period(self.recorded.get(entity_id, []), start, end),
+                words=self.word_list.get(entity_id, RAW_WORDS),
+            )
             for entity_id in entity_ids
         }
 
-    def words(self, entity_ids: Sequence[str]) -> dict[str, OnOffWords]:
-        self.word_reads.append(list(entity_ids))
-        self._check()
-        if self.words_error is not None:
-            raise ReaderUnavailable(self.words_error)
-        return {entity_id: self.word_list.get(entity_id, RAW_WORDS) for entity_id in entity_ids}
-
-    def statistics(
-        self, entity_ids: Sequence[str], start: datetime, end: datetime
-    ) -> dict[str, list[Bucket]]:
+    def statistics(self, entity_ids: Sequence[str], start: datetime, end: datetime) -> Statistics:
         """Each device's buckets starting in `[start, end)`, oldest first; [] for none."""
         self.statistics_reads.append((list(entity_ids), start, end))
         self._check()
         if self.statistics_error is not None:
             raise ReaderUnavailable(self.statistics_error)
-        return {
-            entity_id: sorted(
-                (
-                    b
-                    for b in self.buckets.get(entity_id, [])
-                    if start <= datetime.fromisoformat(b.start) < end
-                ),
-                key=lambda b: datetime.fromisoformat(b.start),
-            )
-            for entity_id in entity_ids
-        }
+        return Statistics(
+            period=self.statistics_period,
+            buckets={
+                entity_id: sorted(
+                    (
+                        b
+                        for b in self.buckets.get(entity_id, [])
+                        if start <= datetime.fromisoformat(b.start) < end
+                    ),
+                    key=lambda b: datetime.fromisoformat(b.start),
+                )
+                for entity_id in entity_ids
+            },
+        )
 
     def record_statistics(self, entity_id: str, *buckets: Bucket) -> None:
         """The device has these long-term statistics buckets."""

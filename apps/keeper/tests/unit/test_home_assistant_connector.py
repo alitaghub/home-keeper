@@ -1519,10 +1519,11 @@ def test_statistics_ask_for_mean_min_and_max_in_5_minute_buckets_up_to_24_hours_
     end = datetime(2026, 10, 13, 10, tzinfo=UTC)
     socket = install([])
 
-    client.statistics(measurements("sensor.power", "number.level"), end - span, end)
+    read, _ = client.statistics(measurements("sensor.power", "number.level"), end - span, end)
 
     [request] = [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
-    assert request["period"] == period
+    # The period it reports is the one it asked Home Assistant for.
+    assert request["period"] == read == period
     assert request["statistic_ids"] == ["sensor.power", "number.level"]
     assert sorted(request["types"]) == ["max", "mean", "min"]
     assert datetime.fromisoformat(request["start_time"]) == end - span
@@ -1546,7 +1547,7 @@ def test_statistics_parse_each_bucket_oldest_first_and_give_a_device_without_any
         },
     )
 
-    result = client.statistics(measurements("sensor.power", "sensor.quiet"), start, end)
+    _, result = client.statistics(measurements("sensor.power", "sensor.quiet"), start, end)
 
     assert list(result) == ["sensor.power", "sensor.quiet"]
     assert [
@@ -1664,7 +1665,7 @@ def test_statistics_home_assistant_refuses_are_invalid_data_and_a_bad_id_sends_n
     with pytest.raises(ConnectorError) as malformed:
         client.statistics(measurements("../services/light"), start, start + timedelta(hours=2))
     assert malformed.value.code == "configuration"
-    assert client.statistics(measurements(), start, start + timedelta(hours=2)) == {}
+    assert client.statistics(measurements(), start, start + timedelta(hours=2)) == ("5minute", {})
     assert not [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
 
 
@@ -1706,7 +1707,7 @@ def test_120_measurements_are_read_in_statistics_requests_of_50_50_and_20_and_me
         },
     )
 
-    result = client.statistics(measurements(*meters), start, end)
+    _, result = client.statistics(measurements(*meters), start, end)
 
     requests = [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
     assert [len(r["statistic_ids"]) for r in requests] == [50, 50, 20]
