@@ -1,5 +1,7 @@
 """Normalizing raw Home Assistant light state into the keeper's light model."""
 
+from support.home_assistant import profile
+
 from home_keeper.events import device_state
 from home_keeper.models import LightState
 
@@ -20,7 +22,7 @@ def test_raw_fields_never_leave_normalizer() -> None:
             },
             "context": {"user_id": "private-account"},
         },
-        "light.bulb",
+        profile("light.bulb"),
     )
     assert isinstance(state, LightState)
     assert state.brightness == 42

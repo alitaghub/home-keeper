@@ -56,8 +56,9 @@ def test_actual_websocket_discovery_and_rest_state_read(tmp_path: Path) -> None:
             f"http://127.0.0.1:{server.socket.getsockname()[1]}", token
         )
         try:
-            assert connector.discover().entities[0].supported
-            state = connector.read_states(["light.bulb"])["light.bulb"]
+            found = connector.discover()
+            assert found.entities[0].supported
+            state = connector.read_states(list(found.profiles.values()))["light.bulb"]
             assert state is not None
             assert state.state == "off"
         finally:

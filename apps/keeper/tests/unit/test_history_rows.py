@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+from support.home_assistant import profile
+
 from home_keeper.home_assistant import history_state
 from home_keeper.models import LightState
 
@@ -40,7 +42,7 @@ def at(timestamp: float) -> datetime:
 
 
 def test_recorded_rows_without_last_changed_take_it_from_last_updated() -> None:
-    first, attribute_change, off = (history_state(row, "light.diag") for row in RECORDED)
+    first, attribute_change, off = (history_state(row, profile("light.diag")) for row in RECORDED)
     assert isinstance(first, LightState)
     assert isinstance(attribute_change, LightState)
 
