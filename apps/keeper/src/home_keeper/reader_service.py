@@ -5,7 +5,7 @@ the API's reads over the internal network and caches only the projected catalog.
 import logging
 import secrets
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from threading import Lock, Thread
 from typing import Annotated, Literal
@@ -18,6 +18,7 @@ from pydantic import AwareDatetime, TypeAdapter, ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
 from home_keeper.demo import ENTITIES, DemoReplay, demo_label, demo_statistics
+from home_keeper.events import DeviceProfile, MeasurementProfile
 from home_keeper.home_assistant import VISIBLE_ASCII, ConnectorError, HomeAssistantConnector
 from home_keeper.models import (
     MAX_SELECTION,
@@ -112,7 +113,7 @@ class HomeAssistantBackend:
         self._connector: HomeAssistantConnector | None = None
         # Discovery and the group-detection cache it fills are not safe to run twice at once.
         self._lock = Lock()
-        self._catalog: tuple[float, list[Entity], dict[str, str]] | None = None
+        self._catalog: tuple[float, list[Entity], dict[Identity, DeviceProfile]] | None = None
 
     def _connection(self) -> HomeAssistantConnector:
         with self._lock:
@@ -123,19 +124,19 @@ class HomeAssistantBackend:
                     raise _unavailable(error) from None
             return self._connector
 
-    def _discover(self) -> tuple[list[Entity], dict[str, str]]:
+    def _discover(self) -> tuple[list[Entity], dict[Identity, DeviceProfile]]:
         connector = self._connection()
         with self._lock:
             now = self._clock()
             if self._catalog is not None and 0 <= now - self._catalog[0] < CATALOG_SECONDS:
                 return self._catalog[1], self._catalog[2]
             try:
-                catalog = connector.discover()
+                discovery = connector.discover()
             except ConnectorError as error:
                 self._catalog = None
                 raise _unavailable(error) from None
-            self._catalog = (now, catalog.entities, connector.source_entity_ids)
-            return catalog.entities, self._catalog[2]
+            self._catalog = (now, discovery.entities, discovery.profiles)
+            return discovery.entities, discovery.profiles
 
     def health(self) -> None:
         try:
@@ -147,24 +148,19 @@ class HomeAssistantBackend:
         return self._discover()[0]
 
     def states(self, entity_ids: Sequence[Identity]) -> dict[Identity, LiveState | None]:
-        entities, sources = self._discover()
-        devices = {entity.id for entity in entities if entity.device_kind is not None}
+        _, profiles = self._discover()
         # Home Assistant no longer has the others, or they are no device.
-        requested = {
-            entity_id: source
-            for entity_id in entity_ids
-            if entity_id in devices and (source := sources.get(entity_id)) is not None
-        }
+        requested = {i: profile for i in entity_ids if (profile := profiles.get(i)) is not None}
         states: dict[str, DeviceState | None] = {}
         if requested:
             try:
-                states = self._connection().read_states(sorted(set(requested.values())))
+                states = self._connection().read_states(_unique(requested.values()))
             except ConnectorError as error:
                 raise _unavailable(error) from None
         return {
-            entity_id: live_state(source, state)
-            if (source := requested.get(entity_id)) is not None
-            and (state := states.get(source)) is not None
+            entity_id: live_state(profile.source_entity_id, state)
+            if (profile := requested.get(entity_id)) is not None
+            and (state := states.get(profile.source_entity_id)) is not None
             else None
             for entity_id in entity_ids
         }
@@ -172,60 +168,59 @@ class HomeAssistantBackend:
     def history(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
     ) -> dict[Identity, list[HistoryRow]]:
-        entities, sources = self._discover()
-        devices = {entity.id for entity in entities if entity.device_kind is not None}
+        _, profiles = self._discover()
         # Only devices Home Assistant still has; every other ID has no history.
-        requested = {
-            entity_id: sources[entity_id]
-            for entity_id in entity_ids
-            if entity_id in devices and entity_id in sources
-        }
+        requested = {i: profile for i in entity_ids if (profile := profiles.get(i)) is not None}
         try:
-            states = self._connection().history(sorted(set(requested.values())), start, end)
+            states = self._connection().history(_unique(requested.values()), start, end)
         except ConnectorError as error:
             raise _unavailable(error) from None
         return {
-            entity_id: [history_row(source, state) for state in states.get(source, [])]
-            if (source := requested.get(entity_id)) is not None
+            entity_id: [
+                history_row(profile.source_entity_id, state)
+                for state in states.get(profile.source_entity_id, [])
+            ]
+            if (profile := requested.get(entity_id)) is not None
             else []
             for entity_id in entity_ids
         }
 
     def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
         # Discovery reads the translations; a fresh catalog keeps them current.
-        _, sources = self._discover()
-        connector = self._connection()
-        words: dict[Identity, OnOffWords] = {}
-        for entity_id in entity_ids:
-            source = sources.get(entity_id)
-            if source is None:
-                words[entity_id] = RAW_WORDS
-                continue
-            on, off = connector.words(source)
-            words[entity_id] = OnOffWords(on=on, off=off)
-        return words
+        _, profiles = self._discover()
+        return {
+            entity_id: OnOffWords(on=profile.label("on"), off=profile.label("off"))
+            if (profile := profiles.get(entity_id)) is not None
+            else RAW_WORDS
+            for entity_id in entity_ids
+        }
 
     def statistics(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
     ) -> dict[Identity, list[Bucket]]:
-        entities, sources = self._discover()
-        measurements = {entity.id for entity in entities if entity.device_kind == "measurement"}
+        _, profiles = self._discover()
         # Only measurements Home Assistant still has; every other ID has no statistics.
         requested = {
-            entity_id: sources[entity_id]
+            entity_id: profile
             for entity_id in entity_ids
-            if entity_id in measurements and entity_id in sources
+            if isinstance(profile := profiles.get(entity_id), MeasurementProfile)
         }
         try:
-            statistics = self._connection().statistics(sorted(set(requested.values())), start, end)
+            statistics = self._connection().statistics(_unique(requested.values()), start, end)
         except ConnectorError as error:
             raise _unavailable(error) from None
         return {
-            entity_id: statistics.get(source, [])
-            if (source := requested.get(entity_id)) is not None
+            entity_id: statistics.get(profile.source_entity_id, [])
+            if (profile := requested.get(entity_id)) is not None
             else []
             for entity_id in entity_ids
         }
+
+
+def _unique[Profile: DeviceProfile](profiles: Iterable[Profile]) -> list[Profile]:
+    """One profile per Home Assistant entity, in entity ID order."""
+    by_source = {profile.source_entity_id: profile for profile in profiles}
+    return [by_source[source] for source in sorted(by_source)]
 
 
 class DemoBackend:

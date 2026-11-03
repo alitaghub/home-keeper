@@ -2,7 +2,7 @@
 
 import json
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
 from typing import Any, Self
 
@@ -12,11 +12,36 @@ from websockets.client import ClientProtocol
 from websockets.frames import OP_TEXT
 from websockets.frames import Frame as WebSocketFrame
 
-from home_keeper.home_assistant import HomeAssistantConnector
+from home_keeper.events import BasicProfile, DeviceProfile, MeasurementProfile
+from home_keeper.home_assistant import Discovery, HomeAssistantConnector
+from home_keeper.models import Unit, device_kind_of
 
 # Raw Home Assistant frames are untyped JSON; tests build and mutate them freely.
 type Frame = dict[str, Any]
 type Handler = Callable[[httpx.Request], httpx.Response]
+
+
+def profile(entity_id: str, labels: Mapping[str, str] | None = None) -> BasicProfile:
+    """The profile discovery gives a device of the entity's domain, with no translations."""
+    match device_kind_of(entity_id):
+        case "light" | "switch" | "on_off" | "state" as kind:
+            return BasicProfile(entity_id, kind, labels or {})
+        case _:
+            raise ValueError(f"No device: {entity_id}")
+
+
+def profiles(*entity_ids: str) -> list[DeviceProfile]:
+    return [profile(entity_id) for entity_id in entity_ids]
+
+
+def measurements(*entity_ids: str, unit: Unit | None = None) -> list[MeasurementProfile]:
+    return [MeasurementProfile(entity_id, {}, unit) for entity_id in entity_ids]
+
+
+def discovered(discovery: Discovery, *entity_ids: str) -> list[DeviceProfile]:
+    """The profiles discovery made for these Home Assistant entity IDs, in their order."""
+    by_source = {found.source_entity_id: found for found in discovery.profiles.values()}
+    return [by_source[entity_id] for entity_id in entity_ids]
 
 
 # Registry reads: the scripted answer for each, whatever order the adapter asks in.

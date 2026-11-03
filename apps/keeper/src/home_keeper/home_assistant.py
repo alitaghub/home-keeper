@@ -9,7 +9,7 @@ import re
 import ssl
 import time
 from collections.abc import Generator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
@@ -21,7 +21,14 @@ from websockets.exceptions import ConnectionClosed, PayloadTooBig, WebSocketExce
 from websockets.frames import CloseCode
 from websockets.sync.client import connect
 
-from home_keeper.events import device_state, is_json_object, unit_of
+from home_keeper.events import (
+    BasicProfile,
+    DeviceProfile,
+    MeasurementProfile,
+    device_state,
+    is_json_object,
+    unit_of,
+)
 from home_keeper.models import (
     MAX_CATALOG_ENTITIES,
     MAX_STATE_LENGTH,
@@ -33,6 +40,7 @@ from home_keeper.models import (
     DeviceKind,
     DeviceState,
     Entity,
+    Identity,
     Unit,
     device_kind_of,
     statistics_period,
@@ -111,23 +119,23 @@ class WebSocket(Protocol):
 
 
 @dataclass(frozen=True)
-class Labels:
-    """Home Assistant's translated state words, in its language, from discovery."""
+class Discovery:
+    """Home Assistant's devices as Home Keeper projects them, and a profile for each one with a
+    device kind, by identity. Reads take these profiles."""
 
-    # Each `(domain, device class or "_", state)` with its word.
-    words: Mapping[tuple[str, str, str], str]
-    # Each device's device class, by Home Assistant entity ID, where it has one.
-    device_classes: Mapping[str, str]
+    entities: list[Entity]
+    profiles: dict[Identity, DeviceProfile]
 
-    def of(self, source_entity_id: str, state: str) -> str:
-        """The word for a state: by the device's class first, then the domain's own; else the
-        state itself."""
-        domain = source_entity_id.partition(".")[0]
-        device_class = self.device_classes.get(source_entity_id)
-        for key in (device_class, "_"):
-            if key is not None and (word := self.words.get((domain, key, state))):
-                return word
-        return state
+
+@dataclass(frozen=True)
+class _StateFacts:
+    """What discovery's one read of every state says about the devices."""
+
+    groups: frozenset[str] = frozenset()
+    # Each device's device class, where it has one.
+    device_classes: Mapping[str, str] = field(default_factory=dict[str, str])
+    # Each entity whose state class is `measurement`, with its unit.
+    measuring: Mapping[str, Unit | None] = field(default_factory=dict[str, Unit | None])
 
 
 class ConnectorError(Exception):
@@ -193,50 +201,41 @@ class HomeAssistantConnector:
             trust_env=False,
             follow_redirects=False,
         )
-        self._entities: dict[str, str] = {}
-        self._labels = Labels({}, {})
-        # Device classes from the latest state read of a discovery.
-        self._device_classes: dict[str, str] = {}
-        # Each entity whose state class is `measurement`, with its unit, from the same read.
-        self._measuring: dict[str, Unit | None] = {}
-        # Each measurement of the latest successful discovery, with its unit.
-        self._measurements: dict[str, Unit | None] = {}
 
     def close(self) -> None:
         self._http.close()
 
-    def discover(self) -> Catalog:
-        self._device_classes = {}
-        self._measuring = {}
+    def discover(self) -> Discovery:
         with self._session() as session:
             entities = _rows(session.request("config/entity_registry/list", failure="discovery"))
             devices = _rows(session.request("config/device_registry/list", failure="discovery"))
-            catalog, mapping = self._project(entities, devices)
+            catalog, mapping, facts = self._project(entities, devices)
             words = _state_words(session)
-        self._entities = mapping
-        self._labels = Labels(words, self._device_classes)
-        self._measurements = {
-            mapping[entity.id]: self._measuring.get(mapping[entity.id])
-            for entity in catalog.entities
-            if entity.device_kind == "measurement"
-        }
-        return catalog
+        tables = _label_tables(words)
+        return Discovery(
+            entities=catalog.entities,
+            profiles={
+                entity.id: _profile(mapping[entity.id], entity.device_kind, facts, tables)
+                for entity in catalog.entities
+                if entity.device_kind is not None
+            },
+        )
 
     def history(
-        self, source_entity_ids: Sequence[str], start: datetime, end: datetime
+        self, profiles: Sequence[DeviceProfile], start: datetime, end: datetime
     ) -> dict[str, list[DeviceState]]:
-        """Each device's recorded states from `start` to `end`, oldest first. The first is its
-        state at `start`; an entity with no history has []."""
-        if any(not _DEVICE_ID.fullmatch(entity_id) for entity_id in source_entity_ids):
-            raise ConnectorError("configuration")
-        if not source_entity_ids:
+        """Each device's recorded states from `start` to `end`, oldest first, by its Home
+        Assistant entity ID. The first is its state at `start`; an entity with no history has
+        []."""
+        by_source = _by_source(profiles)
+        if not by_source:
             return {}
         # One `no_attributes` per request: lights and switches share one, with attributes. Other
         # devices go without them, HISTORY_BATCH to a request.
         deadline = time.monotonic() + HISTORY_SECONDS
         attributed = ("light", "switch")
-        with_attributes = [i for i in source_entity_ids if device_kind_of(i) in attributed]
-        without = [i for i in source_entity_ids if device_kind_of(i) not in attributed]
+        with_attributes = [i for i, p in by_source.items() if p.kind in attributed]
+        without = [i for i, p in by_source.items() if p.kind not in attributed]
         requests = [(with_attributes, False)] if with_attributes else []
         requests += [
             (list(batch), True) for batch in itertools.batched(without, HISTORY_BATCH, strict=False)
@@ -264,31 +263,20 @@ class HomeAssistantConnector:
                     raise ConnectorError("invalid_data")
                 history |= {
                     entity_id: [
-                        self._recorded(row, entity_id) for row in _rows(result.get(entity_id, []))
+                        history_state(row, by_source[entity_id])
+                        for row in _rows(result.get(entity_id, []))
                     ]
                     for entity_id in entity_ids
                 }
-        return {entity_id: history[entity_id] for entity_id in source_entity_ids}
-
-    def _recorded(self, row: object, source_entity_id: str) -> DeviceState:
-        """A history row as a labelled state. A measurement's row has no attributes, so its
-        unit is the one discovery read."""
-        measured = source_entity_id in self._measurements
-        state = self._labelled(
-            history_state(row, source_entity_id, measured=measured), source_entity_id
-        )
-        if measured:
-            return state.model_copy(update={"unit": self._measurements[source_entity_id]})
-        return state
+        return history
 
     def statistics(
-        self, source_entity_ids: Sequence[str], start: datetime, end: datetime
+        self, profiles: Sequence[MeasurementProfile], start: datetime, end: datetime
     ) -> dict[str, list[Bucket]]:
-        """Each measurement's statistics from `start` to `end`, oldest first, STATISTICS_BATCH
-        measurements to a request: 5-minute buckets for a range up to 24 hours, else hourly ones.
-        An entity with no statistics has []."""
-        if any(not _DEVICE_ID.fullmatch(entity_id) for entity_id in source_entity_ids):
-            raise ConnectorError("configuration")
+        """Each measurement's statistics from `start` to `end`, oldest first, by its Home
+        Assistant entity ID, STATISTICS_BATCH measurements to a request: 5-minute buckets for a
+        range up to 24 hours, else hourly ones. An entity with no statistics has []."""
+        source_entity_ids = list(_by_source(profiles))
         if not source_entity_ids:
             return {}
         # The whole read, connecting included, ends within HISTORY_SECONDS, as a history read.
@@ -309,7 +297,7 @@ class HomeAssistantConnector:
                 )
                 # Parsed inside the session, so malformed data leaves as ConnectorError.
                 statistics |= statistics_buckets(result, batch)
-        return {entity_id: statistics[entity_id] for entity_id in source_entity_ids}
+        return statistics
 
     @contextlib.contextmanager
     def _session(
@@ -377,7 +365,9 @@ class HomeAssistantConnector:
                 name = name.replace(secret, "[redacted]")
         return name[:256]
 
-    def _project(self, entities: list[Any], devices: list[Any]) -> tuple[Catalog, dict[str, str]]:
+    def _project(
+        self, entities: list[Any], devices: list[Any]
+    ) -> tuple[Catalog, dict[str, str], _StateFacts]:
         if len(entities) > MAX_REGISTRY_ROWS or len(devices) > MAX_REGISTRY_ROWS:
             raise ConnectorError("invalid_data")
         device_names: dict[str, str] = {}
@@ -391,7 +381,7 @@ class HomeAssistantConnector:
         projected: list[Entity] = []
         mapping: dict[str, str] = {}
         # Read on the first candidate, so a home without one costs no state read.
-        groups: frozenset[str] | None = None
+        facts: _StateFacts | None = None
         for entity in entities:
             if not is_json_object(entity):
                 raise ConnectorError("invalid_data")
@@ -419,10 +409,10 @@ class HomeAssistantConnector:
                 reason = _other_reason(entity, entity_id, device_id)
             # Only a candidate that passes every other rule needs its state.
             if reason is None:
-                if groups is None:
-                    groups = self._read_groups()
-                reason = GROUP_REASON if entity_id in groups else None
-            if reason is None and self._measured(entity_id):
+                if facts is None:
+                    facts = self._read_state_facts()
+                reason = GROUP_REASON if entity_id in facts.groups else None
+            if reason is None and facts is not None and _measured(entity_id, facts):
                 kind = "measurement"
             supported = reason is None
             projected.append(
@@ -439,16 +429,13 @@ class HomeAssistantConnector:
                 )
             )
             mapping[identity] = entity_id
-        return Catalog(source_id="home_assistant", entities=projected), mapping
+        catalog = Catalog(source_id="home_assistant", entities=projected)
+        return catalog, mapping, facts or _StateFacts()
 
-    def _measured(self, entity_id: str) -> bool:
-        """Whether a sensor is a measurement: its state class is `measurement`."""
-        return entity_id.partition(".")[0] in MEASUREMENT_DOMAINS and entity_id in self._measuring
-
-    def _read_groups(self) -> frozenset[str]:
-        """The devices whose state marks them as a group, from one read of every state. An
-        entity with no state has no group markers. Keeps each device's device class for
-        translating its state, and the unit of each state whose state class is `measurement`."""
+    def _read_state_facts(self) -> _StateFacts:
+        """From one read of every state: the devices whose state marks them as a group, each
+        device's device class for translating its state, and the unit of each state whose state
+        class is `measurement`. An entity with no state has none of these."""
         try:
             status, payload = self._get("/api/states", STATES_MAX_PAYLOAD)
             if status != HTTPStatus.OK:
@@ -461,6 +448,8 @@ class HomeAssistantConnector:
         except ValueError:
             raise ConnectorError("invalid_data") from None
         groups: set[str] = set()
+        device_classes: dict[str, str] = {}
+        measuring: dict[str, Unit | None] = {}
         for row in _rows(rows):
             if not is_json_object(row):
                 raise ConnectorError("invalid_data")
@@ -481,14 +470,14 @@ class HomeAssistantConnector:
                 and 0 < len(device_class) <= MAX_DEVICE_CLASS_LENGTH
                 and device_class.isascii()
             ):
-                self._device_classes[entity_id] = device_class
+                device_classes[entity_id] = device_class
             if attributes.get("state_class") == MEASUREMENT_STATE_CLASS:
-                self._measuring[entity_id] = unit_of(attributes)
+                measuring[entity_id] = unit_of(attributes)
             if isinstance(attributes.get("entity_id"), list) or any(
                 value is True and _GROUP_FLAG.fullmatch(key) for key, value in attributes.items()
             ):
                 groups.add(entity_id)
-        return frozenset(groups)
+        return _StateFacts(frozenset(groups), device_classes, measuring)
 
     def _get(self, path: str, max_size: int) -> tuple[int, bytes]:
         """The status, and the body only for 200. Raises TimeoutError when the body outlasts
@@ -506,26 +495,11 @@ class HomeAssistantConnector:
                     raise ConnectorError("invalid_data")
         return HTTPStatus.OK, bytes(payload)
 
-    @property
-    def source_entity_ids(self) -> dict[str, str]:
-        """Each identity's Home Assistant entity ID, from the latest successful discovery."""
-        return dict(self._entities)
-
-    def _labelled[State: DeviceState](self, state: State, source_entity_id: str) -> State:
-        """The state with its word, from the translations the latest discovery read."""
-        return state.model_copy(update={"label": self._labels.of(source_entity_id, state.state)})
-
-    def words(self, source_entity_id: str) -> tuple[str, str]:
-        """A device's words for `on` and `off`, from the translations the latest discovery
-        read; the raw state where Home Assistant has none."""
-        return self._labels.of(source_entity_id, "on"), self._labels.of(source_entity_id, "off")
-
-    def read_states(self, source_entity_ids: Sequence[str]) -> dict[str, DeviceState | None]:
-        """The current state of each device, from one read of every state; None when Home
-        Assistant has no such entity. The API checks the selection itself."""
-        wanted = set(source_entity_ids)
-        if not all(_DEVICE_ID.fullmatch(entity_id) for entity_id in wanted):
-            raise ConnectorError("configuration")
+    def read_states(self, profiles: Sequence[DeviceProfile]) -> dict[str, DeviceState | None]:
+        """The current state of each device, by its Home Assistant entity ID, from one read of
+        every state; None when Home Assistant has no such entity. The API checks the selection
+        itself."""
+        wanted = _by_source(profiles)
         try:
             status, payload = self._get("/api/states", STATES_MAX_PAYLOAD)
             if status in {401, 403}:
@@ -541,14 +515,12 @@ class HomeAssistantConnector:
                     raise TypeError("Not a state")
                 entity_id = row.get("entity_id")
                 if isinstance(entity_id, str) and entity_id in wanted:
-                    measured = entity_id in self._measurements
-                    state = device_state(row, entity_id, measured=measured)
-                    found[entity_id] = state and self._labelled(state, entity_id)
+                    found[entity_id] = device_state(row, wanted[entity_id])
         except ConnectorError:
             raise
         except (httpx.HTTPError, TimeoutError, ValueError, TypeError) as error:
             raise _read_failure(error) from None
-        return {entity_id: found.get(entity_id) for entity_id in source_entity_ids}
+        return {entity_id: found.get(entity_id) for entity_id in wanted}
 
     def check(self) -> None:
         """Return when Home Assistant's API answers and accepts the token."""
@@ -560,6 +532,46 @@ class HomeAssistantConnector:
             raise ConnectorError("authentication")
         if response.status_code != HTTPStatus.OK:
             raise ConnectorError("connection")
+
+
+def _by_source[Profile: DeviceProfile](profiles: Sequence[Profile]) -> dict[str, Profile]:
+    """Each profile by its Home Assistant entity ID. Raises for an ID no read may send."""
+    if any(not _DEVICE_ID.fullmatch(profile.source_entity_id) for profile in profiles):
+        raise ConnectorError("configuration")
+    return {profile.source_entity_id: profile for profile in profiles}
+
+
+def _profile(
+    entity_id: str,
+    kind: DeviceKind,
+    facts: _StateFacts,
+    tables: Mapping[tuple[str, str], Mapping[str, str]],
+) -> DeviceProfile:
+    """A device's profile: its kind, its unit if it is a measurement, and its state words by
+    its device class first, then its domain's own."""
+    domain = entity_id.partition(".")[0]
+    labels = tables.get((domain, "_"), {})
+    device_class = facts.device_classes.get(entity_id)
+    if device_class is not None and (by_class := tables.get((domain, device_class))):
+        labels = {**labels, **by_class}
+    if kind == "measurement":
+        return MeasurementProfile(entity_id, labels, facts.measuring.get(entity_id))
+    return BasicProfile(entity_id, kind, labels)
+
+
+def _measured(entity_id: str, facts: _StateFacts) -> bool:
+    """Whether a sensor is a measurement: its state class is `measurement`."""
+    return entity_id.partition(".")[0] in MEASUREMENT_DOMAINS and entity_id in facts.measuring
+
+
+def _label_tables(
+    words: Mapping[tuple[str, str, str], str],
+) -> dict[tuple[str, str], dict[str, str]]:
+    """Each `(domain, device class or "_")` with its states' words."""
+    tables: dict[tuple[str, str], dict[str, str]] = {}
+    for (domain, device_class, state), word in words.items():
+        tables.setdefault((domain, device_class), {})[state] = word
+    return tables
 
 
 def _read_failure(error: Exception) -> ConnectorError:
@@ -751,7 +763,7 @@ def _timestamp(value: object) -> datetime:
     return datetime.fromtimestamp(value, UTC)
 
 
-def history_state(row: object, source_entity_id: str, *, measured: bool = False) -> DeviceState:
+def history_state(row: object, profile: DeviceProfile) -> DeviceState:
     """One compressed history row, `{s, a, lc, lu}`, as a device's state. Times are Unix
     seconds, and Home Assistant leaves out `lc` when it equals `lu`. Only lights keep
     attributes, and only the approved ones."""
@@ -760,14 +772,13 @@ def history_state(row: object, source_entity_id: str, *, measured: bool = False)
     updated = _timestamp(row.get("lu"))
     state = device_state(
         {
-            "entity_id": source_entity_id,
+            "entity_id": profile.source_entity_id,
             "state": row.get("s"),
             "attributes": row.get("a", {}),
             "last_changed": _timestamp(row["lc"]) if "lc" in row else updated,
             "last_updated": updated,
         },
-        source_entity_id,
-        measured=measured,
+        profile,
     )
     if state is None:
         raise ValueError("Invalid history row")

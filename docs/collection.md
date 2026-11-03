@@ -70,8 +70,9 @@ availability, so a plug that reports a brightness never shows
 one. For any other device it keeps only the state text, at most 255 characters,
 and availability. A measurement also keeps its value, the state as a finite
 number or null, and its unit, `unit_of_measurement`, at most 32 characters.
-Its history rows are read without attributes, so they carry the unit the
-device list read. It drops unrelated attributes, account identifiers and raw logs.
+Its current reading and its history rows both carry the unit the device list
+read, so they always agree; a unit changed in Home Assistant shows once the
+device list is read again, within 10 seconds. It drops unrelated attributes, account identifiers and raw logs.
 Every reading also carries a `label`, Home Assistant's translated word for the
 state; see [State words](home-assistant.md#state-words).
 

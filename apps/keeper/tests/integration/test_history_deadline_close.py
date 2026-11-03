@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from support.home_assistant import profiles
 from websockets.http11 import Request
 from websockets.server import ServerProtocol
 
@@ -51,7 +52,7 @@ def test_stalled_history_read_fails_within_the_history_deadline(tmp_path: Path) 
     started = time.monotonic()
     try:
         with pytest.raises(ConnectorError) as error:
-            connector.history(["light.bulb"], end - timedelta(days=1), end)
+            connector.history(profiles("light.bulb"), end - timedelta(days=1), end)
         elapsed = time.monotonic() - started
     finally:
         stop.set()

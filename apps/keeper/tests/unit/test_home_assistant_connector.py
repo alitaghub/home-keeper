@@ -15,10 +15,13 @@ from support.home_assistant import (
     ProtocolSocket,
     StateServer,
     Utf8Socket,
+    discovered,
     entity_state,
     hue_room,
     install_socket,
     light_state,
+    measurements,
+    profiles,
     realistic_device,
     realistic_entity,
     registry_entry,
@@ -35,6 +38,7 @@ from home_keeper.home_assistant import (
     MAX_PAYLOAD,
     STATES_MAX_PAYLOAD,
     ConnectorError,
+    Discovery,
     HomeAssistantConnector,
     Session,
 )
@@ -128,8 +132,9 @@ def test_projection_keeps_device_names_and_drops_private_registry_fields(
     catalog = client.discover()
     assert catalog.entities[0].id == "ha:registry1"
     assert catalog.entities[0].device_id == "ha:device1"
-    assert "ADMIN_SENTINEL" not in catalog.model_dump_json()
-    assert "PRIVATE_SENTINEL" not in catalog.model_dump_json()
+    encoded = json.dumps([entity.model_dump(mode="json") for entity in catalog.entities])
+    assert "ADMIN_SENTINEL" not in encoded
+    assert "PRIVATE_SENTINEL" not in encoded
 
 
 def test_discovery_sends_only_the_registry_reads_the_language_and_the_translations(
@@ -314,7 +319,7 @@ def test_a_switch_reads_its_state_without_light_attributes(
             ],
         ),
     )
-    state = client.read_states(["switch.plug"])["switch.plug"]
+    state = client.read_states(profiles("switch.plug"))["switch.plug"]
     assert isinstance(state, SwitchState)
     reading = state.model_dump(exclude_none=True)
     assert reading["device_kind"] == "switch"
@@ -387,7 +392,7 @@ def test_states_are_read_at_once_keeping_brightness_and_dropping_private_attribu
         )
 
     use_transport(client, handle)
-    states = client.read_states(["light.bulb", "light.desk", "light.gone"])
+    states = client.read_states(profiles("light.bulb", "light.desk", "light.gone"))
     assert set(states) == {"light.bulb", "light.desk", "light.gone"}
     assert states["light.gone"] is None
     for entity_id in ("light.bulb", "light.desk"):
@@ -418,7 +423,7 @@ def test_a_malformed_entity_id_is_refused_without_a_request(connector: Connector
     )
     for entity_id in malformed:
         with pytest.raises(ConnectorError) as error:
-            client.read_states(["light.bulb", entity_id])
+            client.read_states(profiles("light.bulb", entity_id))
         assert error.value.code == "configuration"
     assert calls == []
 
@@ -461,9 +466,9 @@ def test_a_missing_entity_reads_as_none_until_it_returns(
     client, _, _ = connector
     states: list[Frame] = []
     use_transport(client, lambda _request: httpx.Response(200, json=states))
-    assert client.read_states(["light.bulb"]) == {"light.bulb": None}
+    assert client.read_states(profiles("light.bulb")) == {"light.bulb": None}
     states.append({"entity_id": "light.bulb", "state": "on", "attributes": {}})
-    state = client.read_states(["light.bulb"])["light.bulb"]
+    state = client.read_states(profiles("light.bulb"))["light.bulb"]
     assert state is not None
     assert state.state == "on"
 
@@ -494,7 +499,7 @@ def test_payload_limit_and_contradictory_state_rejected(
     ):
         use_transport(client, lambda _request, response=response: response)
         with pytest.raises(ConnectorError) as error:
-            client.read_states(["light.bulb"])
+            client.read_states(profiles("light.bulb"))
         assert error.value.code == "invalid_data"
         assert "secret-sentinel" not in str(error.value)
 
@@ -514,7 +519,7 @@ def test_slow_stream_total_time_is_bounded(
     monkeypatch.setattr("home_keeper.home_assistant.time.monotonic", lambda: next(clock))
     use_transport(client, lambda _request: httpx.Response(200, stream=Stream()))
     with pytest.raises(ConnectorError) as error:
-        client.read_states(["light.bulb"])
+        client.read_states(profiles("light.bulb"))
     assert error.value.code == "timeout"
 
 
@@ -539,7 +544,7 @@ def test_an_invalid_state_response_is_safe(
 
     use_transport(adapter, response)
     with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorError) as error:
-        adapter.read_states(["light.bulb"])
+        adapter.read_states(profiles("light.bulb"))
     assert len(calls) == 1
     assert calls[0].path == "/api/states"
     assert "review-ha-secret" not in str(error.value)
@@ -554,7 +559,7 @@ def test_a_state_read_timeout_does_not_leak(
 
     use_transport(adapter, timeout)
     with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorError) as error:
-        adapter.read_states(["light.bulb"])
+        adapter.read_states(profiles("light.bulb"))
     assert error.value.code == "timeout"
     assert "review-ha-secret" not in str(error.value)
     assert "review-ha-secret" not in caplog.text
@@ -771,8 +776,8 @@ TRANSLATED_STATES = [
 TRANSLATED_IDS = [state["entity_id"] for state in TRANSLATED_STATES]
 
 
-def labels(client: HomeAssistantConnector) -> dict[str, str]:
-    readings = client.read_states(TRANSLATED_IDS)
+def labels(client: HomeAssistantConnector, found: Discovery) -> dict[str, str]:
+    readings = client.read_states(discovered(found, *TRANSLATED_IDS))
     return {
         entity_id: reading.model_dump()["label"]
         for entity_id, reading in readings.items()
@@ -790,10 +795,10 @@ def test_a_reading_is_labeled_with_homeassistants_translation_of_its_state(
         TRANSLATED_STATES,
         translations=TRANSLATIONS,
     )
-    client.discover()
+    found = client.discover()
     sent = len(socket.sent)
 
-    assert labels(client) == {
+    assert labels(client, found) == {
         "climate.hall": "Heat",
         # No translation for this state: the label is the raw state.
         "climate.attic": "frost_guard",
@@ -828,7 +833,7 @@ def test_a_failed_translations_or_language_read_does_not_fail_discovery(
     assert request["language"] == "en"
     if failing == "frontend/get_translations":
         # Every label falls back to the raw state.
-        assert labels(client) == {
+        assert labels(client, catalog) == {
             "climate.hall": "heat",
             "climate.attic": "frost_guard",
             "binary_sensor.front": "on",
@@ -837,7 +842,7 @@ def test_a_failed_translations_or_language_read_does_not_fail_discovery(
         }
     else:
         # Home Assistant's language is unknown, so English is asked for.
-        assert labels(client)["climate.hall"] == "Heat"
+        assert labels(client, catalog)["climate.hall"] == "Heat"
 
 
 def test_a_state_device_reading_keeps_its_state_and_times_and_no_attributes(
@@ -857,9 +862,9 @@ def test_a_state_device_reading_keeps_its_state_and_times_and_no_attributes(
             )
         ],
     )
-    client.discover()
+    found = client.discover()
 
-    reading = client.read_states(["climate.hall"])["climate.hall"]
+    reading = client.read_states(discovered(found, "climate.hall"))["climate.hall"]
 
     assert reading is not None
     encoded = reading.model_dump(exclude_none=True)
@@ -885,7 +890,7 @@ def test_a_state_device_that_reports_unavailable_or_unknown_is_not_available(
     client, install, _ = connector
     install([], states=[entity_state("climate.hall", word)])
 
-    reading = client.read_states(["climate.hall"])["climate.hall"]
+    reading = client.read_states(profiles("climate.hall"))["climate.hall"]
 
     assert reading is not None
     assert reading.model_dump()["availability"] == word
@@ -896,13 +901,13 @@ def test_a_state_of_255_characters_is_read_and_one_of_256_is_invalid_data(
 ) -> None:
     client, install, server = connector
     install([], states=[entity_state("sensor.note", "x" * 255)])
-    reading = client.read_states(["sensor.note"])["sensor.note"]
+    reading = client.read_states(profiles("sensor.note"))["sensor.note"]
     assert reading is not None
     assert reading.state == "x" * 255
 
     server.states = {"sensor.note": entity_state("sensor.note", "y" * 256)}
     with pytest.raises(ConnectorError) as error:
-        client.read_states(["sensor.note"])
+        client.read_states(profiles("sensor.note"))
     assert error.value.code == "invalid_data"
     assert "y" * 256 not in str(error.value)
 
@@ -925,7 +930,7 @@ def test_history_of_a_state_device_is_read_without_attributes_and_a_light_keeps_
         },
     )
 
-    history = client.history(["climate.hall", "light.desk"], start, end)
+    history = client.history(profiles("climate.hall", "light.desk"), start, end)
 
     assert [reading.state for reading in history["climate.hall"]] == ["heat", "off"]
     assert {reading.device_kind for reading in history["climate.hall"]} == {"state"}
@@ -965,7 +970,7 @@ def test_busy_sensors_are_read_25_to_a_request_so_each_answer_fits_and_a_light_k
     assert len(json.dumps(dict(list(busy.items())[:25]))) < HISTORY_MAX_PAYLOAD
     socket = install([], history={**busy, "light.desk": light})
 
-    history = client.history([*busy, "light.desk"], start, end)
+    history = client.history(profiles(*busy, "light.desk"), start, end)
 
     assert {entity_id: len(readings) for entity_id, readings in history.items()} == {
         **dict.fromkeys(busy, rows),
@@ -1008,7 +1013,7 @@ def test_discovery_gives_up_on_unanswered_language_and_translation_reads_within_
     assert all(wait is not None for wait in socket.waits)
     assert sum(wait for wait in socket.waits if wait is not None) <= 2.5
     # Without translations the label is the raw state.
-    readings = client.read_states(["climate.hall", "light.desk"])
+    readings = client.read_states(discovered(catalog, "climate.hall", "light.desk"))
     assert [reading.model_dump()["label"] for reading in readings.values() if reading] == [
         "heat",
         "on",
@@ -1086,9 +1091,9 @@ def test_an_on_off_reading_has_no_attributes_and_is_labeled_by_its_device_class(
         ],
         translations=DOOR_TRANSLATIONS,
     )
-    client.discover()
+    found = client.discover()
 
-    readings = client.read_states(["binary_sensor.front", "fan.ceiling"])
+    readings = client.read_states(discovered(found, "binary_sensor.front", "fan.ceiling"))
 
     door, fan = readings["binary_sensor.front"], readings["fan.ceiling"]
     assert door is not None
@@ -1119,7 +1124,7 @@ def test_an_on_off_device_that_reports_unavailable_or_unknown_is_not_available(
     client, install, _ = connector
     install([], states=[entity_state("binary_sensor.front", word)])
 
-    reading = client.read_states(["binary_sensor.front"])["binary_sensor.front"]
+    reading = client.read_states(profiles("binary_sensor.front"))["binary_sensor.front"]
 
     assert reading is not None
     assert reading.model_dump()["device_kind"] == "on_off"
@@ -1139,8 +1144,8 @@ def test_history_of_on_off_devices_is_read_together_without_attributes_and_apart
         [entity_state("binary_sensor.front", "on", device_class="door")],
         translations=DOOR_TRANSLATIONS,
     )
-    client.discover()
-    # A fresh connection for the history read; the labels learned in discovery stay.
+    found = client.discover()
+    # A fresh connection for the history read; the labels come with the door's profile.
     socket = install(
         [],
         history={
@@ -1150,7 +1155,8 @@ def test_history_of_on_off_devices_is_read_together_without_attributes_and_apart
         },
     )
 
-    history = client.history(["binary_sensor.front", "fan.ceiling", "light.desk"], start, end)
+    devices = [*discovered(found, "binary_sensor.front"), *profiles("fan.ceiling", "light.desk")]
+    history = client.history(devices, start, end)
 
     door = history["binary_sensor.front"]
     assert [(row.model_dump()["state"], row.model_dump()["label"]) for row in door] == [
@@ -1186,7 +1192,9 @@ def test_history_of_slow_devices_gives_up_with_a_timeout_within_8_seconds_in_all
 
     with pytest.raises(ConnectorError) as error:
         client.history(
-            devices, datetime(2026, 10, 13, 9, tzinfo=UTC), datetime(2026, 10, 13, 10, tzinfo=UTC)
+            profiles(*devices),
+            datetime(2026, 10, 13, 9, tzinfo=UTC),
+            datetime(2026, 10, 13, 10, tzinfo=UTC),
         )
 
     assert error.value.code == "timeout"
@@ -1209,7 +1217,9 @@ def test_history_answers_that_together_pass_the_total_cap_are_invalid_data(
 
     with pytest.raises(ConnectorError) as error:
         client.history(
-            devices, datetime(2026, 10, 13, tzinfo=UTC), datetime(2026, 10, 14, tzinfo=UTC)
+            profiles(*devices),
+            datetime(2026, 10, 13, tzinfo=UTC),
+            datetime(2026, 10, 14, tzinfo=UTC),
         )
 
     assert error.value.code == "invalid_data"
@@ -1240,7 +1250,7 @@ def test_discovery_waits_only_the_budget_for_silent_translations_when_the_langua
     assert socket.waits
     assert sum(wait for wait in socket.waits if wait is not None) <= 2
     # Without translations the label is the raw state.
-    [reading] = client.read_states(["climate.hall"]).values()
+    [reading] = client.read_states(discovered(catalog, "climate.hall")).values()
     assert reading is not None
     assert reading.model_dump()["label"] == "heat"
 
@@ -1265,7 +1275,7 @@ def test_the_64_mib_history_budget_counts_utf8_bytes_not_characters(
     one = Utf8Socket([], history=dict.fromkeys(sources, rows))
     install_socket(monkeypatch, one)
     # One device alone is fine, and each answer is under the per-answer cap.
-    assert len(client.history(sources[:1], DAY_START, DAY_END)[sources[0]]) == len(rows)
+    assert len(client.history(profiles(*sources[:1]), DAY_START, DAY_END)[sources[0]]) == len(rows)
     [answer] = one.answer_bytes
     assert answer < HISTORY_MAX_PAYLOAD
     # Five of them are over the total in bytes (though under it counted in characters).
@@ -1273,7 +1283,7 @@ def test_the_64_mib_history_budget_counts_utf8_bytes_not_characters(
 
     install_socket(monkeypatch, Utf8Socket([], history=dict.fromkeys(sources, rows)))
     with pytest.raises(ConnectorError) as error:
-        client.history(sources, DAY_START, DAY_END)
+        client.history(profiles(*sources), DAY_START, DAY_END)
 
     assert error.value.code == "invalid_data"
 
@@ -1353,9 +1363,9 @@ def test_a_measurement_reading_has_a_finite_number_or_null_and_the_unit_of_measu
         ],
     )
     # Discovery sees the state class, so the reading is a measurement's.
-    client.discover()
+    found = client.discover()
 
-    reading = client.read_states(["sensor.power"])["sensor.power"]
+    reading = client.read_states(discovered(found, "sensor.power"))["sensor.power"]
 
     assert reading is not None
     encoded = reading.model_dump()
@@ -1385,8 +1395,8 @@ def test_a_measurement_without_a_unit_has_a_null_unit_and_other_sensors_are_stat
             entity_state("number.level", "7", state_class="measurement"),
         ],
     )
-    client.discover()
-    readings = client.read_states(ids)
+    found = client.discover()
+    readings = client.read_states(discovered(found, *ids))
 
     kinds = {
         key: reading.model_dump()["device_kind"] for key, reading in readings.items() if reading
@@ -1414,7 +1424,7 @@ def test_history_of_a_measurement_carries_its_value_and_unit_and_is_read_without
         [{"id": "device1", "name": "Desk plug"}],
         [entity_state("sensor.power", "412", state_class="measurement", unit_of_measurement="W")],
     )
-    client.discover()
+    found = client.discover()
     socket = install(
         [],
         history={
@@ -1425,7 +1435,7 @@ def test_history_of_a_measurement_carries_its_value_and_unit_and_is_read_without
         },
     )
 
-    rows = client.history(["sensor.power"], start, end)["sensor.power"]
+    rows = client.history(discovered(found, "sensor.power"), start, end)["sensor.power"]
 
     encoded = [row.model_dump() for row in rows]
     assert [(row["device_kind"], row["value"], row["unit"]) for row in encoded] == [
@@ -1435,6 +1445,30 @@ def test_history_of_a_measurement_carries_its_value_and_unit_and_is_read_without
     [request] = [r for r in socket.sent if r["type"] == "history/history_during_period"]
     assert request["entity_ids"] == ["sensor.power"]
     assert request["no_attributes"] is True
+
+
+def test_a_measurement_keeps_the_unit_discovery_read_live_and_in_history(
+    connector: Connector,
+) -> None:
+    client, install, server = connector
+    start = datetime(2026, 10, 13, 9, tzinfo=UTC)
+    install(
+        [registry_entry("power", "sensor.power", platform="demo", translation_key=None)],
+        [{"id": "device1", "name": "Desk plug"}],
+        [entity_state("sensor.power", "412", state_class="measurement", unit_of_measurement="W")],
+    )
+    power = client.discover().profiles["ha:power"]
+    install([], history={"sensor.power": [{"s": "0.5", "lu": start.timestamp()}]})
+    # Home Assistant reports a new unit before the next discovery.
+    server.states["sensor.power"] = entity_state(
+        "sensor.power", "0.4", state_class="measurement", unit_of_measurement="kW"
+    )
+
+    live = client.read_states([power])["sensor.power"]
+    [recorded] = client.history([power], start, start + timedelta(hours=1))["sensor.power"]
+
+    assert live is not None
+    assert (live.model_dump()["unit"], recorded.model_dump()["unit"]) == ("W", "W")
 
 
 @pytest.mark.parametrize(
@@ -1454,7 +1488,7 @@ def test_statistics_ask_for_mean_min_and_max_in_5_minute_buckets_up_to_24_hours_
     end = datetime(2026, 10, 13, 10, tzinfo=UTC)
     socket = install([])
 
-    client.statistics(["sensor.power", "number.level"], end - span, end)
+    client.statistics(measurements("sensor.power", "number.level"), end - span, end)
 
     [request] = [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
     assert request["period"] == period
@@ -1481,7 +1515,7 @@ def test_statistics_parse_each_bucket_oldest_first_and_give_a_device_without_any
         },
     )
 
-    result = client.statistics(["sensor.power", "sensor.quiet"], start, end)
+    result = client.statistics(measurements("sensor.power", "sensor.quiet"), start, end)
 
     assert list(result) == ["sensor.power", "sensor.quiet"]
     assert [
@@ -1524,7 +1558,7 @@ def test_a_statistics_row_missing_mean_min_or_max_or_with_a_bad_value_is_invalid
     install([], statistics={"sensor.power": [row]})
 
     with pytest.raises(ConnectorError) as error:
-        client.statistics(["sensor.power"], start, start + timedelta(hours=2))
+        client.statistics(measurements("sensor.power"), start, start + timedelta(hours=2))
 
     assert error.value.code == "invalid_data"
 
@@ -1550,7 +1584,7 @@ def test_slow_connect_and_authentication_count_toward_the_8_second_history_deadl
     started = clock.monotonic()
 
     with pytest.raises(ConnectorError) as error:
-        client.history(["fan.ceiling"], DAY_START, DAY_END)
+        client.history(profiles("fan.ceiling"), DAY_START, DAY_END)
 
     assert error.value.code == "timeout"
     assert clock.monotonic() - started <= 8
@@ -1575,12 +1609,12 @@ def test_a_history_answer_over_the_message_size_limit_is_invalid_data_not_a_conn
     monkeypatch.setattr("home_keeper.home_assistant.connect", connect)
     monkeypatch.setattr("home_keeper.home_assistant.time", FakeClock())
     if code is None:
-        assert len(client.history([source], DAY_START, DAY_END)[source]) == count
+        assert len(client.history(profiles(source), DAY_START, DAY_END)[source]) == count
         return
     assert len(json.dumps(socket.history).encode()) > HISTORY_MAX_PAYLOAD
 
     with pytest.raises(ConnectorError) as error:
-        client.history([source], DAY_START, DAY_END)
+        client.history(profiles(source), DAY_START, DAY_END)
 
     assert error.value.code == code
 
@@ -1592,14 +1626,14 @@ def test_statistics_home_assistant_refuses_are_invalid_data_and_a_bad_id_sends_n
     start = datetime(2026, 10, 13, 9, tzinfo=UTC)
     install([], failing=["recorder/statistics_during_period"])
     with pytest.raises(ConnectorError) as refused:
-        client.statistics(["sensor.power"], start, start + timedelta(hours=2))
+        client.statistics(measurements("sensor.power"), start, start + timedelta(hours=2))
     assert refused.value.code == "invalid_data"
 
     socket = install([])
     with pytest.raises(ConnectorError) as malformed:
-        client.statistics(["../services/light"], start, start + timedelta(hours=2))
+        client.statistics(measurements("../services/light"), start, start + timedelta(hours=2))
     assert malformed.value.code == "configuration"
-    assert client.statistics([], start, start + timedelta(hours=2)) == {}
+    assert client.statistics(measurements(), start, start + timedelta(hours=2)) == {}
     assert not [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
 
 
@@ -1615,7 +1649,7 @@ def test_60_non_light_devices_are_read_in_history_requests_of_25_25_and_10_witho
         history={device: [{"s": str(number), "lu": at}] for number, device in enumerate(devices)},
     )
 
-    history = client.history(devices, start, start + timedelta(hours=1))
+    history = client.history(profiles(*devices), start, start + timedelta(hours=1))
 
     requests = [r for r in socket.sent if r["type"] == "history/history_during_period"]
     assert [len(r["entity_ids"]) for r in requests] == [25, 25, 10]
@@ -1641,7 +1675,7 @@ def test_120_measurements_are_read_in_statistics_requests_of_50_50_and_20_and_me
         },
     )
 
-    result = client.statistics(meters, start, end)
+    result = client.statistics(measurements(*meters), start, end)
 
     requests = [r for r in socket.sent if r["type"] == "recorder/statistics_during_period"]
     assert [len(r["statistic_ids"]) for r in requests] == [50, 50, 20]

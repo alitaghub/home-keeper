@@ -1,7 +1,9 @@
-"""Parses a Home Assistant state into a device's state, keeping only the approved light
-attributes."""
+"""Parses a Home Assistant state into a device's state, by the profile discovery made for it,
+keeping only the approved light attributes."""
 
-from typing import Any, TypeIs
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Literal, TypeIs
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -13,7 +15,6 @@ from home_keeper.models import (
     OnOffState,
     SwitchState,
     Unit,
-    device_kind_of,
 )
 
 COLOR_FIELDS = (
@@ -43,15 +44,43 @@ def unit_of(attributes: dict[str, Any]) -> Unit | None:
         return None
 
 
-def device_state(
-    payload: object, source_entity_id: str, *, measured: bool = False
-) -> DeviceState | None:
-    """A device's state, by the entity's domain, or a measurement's when `measured`: discovery
-    saw the state class `measurement` on it. Only a light keeps attributes, and a measurement
-    its unit."""
+@dataclass(frozen=True)
+class BasicProfile:
+    """What discovery learned about a device that is not a measurement."""
+
+    source_entity_id: str
+    kind: Literal["light", "switch", "on_off", "state"]
+    # Home Assistant's word for each state, by the device's class first, then its domain's.
+    labels: Mapping[str, str]
+
+    def label(self, state: str) -> str:
+        return self.labels.get(state, state)
+
+
+@dataclass(frozen=True)
+class MeasurementProfile:
+    """What discovery learned about a measurement, with the unit its readings carry."""
+
+    source_entity_id: str
+    labels: Mapping[str, str]
+    unit: Unit | None
+    kind: Literal["measurement"] = "measurement"
+
+    def label(self, state: str) -> str:
+        return self.labels.get(state, state)
+
+
+# What discovery learned about a device: every read parses by it, so a reading's kind, unit and
+# label all come from one discovery.
+type DeviceProfile = BasicProfile | MeasurementProfile
+
+
+def device_state(payload: object, profile: DeviceProfile) -> DeviceState | None:
+    """A device's state, of the profile's kind and with its label. Only a light keeps
+    attributes; a measurement carries the profile's unit."""
     if payload is None:
         return None
-    if not is_json_object(payload) or payload.get("entity_id") != source_entity_id:
+    if not is_json_object(payload) or payload.get("entity_id") != profile.source_entity_id:
         raise ValueError("Invalid state identity")
     attributes = payload.get("attributes", {})
     if not is_json_object(attributes):
@@ -60,21 +89,26 @@ def device_state(
         "state": payload.get("state"),
         **{key: payload[key] for key in SOURCE_TIMES if payload.get(key) is not None},
     }
-    match "measurement" if measured else device_kind_of(source_entity_id):
-        case "measurement":
-            return MeasurementState.model_validate(
-                state | {"device_kind": "measurement", "unit": unit_of(attributes)}
-            )
-        case "switch":
-            return SwitchState.model_validate(state | {"device_kind": "switch"})
-        case "on_off":
-            return OnOffState.model_validate(state | {"device_kind": "on_off"})
-        case "state":
-            return GenericState.model_validate(state | {"device_kind": "state"})
-        case "light":
-            return LightState.model_validate(
-                state
-                | {key: attributes[key] for key in COLOR_FIELDS if attributes.get(key) is not None}
-            )
-        case None:
-            raise ValueError("Not a device")
+    parsed: DeviceState
+    if isinstance(profile, MeasurementProfile):
+        parsed = MeasurementState.model_validate(
+            state | {"device_kind": "measurement", "unit": profile.unit}
+        )
+    else:
+        match profile.kind:
+            case "switch":
+                parsed = SwitchState.model_validate(state | {"device_kind": "switch"})
+            case "on_off":
+                parsed = OnOffState.model_validate(state | {"device_kind": "on_off"})
+            case "state":
+                parsed = GenericState.model_validate(state | {"device_kind": "state"})
+            case "light":
+                parsed = LightState.model_validate(
+                    state
+                    | {
+                        key: attributes[key]
+                        for key in COLOR_FIELDS
+                        if attributes.get(key) is not None
+                    }
+                )
+    return parsed.model_copy(update={"label": profile.label(parsed.state)})
