@@ -311,7 +311,6 @@ def test_unreachable_home_assistant_is_a_503_with_a_safe_code(
             ("/internal/catalog", {}),
             ("/internal/states", {"entity_id": "ha:hue"}),
             ("/internal/history", {"entity_id": "ha:hue", **WINDOW}),
-            ("/internal/words", {"entity_id": "ha:hue"}),
             ("/internal/statistics", {"entity_id": "ha:hue", **WINDOW}),
         ):
             response = client.get(path, params=params, headers=AUTH)
@@ -428,7 +427,7 @@ def test_history_parses_home_assistants_compressed_rows_into_readings(
     history = response.json()["history"]
 
     assert set(history) == {"ha:hue", "ha:plug"}
-    bulb = history["ha:hue"]
+    bulb = history["ha:hue"]["rows"]
     assert [row["source_entity_id"] for row in bulb] == ["light.bulb"] * 3
     readings = [row["reading"] for row in bulb]
     # Only the approved light fields are kept; names, effects and anything else are dropped.
@@ -467,7 +466,7 @@ def test_history_parses_home_assistants_compressed_rows_into_readings(
     ]
 
     # A switch keeps its state and availability only, even when Home Assistant sends more.
-    plug = [row["reading"] for row in history["ha:plug"]]
+    plug = [row["reading"] for row in history["ha:plug"]["rows"]]
     assert [without_times(reading) for reading in plug] == [
         {"device_kind": "switch", "state": "off", "label": "off", "availability": "available"},
         {"device_kind": "switch", "state": "on", "label": "on", "availability": "available"},
@@ -489,7 +488,8 @@ def test_history_of_an_entity_home_assistant_does_not_have_is_empty(
         headers=AUTH,
     )
     assert response.status_code == 200, response.text
-    assert response.json() == {"history": {"ha:hue": [], "ha:gone": []}}
+    history = response.json()["history"]
+    assert {device: history[device]["rows"] for device in history} == {"ha:hue": [], "ha:gone": []}
     for frame in history_frames(home):
         assert frame["entity_ids"] == ["light.bulb"]
 
@@ -503,7 +503,7 @@ def test_history_keeps_working_after_other_websocket_requests(
             "/internal/history", params={"entity_id": "ha:hue", **WINDOW}, headers=AUTH
         )
         assert response.status_code == 200, response.text
-        assert len(response.json()["history"]["ha:hue"]) == 3
+        assert len(response.json()["history"]["ha:hue"]["rows"]) == 3
     # Home Assistant refused no request for reusing an ID.
     assert len(history_frames(home)) == 3
 
@@ -582,7 +582,7 @@ def test_history_of_a_state_device_carries_labels_and_is_read_without_attributes
     )
     assert response.status_code == 200, response.text
 
-    readings = [row["reading"] for row in response.json()["history"]["ha:climate"]]
+    readings = [row["reading"] for row in response.json()["history"]["ha:climate"]["rows"]]
     assert [without_times(reading) for reading in readings] == [
         {"device_kind": "state", "state": "heat", "availability": "available", "label": "Heat"},
         {"device_kind": "state", "state": "off", "availability": "available", "label": "Off"},
@@ -615,38 +615,53 @@ def door_home(home: Home) -> Home:
     return home
 
 
-def test_words_gives_a_door_its_translated_words_and_raw_words_where_there_are_none(
+def test_history_gives_each_device_its_words_translated_or_raw(
     reader: TestClient, door_home: Home
 ) -> None:
-    # The catalog read teaches the reader each device's class and Home Assistant's words.
-    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
+    window = {"start": START.isoformat(), "end": END.isoformat()}
 
     response = reader.get(
-        "/internal/words",
+        "/internal/history",
         params=[
             ("entity_id", "ha:door"),
             ("entity_id", "ha:fan"),
             ("entity_id", "ha:gone"),
+            *window.items(),
         ],
         headers=AUTH,
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {
-        "words": {
-            "ha:door": {"on": "Open", "off": "Closed"},
-            # No translation, or no such device: the raw states.
-            "ha:fan": {"on": "on", "off": "off"},
-            "ha:gone": {"on": "on", "off": "off"},
-        }
+    history = response.json()["history"]
+    assert {device: history[device]["words"] for device in history} == {
+        "ha:door": {"on": "Open", "off": "Closed"},
+        # No translation, or no such device: the raw states.
+        "ha:fan": {"on": "on", "off": "off"},
+        "ha:gone": {"on": "on", "off": "off"},
     }
+    assert history["ha:gone"]["rows"] == []
 
 
-def test_http_reader_words_answers_every_requested_device_and_nothing_for_none(
+def test_an_empty_history_window_asks_home_assistant_nothing_and_still_gives_the_words(
+    reader: TestClient, door_home: Home
+) -> None:
+    response = reader.get(
+        "/internal/history",
+        params={"entity_id": "ha:door", "start": END.isoformat(), "end": END.isoformat()},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["history"]["ha:door"] == {
+        "rows": [],
+        "words": {"on": "Open", "off": "Closed"},
+    }
+    assert history_frames(door_home) == []
+
+
+def test_the_http_reader_gives_every_requested_device_its_history_and_words(
     reader: TestClient, door_home: Home, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert reader.get("/internal/catalog", headers=AUTH).status_code == 200
-
     def forward(request: httpx.Request) -> httpx.Response:
         answer = reader.get(request.url.raw_path.decode(), headers=AUTH)
         return httpx.Response(answer.status_code, content=answer.content)
@@ -655,13 +670,14 @@ def test_http_reader_words_answers_every_requested_device_and_nothing_for_none(
     monkeypatch.setattr(reader_module.httpx, "Client", partial(httpx.Client, transport=transport))
     http_reader = HttpReader("http://reader.internal", SERVICE_TOKEN)
 
-    words = http_reader.words(["ha:door", "ha:gone"])
+    history = http_reader.history(["ha:door", "ha:gone"], START, END)
 
-    assert {key: (value.on, value.off) for key, value in words.items()} == {
+    assert {key: (value.words.on, value.words.off) for key, value in history.items()} == {
         "ha:door": ("Open", "Closed"),
         "ha:gone": ("on", "off"),
     }
-    assert http_reader.words([]) == {}
+    assert history["ha:gone"].rows == []
+    assert http_reader.history([], START, END) == {}
 
 
 @pytest.fixture
@@ -701,7 +717,8 @@ def test_statistics_reads_the_requested_devices_buckets_in_one_request(
     )
 
     assert response.status_code == 200, response.text
-    statistics = response.json()["statistics"]
+    assert response.json()["period"] == "hour"
+    statistics = response.json()["buckets"]
     assert sorted(statistics) == ["ha:gone", "ha:power"]
     assert [(b["mean"], b["min"], b["max"]) for b in statistics["ha:power"]] == [
         (10.5, 5.0, 20.0),
@@ -712,6 +729,21 @@ def test_statistics_reads_the_requested_devices_buckets_in_one_request(
     [frame] = statistics_frames(power_home)
     assert frame["statistic_ids"] == ["sensor.desk_power"]
     assert frame["period"] == "hour"
+
+
+def test_statistics_for_a_range_up_to_24_hours_are_read_and_reported_in_5_minutes(
+    reader: TestClient, power_home: Home
+) -> None:
+    window = {"start": START.isoformat(), "end": (START + timedelta(hours=1)).isoformat()}
+
+    response = reader.get(
+        "/internal/statistics", params=[("entity_id", "ha:power"), *window.items()], headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["period"] == "5minute"
+    [frame] = statistics_frames(power_home)
+    assert frame["period"] == "5minute"
 
 
 def test_the_http_reader_returns_typed_buckets_for_every_requested_device(
@@ -728,8 +760,10 @@ def test_the_http_reader_returns_typed_buckets_for_every_requested_device(
     http_reader = HttpReader("http://reader.internal", SERVICE_TOKEN)
     end = START + timedelta(days=7)
 
-    buckets = http_reader.statistics(["ha:power", "ha:gone"], START, end)
+    statistics = http_reader.statistics(["ha:power", "ha:gone"], START, end)
 
+    assert statistics.period == "hour"
+    buckets = statistics.buckets
     assert list(buckets) == ["ha:power", "ha:gone"]
     assert [
         (datetime.fromisoformat(b.start), datetime.fromisoformat(b.end), b.mean, b.min, b.max)
@@ -739,7 +773,7 @@ def test_the_http_reader_returns_typed_buckets_for_every_requested_device(
         (START + timedelta(hours=3), START + timedelta(hours=4), 60.0, 1.0, 90.0),
     ]
     assert buckets["ha:gone"] == []
-    assert http_reader.statistics([], START, end) == {}
+    assert http_reader.statistics([], START, end).buckets == {}
 
 
 def test_the_http_reader_raises_the_safe_code_when_the_reader_cannot_read_statistics(

@@ -43,7 +43,10 @@ def test_a_day_has_5_minute_buckets_and_a_week_or_a_month_hourly_ones() -> None:
     ]
 
     for span, length, at_least in expected:
-        buckets = backend.statistics([METER], end - span, end)[METER]
+        statistics = backend.statistics([METER], end - span, end)
+        buckets = statistics.buckets[METER]
+
+        assert statistics.period == ("5minute" if length == timedelta(minutes=5) else "hour")
 
         assert len(buckets) >= at_least, (span, len(buckets))
         starts = [datetime.fromisoformat(bucket.start) for bucket in buckets]
@@ -62,7 +65,7 @@ def test_the_statistics_of_a_bucket_do_not_change_between_reads_or_demo_instance
     start = end - timedelta(days=7)
 
     def read(backend: DemoBackend, begin: datetime) -> list[Bucket]:
-        return backend.statistics([METER], begin, end)[METER]
+        return backend.statistics([METER], begin, end).buckets[METER]
 
     first = DemoBackend()
     whole = read(first, start)
@@ -83,4 +86,4 @@ def test_a_device_that_is_not_a_measurement_or_not_in_the_demo_has_no_statistics
         ["light.hue_desk", "sensor.nowhere"], end - timedelta(days=7), end
     )
 
-    assert result == {"light.hue_desk": [], "sensor.nowhere": []}
+    assert result.buckets == {"light.hue_desk": [], "sensor.nowhere": []}

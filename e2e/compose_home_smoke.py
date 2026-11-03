@@ -228,7 +228,7 @@ def reader_history(identity: str, start: datetime, end: datetime) -> list[dict[s
         end.isoformat(),
     ).stdout.splitlines()
     assert result[0] == "200", result
-    rows: list[dict[str, Any]] = json.loads(result[1])["history"][identity]
+    rows: list[dict[str, Any]] = json.loads(result[1])["history"][identity]["rows"]
     return rows
 
 

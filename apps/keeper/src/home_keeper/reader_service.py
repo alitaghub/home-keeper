@@ -22,16 +22,18 @@ from home_keeper.events import DeviceProfile, MeasurementProfile
 from home_keeper.home_assistant import VISIBLE_ASCII, ConnectorError, HomeAssistantConnector
 from home_keeper.models import (
     MAX_SELECTION,
-    Bucket,
     CollectorError,
     DeviceState,
     Entity,
     Identity,
     MeasurementState,
     Reading,
+    statistics_period,
 )
 from home_keeper.reader import (
+    NO_HISTORY,
     RAW_WORDS,
+    DeviceHistory,
     HistoryRow,
     LiveState,
     OnOffWords,
@@ -41,9 +43,8 @@ from home_keeper.reader import (
     ReaderHealthy,
     ReaderHistory,
     ReaderStates,
-    ReaderStatistics,
     ReaderUnavailable,
-    ReaderWords,
+    Statistics,
 )
 from home_keeper.settings import ReaderSettings
 from home_keeper.tokens import load_token
@@ -167,37 +168,32 @@ class HomeAssistantBackend:
 
     def history(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[HistoryRow]]:
+    ) -> dict[Identity, DeviceHistory]:
         _, profiles = self._discover()
         # Only devices Home Assistant still has; every other ID has no history.
         requested = {i: profile for i in entity_ids if (profile := profiles.get(i)) is not None}
-        try:
-            states = self._connection().history(_unique(requested.values()), start, end)
-        except ConnectorError as error:
-            raise _unavailable(error) from None
+        states: dict[str, list[DeviceState]] = {}
+        if start < end:
+            try:
+                states = self._connection().history(_unique(requested.values()), start, end)
+            except ConnectorError as error:
+                raise _unavailable(error) from None
         return {
-            entity_id: [
-                history_row(profile.source_entity_id, state)
-                for state in states.get(profile.source_entity_id, [])
-            ]
+            entity_id: DeviceHistory(
+                rows=[
+                    history_row(profile.source_entity_id, state)
+                    for state in states.get(profile.source_entity_id, [])
+                ],
+                words=OnOffWords(on=profile.label("on"), off=profile.label("off")),
+            )
             if (profile := requested.get(entity_id)) is not None
-            else []
-            for entity_id in entity_ids
-        }
-
-    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
-        # Discovery reads the translations; a fresh catalog keeps them current.
-        _, profiles = self._discover()
-        return {
-            entity_id: OnOffWords(on=profile.label("on"), off=profile.label("off"))
-            if (profile := profiles.get(entity_id)) is not None
-            else RAW_WORDS
+            else NO_HISTORY
             for entity_id in entity_ids
         }
 
     def statistics(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[Bucket]]:
+    ) -> Statistics:
         _, profiles = self._discover()
         # Only measurements Home Assistant still has; every other ID has no statistics.
         requested = {
@@ -206,15 +202,18 @@ class HomeAssistantBackend:
             if isinstance(profile := profiles.get(entity_id), MeasurementProfile)
         }
         try:
-            statistics = self._connection().statistics(_unique(requested.values()), start, end)
+            period, buckets = self._connection().statistics(_unique(requested.values()), start, end)
         except ConnectorError as error:
             raise _unavailable(error) from None
-        return {
-            entity_id: statistics.get(profile.source_entity_id, [])
-            if (profile := requested.get(entity_id)) is not None
-            else []
-            for entity_id in entity_ids
-        }
+        return Statistics(
+            period=period,
+            buckets={
+                entity_id: buckets.get(profile.source_entity_id, [])
+                if (profile := requested.get(entity_id)) is not None
+                else []
+                for entity_id in entity_ids
+            },
+        )
 
 
 def _unique[Profile: DeviceProfile](profiles: Iterable[Profile]) -> list[Profile]:
@@ -266,46 +265,50 @@ class DemoBackend:
 
     def history(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[HistoryRow]]:
+    ) -> dict[Identity, DeviceHistory]:
         """Like Home Assistant: the state at `start`, stamped with `start`, then every state
-        recorded after `start` and before `end`."""
+        recorded after `start` and before `end`, with the demo's words for on and off."""
         with self.replay.lock:
             history = {
                 entity_id: list(self.recorded.get(entity_id, ())) for entity_id in entity_ids
             }
-        result: dict[Identity, list[HistoryRow]] = {}
+        known = {entity["id"] for entity in ENTITIES}
+        result: dict[Identity, DeviceHistory] = {}
         for entity_id, states in history.items():
             before = [state for state in states if _updated(state) <= start]
             during = [state for state in states if start < _updated(state) < end]
             initial = (
                 [before[-1].model_copy(update={"last_changed": start, "last_updated": start})]
-                if before
+                if before and start < end
                 else []
             )
-            result[entity_id] = [history_row(entity_id, state) for state in initial + during]
+            result[entity_id] = DeviceHistory(
+                rows=[history_row(entity_id, state) for state in initial + during],
+                words=OnOffWords(on=demo_label("on", entity_id), off=demo_label("off", entity_id))
+                if entity_id in known
+                else RAW_WORDS,
+            )
         return result
-
-    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
-        known = {entity["id"] for entity in ENTITIES}
-        return {
-            entity_id: OnOffWords(on=demo_label("on", entity_id), off=demo_label("off", entity_id))
-            if entity_id in known
-            else RAW_WORDS
-            for entity_id in entity_ids
-        }
 
     def statistics(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[Bucket]]:
-        """Synthetic statistics for the demo's measurements; [] for any other ID."""
+    ) -> Statistics:
+        """Synthetic statistics for the demo's measurements; [] for any other ID. The period
+        follows the range, as for Home Assistant."""
         measurements = {
             entity["id"] for entity in ENTITIES if entity["device_kind"] == "measurement"
         }
+        period = statistics_period(start, end)
         now = datetime.now(UTC)
-        return {
-            entity_id: demo_statistics(start, end, now) if entity_id in measurements else []
-            for entity_id in entity_ids
-        }
+        return Statistics(
+            period=period,
+            buckets={
+                entity_id: demo_statistics(period, start, end, now)
+                if entity_id in measurements
+                else []
+                for entity_id in entity_ids
+            },
+        )
 
     def send(self, forwarded: ForwardedCommand) -> Literal["ok", "refused"]:
         with self.replay.lock:
@@ -416,25 +419,15 @@ def create_reader_app(backend: ReaderBackend, service_token: str) -> FastAPI:
             history=backend.history(entity_id or [], start.astimezone(UTC), end.astimezone(UTC))
         )
 
-    @app.get("/internal/statistics", response_model=ReaderStatistics)
+    @app.get("/internal/statistics", response_model=Statistics)
     def statistics(
         start: AwareDatetime,
         end: AwareDatetime,
         entity_id: Annotated[list[Identity] | None, Query(max_length=MAX_STATE_IDS)] = None,
-    ) -> ReaderStatistics:
+    ) -> Statistics:
         if start > end:
             raise HTTPException(422, "Invalid request")
-        return ReaderStatistics(
-            statistics=backend.statistics(
-                entity_id or [], start.astimezone(UTC), end.astimezone(UTC)
-            )
-        )
-
-    @app.get("/internal/words", response_model=ReaderWords)
-    def words(
-        entity_id: Annotated[list[Identity] | None, Query(max_length=MAX_STATE_IDS)] = None,
-    ) -> ReaderWords:
-        return ReaderWords(words=backend.words(entity_id or []))
+        return backend.statistics(entity_id or [], start.astimezone(UTC), end.astimezone(UTC))
 
     if isinstance(backend, DemoBackend):
         demo = backend

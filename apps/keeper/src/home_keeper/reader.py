@@ -19,12 +19,14 @@ from home_keeper.models import (
     ReaderError,
     Reading,
     StateText,
+    StatisticsPeriod,
     WireModel,
     to_utc,
 )
 
 __all__ = [
     "Bucket",
+    "DeviceHistory",
     "HistoryRow",
     "HttpReader",
     "LiveState",
@@ -32,6 +34,7 @@ __all__ = [
     "Reader",
     "ReaderError",
     "ReaderUnavailable",
+    "Statistics",
 ]
 
 # Above the reader's own 5-second Home Assistant timeout, so a slow answer is not read
@@ -89,6 +92,25 @@ class HistoryRow(WireModel):
         return self._updated_at
 
 
+class DeviceHistory(WireModel):
+    """A device's recorded rows, oldest first, and Home Assistant's words for its on and
+    off."""
+
+    rows: list[HistoryRow]
+    words: OnOffWords
+
+
+# The history of a device Home Assistant does not have.
+NO_HISTORY = DeviceHistory(rows=[], words=RAW_WORDS)
+
+
+class Statistics(WireModel):
+    """Home Assistant's statistics buckets per device, all of one period."""
+
+    period: StatisticsPeriod
+    buckets: dict[Identity, list[Bucket]]
+
+
 def _aware(value: str) -> datetime:
     """Raises ValueError for a malformed time or one without a timezone."""
     return to_utc(datetime.fromisoformat(value))
@@ -110,23 +132,18 @@ class Reader(Protocol):
 
     def history(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[HistoryRow]]:
-        """One key per requested ID, rows oldest first. The first row is the state at
-        `start`. [] when Home Assistant has no history for the entity or no longer has it.
+    ) -> dict[Identity, DeviceHistory]:
+        """One key per requested ID: rows oldest first, the first the state at `start`, none for
+        an empty window; and its on/off words by device class, then domain, else RAW_WORDS.
         Raises ReaderUnavailable."""
-        ...
-
-    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
-        """One key per requested ID: Home Assistant's words for its on and off, by its device
-        class first, then its domain's own. RAW_WORDS for an ID it does not translate or does
-        not have. Raises ReaderUnavailable."""
         ...
 
     def statistics(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[Bucket]]:
-        """Home Assistant's statistics buckets per requested ID, oldest first; [] for an ID
-        with none. A period without statistics has no bucket. Raises ReaderUnavailable."""
+    ) -> Statistics:
+        """Home Assistant's statistics buckets per requested ID, oldest first, and the period
+        it read them in; [] for an ID with none. A period without statistics has no bucket.
+        Raises ReaderUnavailable."""
         ...
 
 
@@ -150,15 +167,7 @@ class ReaderStates(WireModel):
 
 
 class ReaderHistory(WireModel):
-    history: dict[Identity, list[HistoryRow]]
-
-
-class ReaderWords(WireModel):
-    words: dict[Identity, OnOffWords]
-
-
-class ReaderStatistics(WireModel):
-    statistics: dict[Identity, list[Bucket]]
+    history: dict[Identity, DeviceHistory]
 
 
 class HttpReader:
@@ -188,7 +197,7 @@ class HttpReader:
 
     def history(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[HistoryRow]]:
+    ) -> dict[Identity, DeviceHistory]:
         if not entity_ids:
             return {}
         history = self._get(
@@ -200,31 +209,25 @@ class HttpReader:
                 "end": [end.isoformat()],
             },
         ).history
-        return {entity_id: history.get(entity_id, []) for entity_id in entity_ids}
-
-    def words(self, entity_ids: Sequence[Identity]) -> dict[Identity, OnOffWords]:
-        if not entity_ids:
-            return {}
-        words = self._get(
-            "/internal/words", ReaderWords, params={"entity_id": list(entity_ids)}
-        ).words
-        return {entity_id: words.get(entity_id, RAW_WORDS) for entity_id in entity_ids}
+        return {entity_id: history.get(entity_id, NO_HISTORY) for entity_id in entity_ids}
 
     def statistics(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
-    ) -> dict[Identity, list[Bucket]]:
-        if not entity_ids:
-            return {}
+    ) -> Statistics:
+        # Asked even for no device: the reader decides the period.
         statistics = self._get(
             "/internal/statistics",
-            ReaderStatistics,
+            Statistics,
             params={
                 "entity_id": list(entity_ids),
                 "start": [start.isoformat()],
                 "end": [end.isoformat()],
             },
-        ).statistics
-        return {entity_id: statistics.get(entity_id, []) for entity_id in entity_ids}
+        )
+        return Statistics(
+            period=statistics.period,
+            buckets={entity_id: statistics.buckets.get(entity_id, []) for entity_id in entity_ids},
+        )
 
     def _get[T: BaseModel](
         self, path: str, model: type[T], params: dict[str, list[str]] | None = None

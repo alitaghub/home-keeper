@@ -38,11 +38,10 @@ from home_keeper.models import (
     Unreachable,
     UsageKind,
     UsageReport,
-    statistics_period,
     to_utc,
 )
 from home_keeper.monitoring import Monitoring, SelectionFull, UnknownEntity, UnsupportedEntity
-from home_keeper.reader import RAW_WORDS, Reader, ReaderUnavailable
+from home_keeper.reader import NO_HISTORY, Reader, ReaderUnavailable
 from home_keeper.store import Store
 from home_keeper.usage import device_usage
 
@@ -294,25 +293,17 @@ def create_app(
         # on or off, such as a thermostat or a power meter, have no usage.
         switchable = {device for device, kind in kinds.items() if kind not in WITHOUT_USAGE}
         devices = sorted(set(entity_id or switchable) & switchable)
-        # Home Assistant has no history after now.
-        history_end = min(end, current)
-        history = (
-            reader.history(devices, history_start, history_end)
-            if devices and history_start < history_end
-            else {}
-        )
+        # Home Assistant has no history after now. A range wholly after it reads an empty
+        # window: no rows, but still each device's words.
+        history_end = max(history_start, min(end, current))
+        history = reader.history(devices, history_start, history_end) if devices else {}
 
         def kind_of(device: str) -> UsageKind:
             # A device selected without a kind is still known by its rows.
             if (kind := kinds[device]) is not None and kind not in WITHOUT_USAGE:
                 return kind
-            seen = {row.reading.device_kind for row in history.get(device, [])}
+            seen = {row.reading.device_kind for row in history.get(device, NO_HISTORY).rows}
             return "on_off" if "on_off" in seen else "switch" if "switch" in seen else "light"
-
-        # Home Assistant's words for each on/off device's on and off, even one that stayed in
-        # one state for the whole range. Asked only when an on/off device is in the report.
-        on_off = [device for device in devices if kind_of(device) == "on_off"]
-        words = reader.words(on_off) if on_off else {}
 
         return UsageReport(
             start=start.isoformat(),
@@ -326,8 +317,8 @@ def create_app(
                     end=end,
                     now=current,
                     timezone=timezone,
-                    rows=history.get(device, []),
-                    words=words.get(device, RAW_WORDS),
+                    rows=history.get(device, NO_HISTORY).rows,
+                    words=history.get(device, NO_HISTORY).words,
                 )
                 for device in devices
             ],
@@ -353,21 +344,22 @@ def create_app(
         measured = {device for device, kind in monitoring.kinds().items() if kind == "measurement"}
         # Unselected IDs and other kinds are left out rather than reported as missing.
         devices = sorted(set(entity_id or measured) & measured)
-        statistics = reader.statistics(devices, start, end) if devices else {}
+        if not devices:
+            return MeasurementReport(start=start.isoformat(), end=end.isoformat(), devices=[])
+        statistics = reader.statistics(devices, start, end)
         # The statistics answered, so a failed current read costs only the unit and latest value.
         try:
-            current = reader.states(devices) if devices else {}
+            current = reader.states(devices)
         except ReaderUnavailable:
             current = {}
-        period = statistics_period(start, end)
         return MeasurementReport(
             start=start.isoformat(),
             end=end.isoformat(),
             devices=[
                 measurement_series(
                     device,
-                    period,
-                    statistics.get(device, []),
+                    statistics.period,
+                    statistics.buckets.get(device, []),
                     live.reading if (live := current.get(device)) else None,
                 )
                 for device in devices

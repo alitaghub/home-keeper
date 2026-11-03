@@ -87,7 +87,7 @@ def read_page(
         found.extend(
             change
             for device in devices
-            for change in changes(device, history.get(device, []), lower, upper)
+            for change in changes(device, history[device].rows, lower, upper)
             if after is None or _position(change) < (to_utc(after.time), after.entity_id)
         )
         upper, chunk = lower, chunk * 2

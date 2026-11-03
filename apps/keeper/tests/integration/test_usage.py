@@ -682,7 +682,18 @@ def test_a_door_closed_for_the_whole_range_still_reports_the_word_for_open(datab
 
     assert door["on_seconds"] == 0
     assert (door["on_label"], door["off_label"]) == ("Open", "Closed")
-    assert house.reader.word_reads == [["door-a"]]
+    # The words come with the history: one read.
+    assert [ids for ids, _, _ in house.reader.history_reads] == [["door-a"]]
+
+
+def test_a_door_in_a_range_wholly_after_now_still_reports_its_words(database: str) -> None:
+    with home(database, ("door-a",), clock=utc(10, 12)) as house:
+        house.record("door-a", (utc(10, 6), OFF))
+
+        door = house.devices(utc(10, 14), utc(10, 16))["door-a"]
+
+    assert door["on_seconds"] == 0
+    assert (door["on_label"], door["off_label"]) == ("Open", "Closed")
 
 
 def test_an_on_off_device_without_translation_reports_on_and_off(database: str) -> None:
@@ -694,15 +705,3 @@ def test_an_on_off_device_without_translation_reports_on_and_off(database: str) 
 
     assert door["on_seconds"] == HOUR
     assert (door["on_label"], door["off_label"]) == ("on", "off")
-
-
-def test_usage_is_a_503_when_only_the_words_read_fails(database: str) -> None:
-    with home(database, ("door-a",), clock=utc(10, 12)) as house:
-        house.record("door-a", (utc(10, 9), on()))
-        # The catalog and the history still answer; only Home Assistant's words do not.
-        house.reader.words_error = "connection"
-
-        response = house.usage_response(utc(10, 8), utc(10, 12))
-
-    assert response.status_code == 503, response.text
-    assert house.reader.word_reads == [["door-a"]]

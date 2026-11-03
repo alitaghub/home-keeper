@@ -428,9 +428,12 @@ def measurement_responses(database: str) -> dict[str, Recorded]:
         result["measurement_monitored"] = record(client.get("/api/monitored"))
         week = usage_range(NOW - timedelta(days=7), NOW)
         result["measurements"] = record(client.get("/api/measurements", params=week))
+        # The reader reads a range up to 24 hours in 5-minute statistics.
+        reader.statistics_period = "5minute"
         result["measurements_24_hours"] = record(
             client.get("/api/measurements", params=usage_range(NOW - timedelta(hours=24), NOW))
         )
+        reader.statistics_period = "hour"
         # Nothing in the range: an empty chart and null numbers.
         result["measurements_empty"] = record(
             client.get(

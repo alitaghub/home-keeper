@@ -19,8 +19,8 @@ from home_keeper.models import (
     LightState,
     MeasurementState,
     OnOffState,
+    StatisticsPeriod,
     SwitchState,
-    statistics_period,
 )
 from home_keeper_light_command import (
     BRIGHTNESS_MAX,
@@ -310,11 +310,11 @@ def demo_power(moment: datetime) -> float:
     return round(250 + 150 * daily + 40 * wobble, 1)
 
 
-def demo_statistics(start: datetime, end: datetime, now: datetime) -> list[Bucket]:
+def demo_statistics(
+    period: StatisticsPeriod, start: datetime, end: datetime, now: datetime
+) -> list[Bucket]:
     """Synthetic statistics like Home Assistant's: every whole period that starts in
-    `[start, end)`, has ended by `now` and starts within DEMO_STATISTICS of it, oldest first.
-    The period follows the range, as for Home Assistant."""
-    period = statistics_period(start, end)
+    `[start, end)`, has ended by `now` and starts within DEMO_STATISTICS of it, oldest first."""
     step = timedelta(minutes=5) if period == "5minute" else timedelta(hours=1)
     epoch = datetime.fromtimestamp(0, UTC)
     # Periods start at whole multiples of their length, as Home Assistant's do.
