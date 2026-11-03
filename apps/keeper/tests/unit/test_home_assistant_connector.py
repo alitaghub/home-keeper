@@ -1117,6 +1117,37 @@ def test_an_on_off_reading_has_no_attributes_and_is_labeled_by_its_device_class(
     assert fan.model_dump()["label"] == "On"
 
 
+def test_a_state_its_device_class_does_not_translate_takes_its_domains_word(
+    connector: Connector,
+) -> None:
+    client, install, _ = connector
+    demo = {"platform": "demo", "translation_key": None}
+    install(
+        [
+            registry_entry("front", "binary_sensor.front", **demo),
+            registry_entry("back", "binary_sensor.back", **demo),
+        ],
+        [{"id": "device1", "name": "Hall"}],
+        [
+            entity_state("binary_sensor.front", "on", device_class="door"),
+            entity_state("binary_sensor.back", "off", device_class="door"),
+        ],
+        translations={
+            "component.binary_sensor.entity_component.door.state.on": "Open",
+            "component.binary_sensor.entity_component._.state.on": "Detected",
+            "component.binary_sensor.entity_component._.state.off": "Clear",
+        },
+    )
+    found = client.discover()
+
+    readings = client.read_states(discovered(found, "binary_sensor.front", "binary_sensor.back"))
+
+    assert {key: reading.model_dump()["label"] for key, reading in readings.items() if reading} == {
+        "binary_sensor.front": "Open",
+        "binary_sensor.back": "Clear",
+    }
+
+
 @pytest.mark.parametrize("word", ["unavailable", "unknown"])
 def test_an_on_off_device_that_reports_unavailable_or_unknown_is_not_available(
     connector: Connector, word: str
