@@ -172,10 +172,12 @@ class HomeAssistantBackend:
         _, profiles = self._discover()
         # Only devices Home Assistant still has; every other ID has no history.
         requested = {i: profile for i in entity_ids if (profile := profiles.get(i)) is not None}
-        try:
-            states = self._connection().history(_unique(requested.values()), start, end)
-        except ConnectorError as error:
-            raise _unavailable(error) from None
+        states: dict[str, list[DeviceState]] = {}
+        if start < end:
+            try:
+                states = self._connection().history(_unique(requested.values()), start, end)
+            except ConnectorError as error:
+                raise _unavailable(error) from None
         return {
             entity_id: DeviceHistory(
                 rows=[
@@ -277,7 +279,7 @@ class DemoBackend:
             during = [state for state in states if start < _updated(state) < end]
             initial = (
                 [before[-1].model_copy(update={"last_changed": start, "last_updated": start})]
-                if before
+                if before and start < end
                 else []
             )
             result[entity_id] = DeviceHistory(

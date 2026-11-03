@@ -293,13 +293,10 @@ def create_app(
         # on or off, such as a thermostat or a power meter, have no usage.
         switchable = {device for device, kind in kinds.items() if kind not in WITHOUT_USAGE}
         devices = sorted(set(entity_id or switchable) & switchable)
-        # Home Assistant has no history after now.
-        history_end = min(end, current)
-        history = (
-            reader.history(devices, history_start, history_end)
-            if devices and history_start < history_end
-            else {}
-        )
+        # Home Assistant has no history after now. A range wholly after it reads an empty
+        # window: no rows, but still each device's words.
+        history_end = max(history_start, min(end, current))
+        history = reader.history(devices, history_start, history_end) if devices else {}
 
         def kind_of(device: str) -> UsageKind:
             # A device selected without a kind is still known by its rows.

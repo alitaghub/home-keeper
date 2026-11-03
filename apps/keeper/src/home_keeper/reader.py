@@ -133,10 +133,9 @@ class Reader(Protocol):
     def history(
         self, entity_ids: Sequence[Identity], start: datetime, end: datetime
     ) -> dict[Identity, DeviceHistory]:
-        """One key per requested ID, rows oldest first. The first row is the state at
-        `start`; no rows when Home Assistant has no history for the entity or no longer has
-        it. The words are Home Assistant's for the device's on and off, by its device class
-        first, then its domain's own; RAW_WORDS where it has none. Raises ReaderUnavailable."""
+        """One key per requested ID: rows oldest first, the first the state at `start`, none for
+        an empty window; and its on/off words by device class, then domain, else RAW_WORDS.
+        Raises ReaderUnavailable."""
         ...
 
     def statistics(

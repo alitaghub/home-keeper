@@ -642,6 +642,23 @@ def test_history_gives_each_device_its_words_translated_or_raw(
     assert history["ha:gone"]["rows"] == []
 
 
+def test_an_empty_history_window_asks_home_assistant_nothing_and_still_gives_the_words(
+    reader: TestClient, door_home: Home
+) -> None:
+    response = reader.get(
+        "/internal/history",
+        params={"entity_id": "ha:door", "start": END.isoformat(), "end": END.isoformat()},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["history"]["ha:door"] == {
+        "rows": [],
+        "words": {"on": "Open", "off": "Closed"},
+    }
+    assert history_frames(door_home) == []
+
+
 def test_the_http_reader_gives_every_requested_device_its_history_and_words(
     reader: TestClient, door_home: Home, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -712,6 +729,21 @@ def test_statistics_reads_the_requested_devices_buckets_in_one_request(
     [frame] = statistics_frames(power_home)
     assert frame["statistic_ids"] == ["sensor.desk_power"]
     assert frame["period"] == "hour"
+
+
+def test_statistics_for_a_range_up_to_24_hours_are_read_and_reported_in_5_minutes(
+    reader: TestClient, power_home: Home
+) -> None:
+    window = {"start": START.isoformat(), "end": (START + timedelta(hours=1)).isoformat()}
+
+    response = reader.get(
+        "/internal/statistics", params=[("entity_id", "ha:power"), *window.items()], headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["period"] == "5minute"
+    [frame] = statistics_frames(power_home)
+    assert frame["period"] == "5minute"
 
 
 def test_the_http_reader_returns_typed_buckets_for_every_requested_device(

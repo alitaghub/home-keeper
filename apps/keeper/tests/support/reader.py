@@ -79,7 +79,10 @@ def recorded_at(row: HistoryRow) -> datetime:
 
 def period(rows: Sequence[HistoryRow], start: datetime, end: datetime) -> list[HistoryRow]:
     """What Home Assistant's `history/history_during_period` returns for one entity: the
-    state at `start` first, then each row recorded after `start` and before `end`."""
+    state at `start` first, then each row recorded after `start` and before `end`; nothing
+    for an empty window."""
+    if start >= end:
+        return []
     ordered = sorted(rows, key=recorded_at)
     before = [row for row in ordered if recorded_at(row) <= start]
     return before[-1:] + [row for row in ordered if start < recorded_at(row) < end]

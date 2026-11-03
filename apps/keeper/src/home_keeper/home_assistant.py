@@ -274,10 +274,8 @@ class HomeAssistantConnector:
     def statistics(
         self, profiles: Sequence[MeasurementProfile], start: datetime, end: datetime
     ) -> tuple[StatisticsPeriod, dict[str, list[Bucket]]]:
-        """The period read in, and each measurement's statistics from `start` to `end`, oldest
-        first, by its Home Assistant entity ID, STATISTICS_BATCH measurements to a request:
-        5-minute buckets for a range up to 24 hours, else hourly ones. An entity with no
-        statistics has []."""
+        """The period read in, and each measurement's buckets from `start` to `end` by its Home
+        Assistant entity ID, oldest first; [] for one with none."""
         period = statistics_period(start, end)
         source_entity_ids = list(_by_source(profiles))
         if not source_entity_ids:
