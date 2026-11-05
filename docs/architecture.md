@@ -1,120 +1,99 @@
 # Architecture
 
-Home Keeper has three running parts: a reader that reads Home Assistant when
-asked, an API that decides what to show, and a dashboard that shows it. Device
-history stays in Home Assistant's recorder; Home Keeper keeps no copy of it.
-The reader and the API run as two containers from one image, next to one
-Postgres; a third container, `web`, serves the dashboard and forwards `/api` to
-the API and `/agent` to the agent, so the browser talks to one origin. The default stack adds a bundled Home Assistant and a one-shot
-`ha-setup` container that onboards it and stores the reader's and the
-controller's tokens.
-A one-shot `db-setup` container gives the API, the agent and the Telegram worker
-each a database, a login role and a password file of their own in that Postgres
-(`compose.postgres.yaml`). Each role can connect only to its own database.
-The optional `control` profile adds a controller, from its own image, that
-switches monitored lights, plugs and switches for the API; [control.md](control.md) covers it.
-The optional `agent` profile adds a chat agent that the dashboard's agent panel
-talks to; the agent keeps its threads in its own database. [agent.md](agent.md) covers it.
-The separate `telegram` profile adds a polling worker that connects private
-Telegram chats to the same agent; [telegram.md](telegram.md) covers setup.
+Home Keeper is a small set of containers around one rule: Home Assistant owns
+devices and their history, and Home Keeper reads them on demand. Home Keeper
+stores only what is its own: the monitored devices and the command log.
+
+## Services
 
 ```mermaid
 flowchart LR
     subgraph home["Your home"]
-        hue["Lights (any brand)"]
-        ha["Home Assistant<br/><i>bundled or your own</i>"]
-        hue --> ha
+        devices["Devices"] --> ha["Home Assistant<br/><i>bundled or your own</i>"]
     end
 
-    setup["ha-setup<br/><i>runs once</i>"] -- "onboarding,<br/>two long-lived tokens" --> ha
-    setup -- "token volume<br/>(reader reads it)" --> reader
-    setup -- "control token volume<br/>(controller reads it)" --> controller
+    setup["ha-setup<br/><i>runs once</i>"] -- "onboarding, two tokens" --> ha
 
-    subgraph keeper["Home Keeper (Docker Compose)"]
-        direction LR
-        reader["Reader<br/><i>live or demo</i>"]
-        api["API<br/><i>FastAPI</i>"]
-        db[("Postgres<br/><i>one database per service</i>")]
-        api -- "catalog, current state,<br/>history, reachability" --> reader
-        api --> db
-        controller["Controller<br/><i>profile control</i>"]
-        api -- "fixed light and switch commands" --> controller
-        controller -- "heartbeats" --> api
+    subgraph keeper["Home Keeper"]
+        web["web<br/><i>Caddy</i>"]
+        api["api<br/><i>FastAPI</i>"]
+        reader["reader"]
+        controller["controller<br/><i>profile control</i>"]
+        db[("postgres<br/><i>one database per service</i>")]
+        agent["agent<br/><i>Aegra, profile agent</i>"]
+        bot["telegram<br/><i>profile telegram</i>"]
     end
 
-    reader -- "registry, state<br/>and history reads" --> ha
-    controller -- "light.turn_on, light.turn_off,<br/>switch.turn_on, switch.turn_off" --> ha
-    browser["Dashboard<br/><i>React, in your browser</i>"] -- "select, refresh, read history" --> web["web<br/><i>Caddy</i>"]
+    browser["Browser"] --> web
     web -- "/api" --> api
-
-    subgraph agentprofile["Optional agent (profile agent)"]
-        direction LR
-        agent["Agent<br/><i>Aegra</i>"]
-    end
-    agent -- "threads" --> db
-    bot -- "bot state" --> db
-
-    web -- "/agent: questions and approvals<br/>from the agent panel" --> agent
-    telegram["Telegram<br/><i>private chats</i>"] <-->|"outbound polling,<br/>replies and approval buttons"| bot["Telegram worker<br/><i>profile telegram</i>"]
-    bot <-->|"questions, answers,<br/>monitoring approvals"| agent
+    web -- "/agent" --> agent
+    api -- "catalog, state, history,<br/>statistics, reachability" --> reader
+    api -- "fixed commands" --> controller
+    controller -- "heartbeat" --> api
+    api --> db
+    agent --> db
+    bot --> db
+    reader -- "fixed reads" --> ha
+    controller -- "four service calls" --> ha
     agent -- "public API only" --> api
-    agent -- "prompts, tool results" --> model["Model provider"]
+    bot <--> agent
+    bot <-->|"outbound polling"| telegram["Telegram"]
+    agent --> model["Model provider"]
 ```
 
-| Part      | Code                                   | Job                                                                                         |
-| --------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Reader    | `reader_service.py`, `home_assistant.py` | Holds the Home Assistant token. Answers the API's reads of the catalog, current state, history, statistics and reachability on request. Keeps no state; caches the catalog for up to 10 seconds. The API reaches it through `reader.py`. |
-| Setup     | `ha_setup.py`                          | Onboards the bundled Home Assistant once and stores the reader's token. Creates the non-admin control user and its token. Checks both tokens on later runs. |
-| Demo      | `demo.py`, `reader_service.py`         | The reader's synthetic home. Same reader routes, no hardware, a day of synthetic history from the start. Applies demo light commands. |
-| API       | `api.py`, `models.py`, `control.py`    | Validates requests and answers them from the reader and the store. Routes selection to Monitoring and commands to Commands. |
-| History   | `changes.py`, `usage.py`, `measurements.py` | Turns Home Assistant's history rows into the changes History lists and the usage numbers, with unknown time named, and a measurement's statistics into its overall numbers. |
-| Monitoring | `monitoring.py`                       | Owns the selection, checks a new selection against Home Assistant's catalog, and answers each monitored device's current state from the reader. |
-| Commands  | `commands.py`                          | Checks, forwards and records commands to monitored lights, plugs and switches, then reads the device's state every 0.5 s for up to 5 s to confirm the outcome. |
-| Controller | `apps/controller`                     | Optional (profile `control`). Sends the four fixed calls (`light.turn_on`, `light.turn_off`, `switch.turn_on`, `switch.turn_off`) for monitored lights, plugs and switches to Home Assistant with its own token, or to the demo reader. Publishes no port. |
-| Store     | `store.py`                             | Postgres: the selection, the command log and a few metadata values. Command retention. |
-| Dashboard | `apps/web`                             | Discovery, selection, current state, the change timeline, the command log and the agent panel. The `web` container (Caddy) serves it on the published port and forwards `/api` to the API and `/agent` to the agent. |
-| Agent     | `apps/agent`                           | Optional. Answers questions with tools over the public API. Never reads the database or Home Assistant. |
-| Agent panel | `apps/web/src/agent`                 | Optional, loaded when you first open it. Streams answers from the agent, takes approvals, lists the dashboard's chats. |
-| Telegram  | `apps/agent/src/home_keeper_agent/telegram.py` | Optional. Polls private messages from allowed users and forwards questions and approvals to the agent. Publishes no port. |
+| Service      | Code                                         | Role                                                                                          |
+| ------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `web`        | `apps/web`                                   | Serves the dashboard on the only published Home Keeper port. Forwards `/api` and `/agent`.    |
+| `api`        | `apps/keeper`                                | Validates requests, answers them from the reader and the store, and sends commands.          |
+| `reader`     | `apps/keeper` (`reader_service.py`, `home_assistant.py`) | Holds the Home Assistant token. Answers fixed reads. Keeps no state. In the demo, serves the synthetic home (`demo.py`). |
+| `controller` | `apps/controller`                            | Optional. Holds the control token. Sends four fixed service calls. Publishes no port.        |
+| `postgres`   | `compose.postgres.yaml`                      | One database per service.                                                                     |
+| `db-setup`   | `compose.postgres.yaml`                      | Runs once. Creates each service's database, login and password.                               |
+| `ha-setup`   | `apps/keeper` (`ha_setup.py`)                | Runs once. Onboards the bundled Home Assistant and stores both tokens.                        |
+| `agent`      | `apps/agent`                                 | Optional. Answers questions with tools over the public API.                                   |
+| `telegram`   | `apps/agent` (`telegram.py`)                 | Optional. Connects private Telegram chats to the agent. Publishes no port.                    |
+
+### Inside the API
 
 Python code lives in `apps/keeper/src/home_keeper`.
 
-## Rules the layout enforces
+| Module                                      | Responsibility                                                                  |
+| ------------------------------------------- | ------------------------------------------------------------------------------- |
+| `api.py`, `models.py`                       | Routes and response models.                                                     |
+| `reader.py`                                 | The API's client for the reader.                                                |
+| `monitoring.py`                             | Owns the selection. Checks a new selection against the catalog. Answers current state. |
+| `changes.py`, `usage.py`, `measurements.py` | Turn history rows into changes and usage, and statistics into measurement totals, with unknown time named. |
+| `commands.py`                               | Check, forward and record commands. Confirm the outcome. Track the heartbeat.   |
+| `control.py`                                | The API's client for the controller.                                            |
+| `store.py`                                  | Postgres: the selection, the command log, metadata and command retention.       |
 
-- **The API is the only writer.** Only the API holds the keeper database's
-  password, so only it can open that database. The reader and the controller
-  answer internal requests that need a service credential the API creates at
-  startup.
-- **Home Keeper stores only what is its own.** The database holds the selection,
-  the command log and a few metadata values. Device state and history are read
-  from Home Assistant on each request, so the dashboard never shows a stale copy.
-  When Home Assistant cannot be reached, states show as unknown and every tab
-  shows a banner.
-- **Nothing is monitored until you select it.** Discovery lists devices. It does
-  not approve them. Monitoring is the only filter: History, usage and the agent
-  cover the devices monitored now, with all the history Home Assistant has for
-  them.
-- **The reader is read-only toward the home.** The connector makes fixed
-  registry reads, one read of every state at discovery to detect groups, state
-  reads of the devices the API asks for,
-  `history/history_during_period` for their history, and `GET /api/` to check
-  reachability. It has no service calls, no event subscription, no device writes
-  and no database mount. The keeper image
-  contains no controller code. The API never joins the `home-assistant` network.
+## Design rules
+
+- **Home Keeper stores only what is its own.** Device state and history are read
+  from Home Assistant on each request. The dashboard never shows a stale copy.
+- **Nothing is monitored until you select it.** Monitoring is the only filter
+  for History, usage and the agent.
+- **The reader is read-only.** It makes fixed reads only: no service calls, no
+  event subscriptions, no device writes, no database access. The keeper image
+  contains no controller code.
 - **Control is opt-in and narrow.** Only the controller calls Home Assistant
-  services, and only `light.turn_on` (with an optional brightness percent) and
-  `light.turn_off` on `light.*` entities, and `switch.turn_on` and
-  `switch.turn_off` on `switch.*` entities. It has no passthrough. It runs only
-  with the `control` profile, and the API reports control `on` only while the
-  controller's heartbeat is fresh.
-- **Every command leaves evidence.** The API refuses a command for a light that
-  is not monitored, has no known state, is unavailable or is already in that
-  state. It records every command it forwards, with the outcome it observed.
-- **Unknown, not guessed.** Time Home Assistant has no history for, and time it
-  reported a device unavailable, counts as unknown. The API never invents a change
-  Home Assistant did not record.
+  services, and only four of them. It has no passthrough. Control is `on` only
+  while its heartbeat is fresh.
+- **Every command leaves evidence.** The API refuses a command for a device that
+  is not monitored, has no known state, is unavailable or is already in the
+  requested state. It records every command it forwards with the outcome it
+  observed.
+- **Unknown, not guessed.** Time without history, or with the device
+  unavailable, is unknown. The API never invents a change.
+- **The API is the only writer.** Only the API holds the keeper database's
+  password. Internal endpoints of the reader and the controller require a
+  service credential that the API creates at startup.
+- **The API never reaches Home Assistant.** It does not join the
+  `home-assistant` network.
 
-## Selecting a light
+[security.md](security.md) details each boundary.
+
+## Request flow: monitoring a device
 
 ```mermaid
 sequenceDiagram
@@ -132,69 +111,36 @@ sequenceDiagram
     D->>A: GET /api/monitored
     A->>R: Current state
     R->>H: GET /api/states
-    A-->>D: The light's state now
+    A-->>D: The device's state now
     D->>A: GET /api/events
     A->>R: History of the monitored devices
     R->>H: history/history_during_period
-    A-->>D: "off → on" with Home Assistant's time
+    A-->>D: "off → on" at Home Assistant's time
 ```
 
-The dashboard polls every 3 seconds, and each poll reaches Home Assistant through
+The dashboard polls every 3 seconds. Each poll reaches Home Assistant through
 the reader.
 
 ## Storage
 
-One Postgres holds everything Home Keeper keeps. It has one database per
-service, and each service can open only its own.
+| Database   | Owner                       | Tables                                                                         |
+| ---------- | --------------------------- | ------------------------------------------------------------------------------ |
+| `keeper`   | `api` (`store.py`)          | `selection`: monitored devices and their kind. `metadata`: the source and the last heartbeat. `commands`: one JSONB record per command, ordered by `sent_at` and `id`. |
+| `agent`    | `agent` (Aegra)             | Chat threads, runs and LangGraph checkpoints, in Aegra's schema.               |
+| `telegram` | `telegram`                  | `progress`: the next update to read. `bot_owner`: the bot this state belongs to. `conversations`: each person's conversation. |
 
-```mermaid
-flowchart TB
-    api["API"] --> keeperdb
-    agent["Agent (Aegra)"] --> agentdb
-    bot["Telegram worker"] --> telegramdb
+Each service has its own login and can open only its own database. Device
+history is not stored here.
 
-    subgraph pg["One Postgres"]
-        direction LR
-        keeperdb[("keeper")]
-        agentdb[("agent")]
-        telegramdb[("telegram")]
-    end
-```
+## API contract
 
-`db-setup` gives each service a login role, a random password and a database
-(`compose.postgres.yaml`). It writes each password into a volume that only it and
-that service mount. It revokes everyone else's access to each database, and it
-removes the superuser's password, so the superuser cannot log in over the
-network.
+- Every public `/api/*` route has a response model.
+- The dashboard's types in `apps/web/src/api/schema.d.ts` are generated from
+  the OpenAPI schema with `mise run gen:api`. A field rename the UI does not
+  follow fails the TypeScript build.
+- Snapshot tests in `test_api_contract.py` pin the response shapes.
 
-| Database   | Written by      | Tables                                                                  |
-| ---------- | --------------- | ----------------------------------------------------------------------- |
-| `keeper`   | API (`store.py`) | `selection`: the monitored devices and their kind. `metadata`: the source and the controller's last heartbeat. `commands`: the command log, one JSONB record per command, sorted by `sent_at` and `id`. |
-| `agent`    | Aegra           | Chat threads, runs and LangGraph checkpoints, in Aegra's own schema.    |
-| `telegram` | Telegram worker | `progress`: the next Telegram update to read. `bot_owner`: the bot this state belongs to. `conversations`: each user's saved conversation. |
+## Terms
 
-Device history is not stored here. Home Assistant's recorder keeps it.
-
-## Words used in the code
-
-| Term        | Meaning                                                                                       |
-| ----------- | --------------------------------------------------------------------------------------------- |
-| Source      | Where data comes from: `demo` or `home_assistant`. One database holds one source.             |
-| Catalog     | The devices and entities the reader lists from Home Assistant, with whether each one can be monitored. |
-| Device kind | What a device is, from Home Assistant's domain and state: `light`; `switch` (plugs too); `on_off` (a fan, a binary sensor, a siren, a humidifier or a remote); `measurement` (a sensor whose `state_class` is `measurement`); `state` (any other device). Only `light` and `switch` can be switched. |
-| Selection   | The devices you chose to monitor. The only filter for history, usage and the agent. |
-| Reader      | The service that reads Home Assistant for the API: catalog, current state, history, statistics and reachability. |
-| History     | A device's past states as Home Assistant's recorder keeps them. Read on demand, never copied. |
-| Change      | Two consecutive history rows of a monitored device that differ in state, availability, brightness or color, at Home Assistant's time. |
-| Unknown time | Time Home Assistant has no history for (`no_history`) or reported a device unavailable (`unavailable`). |
-| Command     | A request to switch a monitored light, plug or switch, with its sender and the outcome the API observed. |
-
-## The API contract
-
-The dashboard's types in `apps/web/src/api/schema.d.ts` are generated from the
-API's OpenAPI schema with `mise run gen:api`. A field rename that the UI does not
-follow fails the TypeScript build. Snapshot tests in `test_api_contract.py` pin
-the response shapes.
-
-[collection.md](collection.md) covers history, usage and retention in detail.
-[security.md](security.md) covers the trust boundaries.
+[CONTEXT.md](../CONTEXT.md) defines the domain terms the code uses: device,
+device kind, selection, reading, label, command, outcome, refusal and evidence.

@@ -1,195 +1,197 @@
-# Light control
+# Device control
 
-Home Keeper can switch a monitored light, plug or switch on or off. Control is
-off unless you start the `control` profile. Without it, nothing can switch a
-device.
+With the `control` profile, Home Keeper can switch a monitored light, plug or
+switch on or off. Without the profile, nothing can switch a device.
 
-## Turn it on
+## Turn on control
 
-Bundled Home Assistant:
+| Stack                 | Command                                                                    |
+| --------------------- | -------------------------------------------------------------------------- |
+| Bundled Home Assistant | `docker compose --profile control up --build --wait`                      |
+| Demo                  | `docker compose -f compose.demo.yaml --profile control up --build --wait` |
+| Own Home Assistant    | Create a control token first. See [Turn on control](home-assistant.md#3-turn-on-control-optional). |
 
-```sh
-docker compose --profile control up --build --wait
-```
+The profile adds the `controller` service. It publishes no port.
 
-Demo:
+### Control state
 
-```sh
-docker compose -f compose.demo.yaml --profile control up --build --wait
-```
+`GET /api/control` reports `on` or `off`:
 
-Your own Home Assistant needs a token for a separate non-admin user first. See
-[Turn on light control](home-assistant.md#turn-on-light-control).
+- The controller sends a heartbeat to the API every 5 seconds.
+- Control is `on` while the last heartbeat is younger than 15 seconds.
+- The controller sends heartbeats only while Home Assistant accepts its token.
+  It checks at start and every 30 seconds. A command rejected for its token
+  stops the heartbeat at once.
 
-The profile adds the `controller` service. It publishes no port. Every 5 seconds
-it tells the API that it can switch devices. `GET /api/control` returns `on` while
-that heartbeat is younger than 15 seconds, and `off` otherwise. Stop the
-controller and control turns off within 15 seconds.
+| Event                                  | Control turns         |
+| -------------------------------------- | --------------------- |
+| Controller stops                       | `off` within 15 s     |
+| Token revoked or wrong                 | `off` within about 15 s of the rejection |
+| Home Assistant accepts the token again | `on` within 30 s      |
 
-The controller sends the heartbeat only while Home Assistant accepts its token.
-It checks at start and every 30 seconds, and a command rejected for its token
-stops the heartbeat at once. So a revoked or wrong control token shows control
-`off`, within about 15 seconds of the rejection. Control comes back on within 30
-seconds of Home Assistant accepting the token again.
+## Switch from the dashboard
 
-## Switch a light from the dashboard
+While control is `on`, the **Home** tab shows `CONTROL ON` instead of
+`READ ONLY`.
 
-While control is `on`, the **Home** tab's status line shows `CONTROL ON`
-instead of `READ ONLY`. Each monitored light that Home Assistant reports
-`on` or `off` gets a button and a brightness slider: **Turn off** for a light
-that is on, **Turn on** for a light that is off. A pending, unknown or
-unavailable light gets neither. With control `off`, the dashboard shows no
-buttons or sliders and looks as it does without the profile. The **Setup**
-tab's notice also says whether light control is on or off.
+| Device          | Controls                                         |
+| --------------- | ------------------------------------------------ |
+| Light           | **Turn on** or **Turn off**, and a brightness slider |
+| Plug or switch  | **Turn on** or **Turn off**                      |
 
-Each monitored plug or switch under **Plugs and switches** gets the same button
-by the same rules, with no slider: a plug or switch has no brightness.
+A device shows controls only when Home Assistant reports it `on` or `off`. A
+pending, unknown or unavailable device has none. With control `off`, the
+dashboard shows no controls.
 
-The slider sends `on` at the chosen percent once it stops moving for 0.4
-seconds, so a drag sends one command. Moving the slider of a light that is off
-turns it on at that brightness. Like the button, it returns to the brightness
-Home Assistant reports after the command. Clicking the button before the slider settles
-drops the slider move.
+- One click sends the command, with sender `dashboard`. There is no
+  confirmation.
+- The button reads **Sending…** until the API answers. The API waits up to
+  5 seconds for the new state.
+- The slider sends `on` at the chosen percent 0.4 seconds after it stops. A drag
+  sends one command. Moving the slider of a light that is off turns it on. A
+  button click before the slider settles cancels the slider move.
+- Buttons and sliders always follow the state Home Assistant reports, not the
+  requested one.
 
-One click sends the command, with no confirmation and sender `dashboard`. The
-button reads **Sending…** and stays disabled until the API answers. The API
-waits up to 5 seconds for the light's new state, so with a slow controller the
-answer can take a few seconds more. Monitor and Stop monitoring keep working
-meanwhile. When the API answers, the button is free
-again, the dashboard reloads in the background, and it shows one message:
+After the answer, the dashboard shows one message for 15 seconds or until the
+next command:
 
-| Outcome        | Message                                                         |
-| -------------- | --------------------------------------------------------------- |
-| `observed`     | `<light> is now on.`, `<light> is now on at 40%.` or `<light> is now off.` |
-| `not_observed` | `Sent to <light>, but no change was seen yet.`                  |
-| `refused`      | `Home Assistant refused the command for <light>.`               |
-| `unreachable`  | `Cannot reach the controller. <device> may not have changed.` |
-
-A command the API refuses before sending (see [Refusals](#refusals)) shows the
-device's name and the API's message, such as `Desk lamp: The light is already
-in that state`, and the dashboard reloads. For a plug or switch the message says
-`device` instead of `light`. Any other error shows "Request failed.
-Please retry."
-
-The message stays for 15 seconds, or until you send the next command. Connection
-status messages appear beside it and do not replace it.
-
-The button always follows the state Home Assistant reports, not the requested one.
-Until the reload finishes, and after a `not_observed` until Home Assistant shows the
-new state, it still offers the old action. While Home Assistant cannot be reached,
-every tab shows "Can't reach Home Assistant", cards show "State unknown" and
-switching is off.
+| Outcome        | Message                                                                     |
+| -------------- | --------------------------------------------------------------------------- |
+| `observed`     | `<device> is now on.`, `<device> is now on at 40%.` or `<device> is now off.` |
+| `not_observed` | `Sent to <device>, but no change was seen yet.`                             |
+| `refused`      | `Home Assistant refused the command for <device>.`                          |
+| `unreachable`  | `Cannot reach the controller. <device> may not have changed.`               |
+| [Refusal](#refusals) | The device name and the API's message, such as `Desk lamp: The light is already in that state`. |
+| Other error    | `Request failed. Please retry.`                                             |
 
 ## Send a command
 
-Only a light, plug or switch you monitor can be switched, so every command
-leaves evidence. Use the device's ID from `/api/catalog`:
+Use the device's entity ID from `/api/catalog`:
 
 ```sh
-curl -X POST http://127.0.0.1:8000/api/devices/light.hue_desk/command \
+curl -X POST http://localhost:8000/api/devices/light.hue_desk/command \
   -H 'X-Home-Keeper: 1' -H 'Content-Type: application/json' \
   -d '{"command": {"action": "on", "brightness_pct": 30}, "sender": {"kind": "dashboard"}}'
 ```
 
-The commands are fixed. The API picks the call from the device's kind:
+### Commands
 
-| Device kind | Command                                     | Home Assistant call                        |
-| ----------- | ------------------------------------------- | ------------------------------------------ |
-| `light`     | `{"action": "on"}`                          | `light.turn_on`                            |
-| `light`     | `{"action": "on", "brightness_pct": 1-100}` | `light.turn_on` with that `brightness_pct` |
-| `light`     | `{"action": "off"}`                         | `light.turn_off`                           |
-| `switch`    | `{"action": "on"}`                          | `switch.turn_on`                           |
-| `switch`    | `{"action": "off"}`                         | `switch.turn_off`                          |
+The command set is fixed. The API picks the Home Assistant call from the
+device's kind.
 
-A plug or switch has no brightness. A command with `brightness_pct` for one is
-refused with `not_supported`. Any other device kind, such as an `on_off` device
-like a fan or a door sensor, a `measurement` like a power meter, or a `state`
-device like a thermostat, takes no
-command: the API refuses every command for it with
-`not_supported`, "This device cannot be switched.", whatever its state.
+| Kind     | Command                                     | Home Assistant call                         |
+| -------- | ------------------------------------------- | ------------------------------------------- |
+| `light`  | `{"action": "on"}`                          | `light.turn_on`                             |
+| `light`  | `{"action": "on", "brightness_pct": 1-100}` | `light.turn_on` with `brightness_pct`       |
+| `light`  | `{"action": "off"}`                         | `light.turn_off`                            |
+| `switch` | `{"action": "on"}`                          | `switch.turn_on`                            |
+| `switch` | `{"action": "off"}`                         | `switch.turn_off`                           |
 
-`sender` names who asked: `{"kind": "dashboard"}` for the device cards,
-`{"kind": "browser_chat"}` for the agent after you approve in the dashboard's
-agent panel, or `{"kind": "telegram", "id": 123456789, "name": "Ada"}`. It is a label for the
-record, not authentication. See [security.md](security.md).
+Every other kind takes no command. See [Device kinds](devices.md#device-kinds).
+
+### Sender
+
+`sender` records who asked. It is a label, not authentication; see
+[security.md](security.md).
+
+| Sender                                                  | Used by                                       |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `{"kind": "dashboard"}`                                 | Device cards                                  |
+| `{"kind": "browser_chat"}`                              | The agent, after approval in the agent panel  |
+| `{"kind": "telegram", "id": 123456789, "name": "Ada"}`  | The agent, after approval in Telegram         |
 
 ### Outcome
 
-The API records the command as `pending`, forwards it to the controller, then
-reads the device's state from Home Assistant every 0.5 seconds until 5 seconds after
-the send. A read that answers later than that does not count. It answers `200`
-with the command record, which names the device's `device_kind`, and one
-`outcome`:
+The API records the command as `pending` and forwards it to the controller.
+It then reads the device's state every 0.5 seconds, for up to 5 seconds after
+the send. It answers `200` with the command record, its `device_kind`, and one
+outcome:
 
-| Outcome        | Meaning                                                                                      |
-| -------------- | -------------------------------------------------------------------------------------------- |
-| `observed`     | A state read after the send shows the commanded state.                                       |
-| `not_observed` | Home Assistant accepted the call, but no state read within 5 seconds showed it.              |
-| `refused`      | Home Assistant rejected the call.                                                            |
-| `unreachable`  | The controller or Home Assistant did not answer.                                             |
+| Outcome        | Meaning                                                                |
+| -------------- | ---------------------------------------------------------------------- |
+| `observed`     | A state read after the send shows the commanded state.                 |
+| `not_observed` | Home Assistant accepted the call, but no read within 5 seconds showed it. |
+| `refused`      | Home Assistant rejected the call.                                      |
+| `unreachable`  | The controller or Home Assistant did not answer.                       |
 
-In the command history, a command still waiting shows `pending`. A command the
-API was restarted during shows `interrupted`: it may or may not have switched
-the device. Commands recorded before plugs could be switched carry
-`device_kind` `light`.
+The command log can also show:
 
-A reading taken before the send never counts. With a brightness, a reported
-brightness within 2 of `percent × 255 / 100`, rounded half up, counts as a match: 30% is
-`77`, so `75` to `79` match.
+| Outcome       | Meaning                                                              |
+| ------------- | -------------------------------------------------------------------- |
+| `pending`     | The command is still waiting for an outcome.                         |
+| `interrupted` | The API restarted during the command. The device may have switched.  |
+
+Matching rules:
+
+- A reading taken before the send never counts.
+- A brightness matches when the reported value is within 2 of
+  `percent × 255 / 100`, rounded half up. For 30%, that is `77`, so `75` to
+  `79` match.
 
 ### Refusals
 
-The API refuses these before it sends anything. It records nothing for them.
+The API checks these in order and answers the first that applies. It sends and
+records nothing.
 
-| Status | `detail`                                  | When                                                        |
-| ------ | ----------------------------------------- | ----------------------------------------------------------- |
-| 404    | `Unknown entity`                          | The ID is not in the catalog.                               |
-| 409    | code `not_monitored` or `not_supported`   | The device is not a light, plug or switch, such as a thermostat: `not_monitored` when you do not monitor it, else `not_supported`, even when Home Keeper can no longer monitor it. |
-| 422    | `Entity is unsupported`                   | Home Keeper cannot monitor this light, plug or switch, or this entity of no device kind.                     |
-| 409    | code `control_off`                        | `GET /api/control` says `off`.                              |
-| 409    | code `not_monitored`                      | You do not monitor the device. Monitor it first.            |
-| 409    | code `state_unknown`                      | Home Assistant cannot be reached or has no such entity, or the state is `unknown`. |
-| 409    | code `not_supported`                      | The command has a `brightness_pct` and the device is a plug or switch. |
-| 409    | code `unavailable`                        | Home Assistant reports the device as `unavailable`.         |
-| 409    | code `already_in_state`                   | The device is already in that state, at that brightness.    |
-| 409    | code `busy`                               | Four commands are being sent and this one waited 3 seconds, or less than half a second of the command's 8 seconds is left to send it. |
+| Status | Code or `detail`                       | When                                                                               |
+| ------ | -------------------------------------- | ---------------------------------------------------------------------------------- |
+| 404    | `Unknown entity`                       | The ID is not in the catalog.                                                      |
+| 409    | `not_monitored` or `not_supported`     | The device is not a light, plug or switch: `not_monitored` if you do not monitor it, else `not_supported`. |
+| 422    | `Entity is unsupported`                | Home Keeper cannot monitor this entity.                                            |
+| 409    | `control_off`                          | Control is `off`.                                                                  |
+| 409    | `not_monitored`                        | You do not monitor the device.                                                     |
+| 409    | `state_unknown`                        | Home Assistant cannot be reached, has no such entity, or reports `unknown`.        |
+| 409    | `not_supported`                        | The command has `brightness_pct` for a plug or switch.                             |
+| 409    | `unavailable`                          | Home Assistant reports the device `unavailable`.                                   |
+| 409    | `already_in_state`                     | The device is already in that state and brightness.                                |
+| 409    | `busy`                                 | No send slot within 3 seconds, or less than 0.5 seconds of the 8-second budget left. |
 
-The API checks in the order of this table and answers the first refusal that
-applies.
+Why `already_in_state` exists: Home Assistant fires no change for a device that
+is already in the requested state, so the command could only end as
+`not_observed`.
 
-Home Assistant fires no change for a device that is already in the requested
-state, so such a command could only end as `not_observed`. The API refuses it
-instead.
+### Concurrency and timeouts
 
-The API sends at most four commands at a time. A command that waits for a free
-send is checked again before it is sent: if the device stopped being monitored or
-control turned off meanwhile, it gets that refusal and nothing is sent. A command
-that waits more than 3 seconds gets `busy`. Each command also has 8 seconds from
-its request until the send must end, for example when Home Assistant answers
-slowly. With less than half a second left the API refuses it as `busy`. Otherwise
-the send gets only the time left, and a send that runs out of time ends as
-`unreachable`. Either way the API stops waiting for the controller before its
-sender gives up.
+- The API sends at most four commands at a time.
+- A waiting command is checked again before it is sent. If the device stopped
+  being monitored or control turned off, it gets that refusal.
+- Each command has 8 seconds from request to the end of its send. The send gets
+  only the time left. A send that runs out of time ends as `unreachable`.
+- The controller gives Home Assistant 4 seconds per command. A slower answer
+  reads as `unreachable`, even if the device switched.
 
 ## Command history
 
-`GET /api/commands` lists recorded commands, newest first: time, device and
-its `device_kind`, command, sender and outcome. It takes `start`, `end`,
-`limit` (1 to 500, default 50) and `cursor`. Commands are Home Keeper's own
-records: they expire after `HOME_KEEPER_RETENTION_DAYS`, 30 days by default; see
-[collection.md](collection.md#retention). The device change a command caused
-shows in History like any other change Home Assistant recorded.
+`GET /api/commands` lists recorded commands, newest first: time, device,
+`device_kind`, command, sender and outcome.
 
-### Command history in the dashboard
+| Parameter        | Description                       |
+| ---------------- | --------------------------------- |
+| `start`, `end`   | Optional time window              |
+| `limit`          | 1 to 500. Default: 50.            |
+| `cursor`         | Opaque paging cursor              |
 
-The **History** tab shows **Device commands** above the recorded changes. The list appears while control is `on`, or while any recorded command
-exists. With control `on` and no commands, it reads "No device commands yet."
+Commands expire after `HOME_KEEPER_RETENTION_DAYS` (30 by default). See
+[Command log retention](history.md#command-log-retention). The device change a
+command caused shows in History like any other change.
 
-Each row shows the light, plug or switch, the command (`Turn on`, `Turn on at 30%` or
-`Turn off`), the outcome, the sender and the time sent. Today's rows show the
-time only; hover over it for the full date. The sender reads
-`Dashboard` (a device card's switch), `Browser chat` (the agent, approved in the
-agent panel), or the Telegram user's name and ID, such as `Sam (Telegram 12345)`.
+Commands recorded before plugs could be switched carry `device_kind` `light`.
+
+### In the dashboard
+
+The **History** tab shows **Device commands** above the recorded changes. The
+list appears while control is `on` or any command exists.
+
+Each row shows the device, the command (`Turn on`, `Turn on at 30%` or
+`Turn off`), the outcome, the sender and the time. Today's rows show the time
+only; hover for the date.
+
+| Sender value    | Shown as                     |
+| --------------- | ---------------------------- |
+| `dashboard`     | `Dashboard`                  |
+| `browser_chat`  | `Browser chat`               |
+| `telegram`      | Name and ID, such as `Sam (Telegram 12345)` |
 
 | Outcome        | Shown as                    |
 | -------------- | --------------------------- |
@@ -201,23 +203,19 @@ agent panel), or the Telegram user's name and ID, such as `Sam (Telegram 12345)`
 | `interrupted`  | `Interrupted`               |
 
 The list shows the newest 20 commands and refreshes with the dashboard.
-**Load older commands** adds the next 20 and stops the refresh until you click
-**Refresh history**, like **Load older changes** for recorded changes. The two lists page
-apart and are not merged. If the commands cannot be read, the list keeps what it
-showed and the dashboard works on.
+**Load older commands** adds 20 more and pauses the refresh until you click
+**Refresh history**. Commands and recorded changes page separately.
 
-## The demo
+## In the demo
 
-In the demo, the controller forwards each command to the demo reader. The
-reader switches the synthetic light or plug at once and keeps that device out of
-its replay sequence for three steps of 10 seconds. So a
-command on a monitored demo light or the monitored demo plug returns `observed`.
+The controller forwards each command to the demo reader. The reader switches
+the synthetic device at once and holds it out of the replay sequence for three
+10-second steps. A command on a monitored demo light or plug returns
+`observed`.
 
 ## Limits
 
 - On, off and light brightness only. No color, color temperature or scenes.
 - A Home Assistant token cannot be limited to some entities. The controller's
-  fixed command set and the API's checks are the only limits on what the control
-  user does.
-- The controller gives Home Assistant 4 seconds per command, from connecting to
-  the answer. A slower answer reads as `unreachable`, even if the device switched.
+  fixed command set and the API's checks are the only limits on the control
+  user.
