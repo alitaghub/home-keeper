@@ -7,9 +7,12 @@
 | `dashboard`      | `web`, `api`, `agent`                                           | No       |
 | `collection`     | `api`, `reader`                                                 | Yes      |
 | `control`        | `api`, `controller` (and the demo reader in the demo)           | Yes      |
-| `database`       | `postgres`, `db-setup`, `api`, `agent`, `telegram`              | Yes      |
+| `database`       | `postgres`, `api`, `agent`, `telegram`                          | Yes      |
 | `home-assistant` | `homeassistant`, `ha-setup`, `reader`, `controller`             | No       |
 | `default`        | `agent`, `telegram`, for outbound access to the model provider and Telegram | No |
+
+`db-setup` joins no network (`network_mode: none`). It reaches Postgres only
+through the Unix socket in the `postgres-socket` volume.
 
 The API never joins `home-assistant` and cannot resolve the `homeassistant`
 name.

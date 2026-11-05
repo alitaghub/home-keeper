@@ -12,8 +12,8 @@ boundaries, where each credential lives, and what is not protected.
 
 | Credential                  | Created by  | Stored in                         | Read by                            |
 | --------------------------- | ----------- | --------------------------------- | ---------------------------------- |
-| Reader token (Home Assistant) | `ha-setup` or you | `ha-token` volume or your file, mode `600` | `reader`, read-only       |
-| Control token (non-admin Home Assistant user) | `ha-setup` or you | `ha-control-token` volume or your file, mode `600` | `controller`, read-only |
+| Reader token (Home Assistant) | `ha-setup` or you | `ha-token` volume or your file, mode `600` | `reader`, read-only; `ha-setup`, which writes and validates it |
+| Control token (non-admin Home Assistant user) | `ha-setup` or you | `ha-control-token` volume or your file, mode `600` | `controller`, read-only; `ha-setup`, which writes and validates it |
 | Home Assistant owner login  | `ha-setup`  | `ha-owner` volume, mode `600`     | `ha-setup` only                    |
 | Service credential          | `api`       | `service-secret` volume           | `api`, `reader`, `controller`      |
 | Database passwords          | `db-setup`  | One volume per service            | `db-setup` and that service        |
