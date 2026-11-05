@@ -1,105 +1,98 @@
-# Talk to the agent through Telegram
+# Telegram
 
-The optional Telegram bot gives your family another way to talk to the existing
-Home Keeper agent. Each allowed person has a private, saved conversation.
-The bot can answer questions and propose monitoring changes. People on a
-separate control allowlist can also switch lights, plugs and switches, after
-they approve each command; see
-[Switch lights, plugs and switches](#switch-lights-plugs-and-switches).
+The optional Telegram bot connects private Telegram chats to the
+[agent](agent.md). Each allowed person gets a private, saved conversation. They
+can ask questions and approve monitoring changes. People on a separate control
+list can also switch devices.
 
-## Set up the bot
+## Set up
 
-1. Open [BotFather](https://t.me/BotFather) in Telegram and use `/newbot` to create
-   a bot. Copy its token into the repository's `.env`, alongside your existing
-   [agent model settings](agent.md#set-the-model):
+1. In Telegram, open [BotFather](https://t.me/BotFather) and create a bot with
+   `/newbot`.
+2. Add these lines to `.env`, next to the
+   [model settings](agent.md#set-the-model):
 
    ```dotenv
    TELEGRAM_BOT_TOKEN=your-bot-token
    TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
-   # Optional: who may switch lights, plugs and switches from Telegram.
+   # Optional: who may switch devices from Telegram.
    TELEGRAM_CONTROL_USER_IDS=123456789
    ```
 
-   Use numeric Telegram user IDs, separated by commas. Names and usernames do
-   not grant access. Every allowed family member can use the same agent tools
-   and change which devices the shared home monitors.
-
-   If you do not know the IDs yet, temporarily use
-   `TELEGRAM_ALLOWED_USER_IDS=9223372036854775807`. Start the bot, then have each
-   person send it `/start` privately. It refuses access and returns that person's
-   numeric ID. Replace the temporary value with those IDs and recreate the bot container
-   as shown below.
-
-2. Enable both profiles with your usual stack:
+3. Start the `agent` and `telegram` profiles:
 
    ```sh
-   # Bundled Home Assistant
-   docker compose --profile agent --profile telegram up --build --wait
-
-   # Or the synthetic demo
-   docker compose -f compose.demo.yaml --profile agent --profile telegram up --build --wait
+   docker compose --profile agent --profile telegram up --build --wait                       # bundled Home Assistant
+   docker compose -f compose.demo.yaml --profile agent --profile telegram up --build --wait  # demo
    ```
 
-3. Open the bot in Telegram, send `/start`, then ask a text question such as
-   "Which lights are monitored?" or "How long was the desk light on this week?"
-   A follow-up uses the same conversation, including after a normal restart.
+4. Open the bot in Telegram and send `/help`. `up --wait` does not prove that
+   polling works; a reply does.
 
-Run only one bot process per token. The bot fetches messages from Telegram, so
-it needs outbound internet access but no public URL or incoming port. If this
-bot already has a webhook, remove it through Telegram's `deleteWebhook` method
-before using this polling worker. The worker reports the conflict and does not
-remove it for you.
+### Find user IDs
 
-## Conversations and approvals
+Access uses numeric Telegram user IDs. Names and usernames grant nothing.
 
-- `/start` and `/help` explain how to use the bot without calling a model.
-- `/new` starts a fresh conversation. It keeps old history and makes all buttons
-  from the previous conversation unusable.
-- "Start monitoring the desk light" produces a proposal with **Approve** and
-  **Reject** buttons. Nothing changes until you decide. Rejection leaves that
-  light's monitoring unchanged.
-- Only the requesting person can decide. A repeated or old button cannot apply
-  another monitoring change.
-- If a proposal has several actions, decide each one before the agent continues.
-- While a decision is pending, choose a button or use `/new`. More questions do
-  not bypass the approval. Pending approvals survive normal bot/agent restarts.
+1. Set `TELEGRAM_ALLOWED_USER_IDS=9223372036854775807` temporarily.
+2. Start the bot. Have each person send it `/start` privately. The bot refuses
+   access and replies with their numeric ID.
+3. Put the real IDs in `.env` and recreate the container:
 
-## Switch lights, plugs and switches
+   ```sh
+   docker compose --profile agent --profile telegram up -d --force-recreate telegram
+   ```
 
-`TELEGRAM_CONTROL_USER_IDS` lists who may switch lights, plugs and switches from
-Telegram. It is optional. When it is unset or empty, nobody can switch a device
-from Telegram;
-everyone on `TELEGRAM_ALLOWED_USER_IDS` can still ask questions and change
-monitoring. Every control ID must also be an allowed ID, or the bot stops at
-startup with a message that names `TELEGRAM_CONTROL_USER_IDS`. Device commands
-also need the [`control` profile](control.md).
+   `restart` does not read changed environment settings. Recreate the container
+   after every allowlist change.
+
+## Use the bot
+
+| Input   | Result                                                                    |
+| ------- | ------------------------------------------------------------------------- |
+| `/start`, `/help` | Explains the bot. Calls no model.                               |
+| `/new`  | Starts a new conversation. Buttons from the old one stop working.         |
+| A text question | The agent answers in the current conversation.                    |
+
+Approvals:
+
+- A change, such as "Start monitoring the desk light", shows a proposal with
+  **Approve** and **Reject**. Nothing changes until you decide.
+- Only the person who asked can decide. A repeated or old button cannot apply
+  another change.
+- With several actions in one proposal, decide each before the agent continues.
+- While a decision is pending, more questions do not bypass it. Choose a
+  button, or use `/new`.
+- Conversations and pending approvals survive a normal restart.
+
+Every allowed person can use all agent tools and change which devices the
+shared home monitors.
+
+## Switch devices
+
+`TELEGRAM_CONTROL_USER_IDS` lists who may switch lights, plugs and switches.
+Device commands also need the [`control` profile](control.md).
+
+| Setting                           | Effect                                                                   |
+| --------------------------------- | ------------------------------------------------------------------------ |
+| Unset or empty                    | Nobody can switch a device from Telegram.                                |
+| An ID not in `TELEGRAM_ALLOWED_USER_IDS` | The bot stops at startup and names `TELEGRAM_CONTROL_USER_IDS`.   |
 
 - A person on the control list who asks "Turn on the desk light at 30 percent"
-  gets a proposal such as `Turn on light.desk at 30%` with **Approve** and
-  **Reject**. "Turn off the kettle plug" gets `Turn off switch.kettle` the same
-  way. A plug or switch has no brightness: the agent refuses a brightness for it
-  and shows no proposal. Nothing changes until they approve. The agent calls
-  these tools `turn_on` and `turn_off`.
-- Home Keeper records each approved command with that person's numeric Telegram
-  ID and their Telegram name at approval time. The name is a label for the
-  record, not authentication.
-- A person who is not on the control list gets no light, plug or switch proposal. The agent
-  says that they are not allowed to control lights. If an old proposal still
-  reaches them, **Approve** sends nothing. The bot replies "You are not allowed
-  to control lights. Nothing was changed." and counts it as a rejection, so
-  the next question is answered normally.
+  gets a proposal such as `Turn on light.desk at 30%`. Nothing changes until
+  they approve.
+- Home Keeper records each approved command with the person's numeric ID and
+  their Telegram name at approval time. The name is a label, not
+  authentication.
+- A person not on the control list gets no switch proposal. If an old proposal
+  still reaches them, **Approve** sends nothing and the bot replies "You are not
+  allowed to control lights. Nothing was changed."
 - A proposal saved by an older version, such as one for `turn_on_light`, is no
-  longer accepted. The bot says the result is uncertain; use `/new` to continue.
+  longer accepted. Use `/new`.
 
-Telegram history is separate from the dashboard's agent panel and from other family
-members' conversations; the panel's **Recent chats** lists only chats started in the
-dashboard. Anyone who can
-reach the existing local Aegra API can still inspect threads, as described in
-[the agent limits](agent.md#limits).
+## Operate
 
-## Restart, stop, and diagnose
-
-Use the same Compose file and profiles you started with:
+Use the same Compose files and profiles you started with. For the demo, add
+`-f compose.demo.yaml`.
 
 ```sh
 docker compose --profile agent --profile telegram logs telegram
@@ -107,93 +100,85 @@ docker compose --profile agent --profile telegram restart telegram
 docker compose --profile agent --profile telegram stop telegram
 ```
 
-For the demo, add `-f compose.demo.yaml` after `docker compose`. Restart after
-changing an allowlist with `up -d --force-recreate telegram`, rather than
-`restart`: Docker must recreate the container to read changed environment
-settings. The full command is:
+- Run one bot process per token.
+- The bot polls Telegram. It needs outbound internet access, but no public URL
+  or open port.
+- If the bot already has a webhook, remove it with Telegram's `deleteWebhook`
+  method. The worker reports the conflict and does not remove it.
+- The worker restarts until stopped. Configuration errors, rejected tokens, a
+  webhook or a second worker produce a log message that never includes the
+  token.
+- Rate-limit waits follow Telegram's requested cooldown.
+- Stopping `telegram` leaves the dashboard and agent panel running.
+- `down` keeps the bot's state and conversations. `down --volumes` deletes them.
 
-```sh
-docker compose --profile agent --profile telegram up -d --force-recreate telegram
-```
+### Change to another bot
 
-Compose waits for the agent to become healthy, then starts the bot process.
-The bot has no Compose healthcheck, so `up --wait` does not prove that Telegram
-polling works. Send `/help` privately to verify it after setup.
+The saved polling progress belongs to one bot ID. Rotating the token of the
+same bot keeps its state. For a different bot, drop the `telegram` database;
+`db-setup` creates an empty one on the next start. The worker refuses another
+bot's database rather than skip the new bot's messages. Home Keeper data and
+agent conversations are not affected.
 
-Stopping only `telegram` leaves the dashboard and its agent panel running. Normal
-`down` keeps the bot's state and Aegra's conversations, both in the shared
-Postgres. `down --volumes` deletes them along with the stack's other saved data.
+## Delivery guarantees
 
-Missing settings, invalid IDs, rejected tokens, a preexisting webhook, or a
-second polling worker produce a diagnostic without printing the token. The
-Compose worker restarts until stopped, so a temporary process crash does not
-leave it offline permanently. Fix configuration errors shown in its logs, or
-stop the service while correcting them. Keep the token in `.env`; do not put
-it in a command URL or share it in logs. Rate-limit waits are logged and honor
-Telegram's requested cooldown. Stopping the container closes the worker cleanly.
+One worker handles messages in order. There is no queue, worker pool or
+delivery guarantee.
 
-One worker handles messages sequentially. A slow answer delays the next
-person's message and approval-button acknowledgement. The agent HTTP client
-uses a 300-second timeout. There is no custom queue, concurrent
-worker pool, or delivery guarantee. When a request might already have reached the agent, the bot does
-not automatically run it again. It checks the existing conversation and tells
-you if the result is uncertain. Wait for that run to finish or use `/new`.
-A network failure can lose or duplicate a reply. Telegram keeps undelivered
-incoming updates for at most 24 hours, so a longer outage can lose questions.
+- A slow answer delays the next person's message and button acknowledgement.
+- The agent request times out after 300 seconds.
+- When a request may already have reached the agent, the bot does not resend
+  it. It checks the conversation and says when the result is uncertain. Wait for
+  the run to finish, or use `/new`.
+- The bot records a question as received before it sends it to the agent. A
+  crash between the two can lose the question with no error reply. This order
+  prevents a restart from repeating a request that may already have run.
+- A network failure can lose or duplicate a reply.
+- Telegram keeps undelivered updates for at most 24 hours. A longer outage
+  loses questions.
+- The bot does not rebuild missing approval buttons or recover a lost answer.
+  Use `/new`.
 
-A crash can also lose a question just after the bot records it as received and
-before it reaches the agent. There may be no error reply. Send the question
-again if no answer arrives. The bot records receipt first so restarting cannot
-silently repeat a request that might already have run.
+## Scope
 
-If an uncertain request leaves the agent waiting for approval, or some approval
-buttons could not be delivered, use `/new`. The bot does not rebuild missing
-buttons. A normal restart preserves buttons that were already delivered and
-saved. If a completed answer was lost during an uncertain request, the bot
-does not recover that old answer when it accepts the next question.
-
-The saved polling progress belongs to one bot's numeric ID. Rotating the token
-for that same bot keeps its state. To switch to a different bot, give the worker
-a fresh database: drop the `telegram` database, and `db-setup` creates an empty
-one at the next start. The worker refuses to reuse another bot's database rather
-than silently skip the new bot's messages. There is no need to delete Home Keeper
-data or Aegra's conversations.
-
-Only private text chats and approval buttons are supported. Groups, channels,
-message edits, voice, photos, and proactive notifications are outside scope.
-Long replies are split into plain-text messages. Answers have no charts; the
-agent offers charts only in the dashboard's agent panel. Device names are displayed as
-text, without interpreting their HTML or Markdown.
+- Supported: private text chats and approval buttons.
+- Not supported: groups, channels, message edits, voice, photos and
+  notifications the bot starts.
+- Long replies are split into plain-text messages. Answers have no charts.
+- Device names render as text, without HTML or Markdown.
+- Telegram conversations are separate from each other and from the agent
+  panel.
 
 ## What leaves your machine
 
-Your questions and replies, including home details in the answers, pass through
-Telegram. Questions and tool results also reach your configured model provider,
-as they do in the dashboard's agent panel. Home Assistant credentials and model credentials
-are not passed to the bot. See [security.md](security.md).
+Questions and replies, including home details, pass through Telegram. Questions
+and tool results also go to your model provider. The bot never receives Home
+Assistant or model credentials. See [security.md](security.md).
 
-## Manual real-bot check
+> [!NOTE]
+> The Telegram allowlist does not protect the agent itself. Anyone who can reach
+> the local agent API can read every thread. See [agent limits](agent.md#limits).
 
-The automated Docker proof uses a fake Telegram endpoint and a deterministic
-model through the real pinned Aegra server. It needs no Telegram or model keys.
-For a real-bot check after configuring credentials:
+## Manual check with a real bot
 
-1. Ask a question and a follow-up. Confirm another allowed person's conversation
-   starts independently; an unapproved person gets no home data.
-2. Ask to monitor a discovered light. Reject it and check the dashboard still
-   shows the previous monitoring choice.
-3. Ask again. Restart `telegram` and `agent` while the buttons are pending,
-   wait for the agent to become healthy, then approve. Confirm the dashboard
-   now shows the light as monitored. Clicking again must do nothing.
-4. Ask to stop monitoring, then use `/new`. The old buttons must no longer work.
-5. Restart the bot and ask a follow-up. Confirm the current conversation remains.
-6. With the `control` profile, have a person on `TELEGRAM_CONTROL_USER_IDS`
-   ask to turn on a monitored light or plug and approve it. Confirm it changes
-   and [`GET /api/commands`](control.md#command-history) shows their ID and name. Have an allowed person
-   who is not on the control list ask the same; confirm no proposal appears.
+Automated tests use a fake Telegram endpoint and a scripted model against the
+real Aegra server. To check a real bot:
 
-Record whether these steps were actually run. Automated fixture results are not
-a claim that a real Telegram bot or your configured model was tested.
+1. Ask a question and a follow-up. Confirm a second allowed person gets a
+   separate conversation, and an unlisted person gets no home data.
+2. Ask to monitor a light. Reject it. Confirm the dashboard is unchanged.
+3. Ask again. Restart `telegram` and `agent` while the buttons are pending.
+   After the agent is healthy, approve. Confirm the light is monitored and a
+   second click does nothing.
+4. Ask to stop monitoring, then use `/new`. Confirm the old buttons do nothing.
+5. Restart the bot and ask a follow-up. Confirm the conversation continues.
+6. With the `control` profile, have a person on the control list switch a
+   monitored light and approve it. Confirm it switches and
+   [`GET /api/commands`](control.md#command-history) shows their ID and name.
+   Confirm a person not on the list gets no proposal.
 
-Protocol details: [Telegram Bot API](https://core.telegram.org/bots/api),
-[bot creation](https://core.telegram.org/bots/features#botfather).
+Record which steps you ran. Automated results do not prove a real bot or model
+works.
+
+References: [Telegram Bot API](https://core.telegram.org/bots/api),
+[BotFather](https://core.telegram.org/bots/features#botfather).

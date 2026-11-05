@@ -1,131 +1,148 @@
-# Security boundary
+# Security
 
-- Only `web` publishes Home Keeper's port, on `127.0.0.1`. It serves the
-  dashboard with the same Content-Security-Policy as before and forwards `/api`
-  to the API, which publishes no port. `web` passes the browser's Host and Origin
-  through unchanged, so the API's Host and Origin checks still decide every
-  write. The API, the reader and `web` run as an unprivileged user, without Linux
-  capabilities, with read-only filesystems except their mounted volumes. The bundled Home Assistant also publishes only a
-  loopback port and runs with its upstream container identity, without
-  privileged mode, host networking, USB or Bluetooth access.
-- Only the reader reads the Home Assistant token at run time, from a
-  read-only mount. The API,
-  database and browser never receive it. With the `control` profile, the
-  controller reads a second token, for the non-admin "Home Keeper control"
-  user, from the `ha-control-token` volume, read-only. Only `ha-setup`, which
-  writes it with mode `600`, and the controller mount that volume. Revoke
-  control in Home Assistant without breaking the reader, and its logbook names
-  that user for every command. In the bundled stack, `ha-setup` writes
-  the token with mode `600` to the `ha-token` volume. It keeps the Home
-  Assistant owner login, also mode `600`, in the `ha-owner` volume that no other
-  service mounts. Neither the token nor the password is written to a log.
-  Whole-home registries stay inside the trusted
-  connector until it projects minimal metadata. Raw administrative URLs and
-  unused registry identifiers do not enter the catalog or database.
-- The API creates an internal service credential in a restricted file. The
-  reader mounts its volume read-only. Internal endpoints require it.
-  Dashboard mutations require an explicit header and validate Host and Origin.
-- Device and entity names from Home Assistant render as text, never as HTML,
-  under a restrictive Content Security Policy. Schema validation limits fields
-  and restricts source identity. Error status and logs omit submitted secrets
-  and raw connector responses.
-- The reader's Home Assistant operations are fixed registry reads, one state
-  read for each new light or switch candidate at discovery, state reads of the
-  lights and switches the API asks for, `history/history_during_period` for
-  their history, and `GET /api/` to check that Home Assistant answers. Discovery reads a candidate's state only to detect a group
-  and keeps only that answer. The reader keeps the projected catalog in memory
-  for up to 10 seconds and never keeps a state or history. It makes no service call, no
-  event subscription and no device write, and it has no database access. The keeper
-  image contains no controller code.
-- The controller makes exactly four Home Assistant service calls:
-  `light.turn_on`, with an optional `brightness_pct` from 1 to 100, and
-  `light.turn_off`, on `light.*` entity IDs, and `switch.turn_on` and
-  `switch.turn_off`, with no data, on `switch.*` entity IDs. Each command names
-  its device kind, and each kind accepts only its own entity IDs and commands.
-  It rejects any other domain, service, entity ID or field, and a brightness for
-  a switch, before it contacts Home Assistant. There is no
-  arbitrary HTTP passthrough, service-call passthrough, shell tool or router
-  administration endpoint. A Home Assistant token cannot be limited to some
-  entities, so these fixed calls and the API's checks are the only limits on the
-  control user.
-- The API forwards a command only for a monitored light with a known, available
-  state that differs from the request, and only while the controller's
-  heartbeat is fresh. It records every forwarded command. A command's `sender`
-  (dashboard, browser chat for the dashboard's agent panel, or a Telegram ID and display name) is a label the
-  caller reports for the record. It is not authentication: anything that can
-  call the API can send a command with any sender. Sender names render as text.
-- The demo reader uses internal Docker networks only. The live reader also
-  joins the `home-assistant` bridge network to reach Home Assistant. It
-  publishes no port. The API
-  never joins that network. It has network access
-  needed by a trusted credential service.
-- The controller publishes no port. It joins the internal `control` network,
-  shared only with the API (and, in the demo, the demo reader), and in the
-  bundled stack the `home-assistant` network. Its command endpoint and the
-  demo reader's need the service credential, which only the API, the
-  reader and the controller hold. The controller sends its heartbeat to the
-  API with the same credential.
-- The optional agent (`--profile agent`) is a separate container. It joins the
-  dashboard network to reach the API, the internal `database` network to reach
-  its own database in the shared Postgres, and the default network for egress to
-  the model provider. It never joins the `home-assistant` network and mounts only
-  its own database password, so it cannot reach Home Assistant, the token, the
-  keeper's database or the service credential. It
-  calls only the public `/api/*` routes, through the `api` host name, and sends
-  the same mutation header as the dashboard. Its only writes are discovery
-  refresh, selection changes and light commands. A selection change or a light
-  command waits for your approval in the agent panel or Telegram. A light command goes through the
-  API's own checks and the controller, like one from the dashboard. It runs
-  read-only, without Linux capabilities.
-- Aegra, which serves the agent, publishes only on `127.0.0.1`, for LangGraph
-  Studio. The dashboard's agent panel reaches it through `web` at `/agent`, on
-  the dashboard's own origin, so the page's `connect-src 'self'` policy still
-  holds. Aegra's CORS allows no origin: no other website can read its answers.
-  `web` refuses `/agent` requests that the browser marks as cross-site or
-  same-site (`Sec-Fetch-Site`), because Aegra reads `text/plain` bodies as JSON
-  and would otherwise accept a form post from a page you visit. Aegra runs
-  without authentication (`AUTH_TYPE=noop`): anyone who can reach its port or
-  the dashboard's `/agent` route can read and write every chat thread and start
-  the agent. With the `control` profile, they can also propose and approve their
-  own light commands, because the approval is answered on the same
-  unauthenticated API. Port 2026 has no cross-site check, and neither route
-  checks `Host`, so DNS rebinding is not mitigated.
-- One Postgres serves the API, the agent and the Telegram worker. It publishes no
-  port, and only those three join its internal `database` network. `db-setup`
-  gives each a login role, a random password in a volume only it and that
-  service mount, and a database that only that role may connect to. The
-  superuser has no password, so it cannot log in over the network; `db-setup`
+Home Keeper is built for a single trusted computer. This page lists its trust
+boundaries, where each credential lives, and what is not protected.
+
+> [!WARNING]
+> Do not expose the dashboard or the agent to a network. Neither has user
+> authentication. With the `control` profile, anyone who can reach the API can
+> switch your monitored devices.
+
+## Credentials
+
+| Credential                  | Created by  | Stored in                         | Read by                            |
+| --------------------------- | ----------- | --------------------------------- | ---------------------------------- |
+| Reader token (Home Assistant) | `ha-setup` or you | `ha-token` volume or your file, mode `600` | `reader`, read-only       |
+| Control token (non-admin Home Assistant user) | `ha-setup` or you | `ha-control-token` volume or your file, mode `600` | `controller`, read-only |
+| Home Assistant owner login  | `ha-setup`  | `ha-owner` volume, mode `600`     | `ha-setup` only                    |
+| Service credential          | `api`       | `service-secret` volume           | `api`, `reader`, `controller`      |
+| Database passwords          | `db-setup`  | One volume per service            | `db-setup` and that service        |
+| Bot token, model keys       | You         | `.env`                            | `telegram`; `agent`                |
+
+- No token or password is ever written to a log.
+- The API, the database and the browser never receive a Home Assistant token.
+- Revoking the control token stops control without breaking the reader. Home
+  Assistant's logbook names the control user for every command.
+
+## Read-only reader
+
+The reader is the only service that reads Home Assistant. Its operations are
+fixed:
+
+| Operation                                                       | Purpose                                  |
+| --------------------------------------------------------------- | ---------------------------------------- |
+| `config/entity_registry/list`, `config/device_registry/list`    | Discovery                                |
+| `GET /api/states`                                               | Groups, device classes and units at discovery; current states |
+| `get_config`, `frontend/get_translations`                       | State words                              |
+| `history/history_during_period`                                 | History of monitored devices             |
+| `recorder/statistics_during_period`                             | Statistics of monitored measurements     |
+| `GET /api/`                                                     | Reachability                             |
+
+- No service calls, event subscriptions or device writes.
+- No database access.
+- It caches the projected catalog for up to 10 seconds. It never keeps a
+  state, history or statistics.
+- Registry data stays inside the reader until it reduces it to minimal
+  metadata. Raw administrative URLs and unused registry IDs never reach the
+  catalog or the database.
+- The keeper image contains no controller code.
+
+## Controller
+
+The controller is the only code that can change a device. It runs only with
+the `control` profile.
+
+- It makes exactly four calls: `light.turn_on` (optional `brightness_pct`
+  1–100) and `light.turn_off` on `light.*` IDs; `switch.turn_on` and
+  `switch.turn_off`, with no data, on `switch.*` IDs.
+- It rejects any other domain, service, entity ID or field, and a brightness
+  for a switch, before it contacts Home Assistant.
+- It has no HTTP passthrough, service-call passthrough or shell.
+- A Home Assistant token cannot be limited to some entities. These fixed calls
+  and the API's checks are the only limits on the control user.
+
+The API forwards a command only when the device is monitored, is a light, plug
+or switch, has a known available state that differs from the request, and the
+controller's heartbeat is fresh. It records every forwarded command.
+
+A command's `sender` is a label for the record, not authentication. Anything
+that can call the API can send a command with any sender.
+
+## API and dashboard
+
+- Only `web` publishes a Home Keeper port, on `127.0.0.1`.
+- `web` passes the browser's `Host` and `Origin` through unchanged. The API
+  checks both on every write.
+- Writes require the `X-Home-Keeper` header.
+- Internal endpoints require the service credential.
+- The Content Security Policy is
+  `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'`.
+- Names from Home Assistant render as text, never as HTML.
+- Schema validation limits every field. Errors and logs omit submitted secrets
+  and raw upstream responses.
+
+## Containers
+
+- Every Home Keeper container drops all Linux capabilities and runs on a
+  read-only filesystem, except its volumes.
+- `api`, `reader` and `web` run as unprivileged users.
+- The bundled Home Assistant runs with its upstream container identity, without
+  privileged mode, host networking, USB or Bluetooth. It publishes only a
+  loopback port.
+- See [networking.md](networking.md) for which service joins which network.
+
+## Database
+
+- One Postgres serves the API, the agent and the Telegram worker. It publishes
+  no port.
+- `db-setup` gives each service its own login, random password and database.
+  Each login can open only its own database.
+- The superuser has no password and cannot log in over the network. `db-setup`
   reaches it through the Unix socket.
 
-Do not expose the dashboard or the agent publicly. Neither has user
-authentication. With the `control` profile, anyone who can reach the API can
-switch your monitored lights. Without the agent profile, Home Keeper makes no model calls.
-With it, your questions and the agent's tool results go to the model provider
-you configure in `AGENT_MODEL`. Tool results contain light names, states,
-timestamps, usage numbers, the light control state and light command outcomes
-from the public API. The Home Assistant token, the
-database and the service credential never leave. Chat threads stay in the local
-Postgres, and the provider also receives each thread's earlier messages
-as context. See [agent.md](agent.md).
+## Agent
 
-See [architecture.md](architecture.md) for how these parts connect, and
-[home-assistant.md](home-assistant.md) for how the token is created and stored.
+The agent is optional (`--profile agent`).
 
-## Optional Telegram bot
+- It calls only the public `/api/*` routes, with the same header as the
+  dashboard.
+- It cannot reach Home Assistant, a Home Assistant token, the keeper database
+  or the service credential. It mounts only its own database password.
+- Its only writes are a discovery refresh, selection changes and commands.
+  Selection changes and commands wait for your approval.
 
-The Telegram worker is opt-in and publishes no port. It accepts private messages
-only from configured numeric Telegram user IDs. All allowed users can use the
-same home tools; conversation history is separate, but monitoring choices affect
-the shared home. Changing that choice requires the requesting user's approval.
-Old or repeated callback buttons cannot approve another action.
+Aegra, which serves the agent, has no authentication (`AUTH_TYPE=noop`):
 
-Questions and replies pass through Telegram, in addition to the model provider's
-existing access to questions and tool results. The bot receives only its bot
-token, allowlist, internal agent address, and private state location. It receives
-no Home Assistant token, model key, Home Keeper database, or Aegra database mount.
-Its small persistent state stores Telegram progress, conversation references,
-and pending approvals; Aegra keeps the actual conversation history.
+- Anyone who can reach port 2026 or `/agent` can read and write every chat and
+  run the agent. With `control`, they can also approve their own commands.
+- Aegra's CORS allows no origin, so no other website can read its answers.
+- `web` refuses `/agent` requests with `Sec-Fetch-Site` `cross-site` or
+  `same-site`. Without this, a page you visit could post a form, because Aegra
+  reads `text/plain` bodies as JSON.
+- Port 2026 has no such check. Neither route checks `Host`, so DNS rebinding is
+  not blocked.
 
-The existing local agent API remains unauthenticated and loopback-only. Telegram
-allowlisting does not add authentication to the agent panel or the agent port.
-See [Telegram setup and limits](telegram.md).
+## Telegram
+
+The Telegram worker is optional and publishes no port.
+
+- It accepts private messages only from listed numeric user IDs.
+- Each change requires the requesting person's approval. Old or repeated
+  buttons cannot approve another action.
+- It receives its bot token, the allowlists, the agent's internal address and
+  its own database password. It receives no Home Assistant token, model key, or
+  access to the keeper or agent database.
+- Its database stores polling progress, the bot ID, and each person's
+  conversation reference and pending approvals. The agent keeps the
+  conversation history.
+- The allowlist does not add authentication to the agent panel or port 2026.
+
+## What leaves your machine
+
+| Destination      | When                       | What                                                                   |
+| ---------------- | -------------------------- | ---------------------------------------------------------------------- |
+| Model provider   | Profile `agent`            | Questions, earlier messages in the chat, and tool results: device names, states, timestamps, usage numbers, the control state and command outcomes |
+| Telegram         | Profile `telegram`         | Questions and replies                                                  |
+
+Without the `agent` profile, Home Keeper makes no model calls. The Home
+Assistant token, the database and the service credential never leave.

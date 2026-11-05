@@ -1,244 +1,202 @@
-# Chat with the agent
+# Agent
 
-The agent helps you look after your lights. It answers questions in plain
-words: how long a lamp was on, at which hours, how often it was switched on,
-and whether Home Assistant can be reached. It works only from Home Assistant's
-history and current states, as the Home Keeper API reports them, for the devices
-you monitor. With the `control` profile, it can also switch a monitored light
-after you approve the command. It is opt-in: without the `agent` profile,
-nothing below runs.
+The agent answers questions about your home in plain words: how long a lamp was
+on, at which hours, what a power meter reads, and whether Home Assistant can be
+reached. It can also start monitoring a device or switch one, after you
+approve.
 
-## What it can and cannot do
-
-The agent reaches Home Keeper only through the public API, the same one the
-dashboard uses. It can:
-
-- list the devices you monitor (`list_monitored`), with each one's kind
-  (`kind=light`, `kind=switch`, `kind=on_off` for another on/off device such as
-  a fan or a door sensor, `kind=measurement` for a sensor with a value and a
-  unit, such as a power meter, or `kind=state` for any other device) and its
-  current state in Home Assistant's words, such as "Heat", or its value and
-  unit, such as `"412" "W"`
-- report usage over a time range for lights, plugs, switches and other on/off
-  devices: on-time per day and per hour, switch-ons, and unknown time. Lights
-  also get their average brightness; plugs and switches have none. An on/off
-  device's line uses Home Assistant's words, such as
-  `"Open" for 3h 12m, ..., became "Open" 4 time(s)` for a door sensor
-- report a monitored measurement's lowest, mean, highest and latest value with
-  its unit over the last 24 hours, 7 days or 30 days (`get_measurements`), from
-  Home Assistant's statistics, one line per device:
-  `- sensor.desk_power "Desk power": min 3.2, mean 41.5, max 412, latest 380 "W"`.
-  A device without statistics for the range reads `no statistics`
-- show the changes Home Assistant recorded, and whether Home Assistant can be reached
-- list the devices in Home Assistant, with their kind
-- show a chart in the agent panel (`show_chart`); see [Charts](#charts)
-- start or stop monitoring a device (`monitor`, `stop_monitoring`),
-  after you approve it in the chat. You can
-  approve or reject the proposed change; a rejection changes nothing
-- turn a monitored light, plug or switch on or off (`turn_on`, `turn_off`),
-  after you approve it in the chat. A light can also take a brightness from 1
-  to 100 percent; a plug or switch cannot. No other device can be switched: a
-  command for an `on_off`, `measurement` or `state` device answers "This device
-  cannot be switched." This
-  needs the `control` profile
-  (see [control.md](control.md)). The agent reports what Home Keeper then
-  observed: the change, no change within 5 seconds, a refusal from Home
-  Assistant, or an unreachable controller. A rejection sends nothing
-
-The agent can suggest a change inside an answer, but it proposes a command
-only after you ask for one or agree to its suggestion. Before you see the
-approval prompt, the agent checks the device and the control state itself.
-It shows no prompt, and says why, when light control is off, the device is not
-monitored (it offers to monitor it), the device is unavailable or has no known
-on/off state, the device is already in that state, the brightness is outside
-1 to 100 percent, or a brightness was asked for a plug or switch. In Telegram,
-only people on the control allowlist can switch lights, plugs and switches; see
-[Telegram device control](telegram.md#switch-lights-plugs-and-switches).
-
-It cannot:
-
-- see a value it was not given. It states only the numbers `get_measurements`
-  returns, with their unit, and never estimates power or energy use. Without
-  statistics, or for a device that is not a monitored measurement, it says it
-  cannot see the value.
-- reach Home Assistant. It sends device commands to the Home Keeper API, which
-  forwards them to the controller.
-- read the database. It sees only what the API returns.
-
-Usage numbers come from the API, not from the model's own arithmetic. Every
-total comes with the time that is unknown: time Home Assistant has no history
-for, or reported the device unavailable. Unknown time is never counted as "off".
+The agent is optional. Without the `agent` profile, nothing on this page runs.
 
 ## Start
 
-Set the model first (see below), then add `--profile agent` to the command you
-already use:
+1. [Set the model](#set-the-model) in `.env`.
+2. Add `--profile agent` to your usual command:
 
-```sh
-docker compose --profile agent up --build --wait                     # bundled Home Assistant
-docker compose -f compose.demo.yaml --profile agent up --build --wait  # synthetic demo
-```
+   ```sh
+   docker compose --profile agent up --build --wait                       # bundled Home Assistant
+   docker compose -f compose.demo.yaml --profile agent up --build --wait  # demo
+   ```
 
-Open the dashboard at <http://localhost:8000> and select **Ask** in the header.
-The agent panel opens beside the current tab, so the device cards stay in view
-while you talk about them. It starts at 40% of the window. Drag its edge, or
-focus the edge and use the arrow keys, to make it between 360 pixels and 70% of
-the window wide; **Expand agent panel** jumps to 70% and back. On a narrow screen
-it fills the screen; **Close agent panel** returns to the tab you were on. The
-panel's width, and whether it is open, are remembered across reloads in the same
-browser. Without the `agent` profile, the panel says the
-agent isn't running and links here; the rest of the dashboard works as before.
+3. Open <http://localhost:8000> and select **Ask** in the header.
 
-To use Telegram too, see [Telegram setup](telegram.md). It uses this same agent
-with separate conversations and explicit monitoring approvals.
+The profile adds one service:
 
-The profile adds one container:
+| Service | Port                                  | Role                                                                 |
+| ------- | ------------------------------------- | -------------------------------------------------------------------- |
+| `agent` | `127.0.0.1:2026` (`AGENT_PORT`)       | [Aegra](https://github.com/ibbybuilds/aegra) serving the agent with the LangGraph API |
 
-| Service | Port (on `127.0.0.1`) | Job                                                                                    |
-| ------- | --------------------- | -------------------------------------------------------------------------------------- |
-| `agent` | 2026 (`AGENT_PORT`)   | [Aegra](https://github.com/ibbybuilds/aegra) serving the agent with the LangGraph API |
+The dashboard reaches the agent through `web` at `/agent`. Port 2026 is only
+for LangGraph Studio and other local tools.
 
-The dashboard reaches Aegra through the web container, at `/agent` on the
-dashboard's own address. Port 2026 is only for
-LangGraph Studio and other local tools.
+To use the agent from Telegram too, see [telegram.md](telegram.md).
 
-## Use the agent panel
+## What it can do
 
-- Answers stream in as the agent writes them. When the agent uses a tool, the
-  panel shows the call collapsed; open it to see the arguments and the result.
-  A chart shows in full instead (see [Charts](#charts)).
-  **Stop generating** ends an answer early.
-- When a question fails, the panel says so and puts the question back in that
-  chat's message box, so you can send it again.
-- When the agent proposes a device change (`monitor`, `stop_monitoring`,
-  `turn_on`, `turn_off`), a card on that call names the device and the action,
-  with **Approve** and **Reject**. The device name comes from the dashboard; a
-  device the dashboard does not know shows its entity id. When one proposal
-  holds several changes, you decide each one; the agent continues once all of
-  them have a decision. A card disappears once you decide. If the proposal is in
-  a form the dashboard cannot show, the panel offers only **Reject**.
-- After you approve a command, the agent reports what Home Keeper observed (see
-  [control.md](control.md)). The device card on the page changes on its next
-  refresh, never before Home Keeper sees the change.
-- **Recent chats** lists the chats you started in the dashboard, newest first,
-  titled by their first question. Telegram conversations do not appear.
-  **New chat** starts another; **Delete chat** deletes the open chat from the
-  agent's database. A reload reopens the chat you had open. If a chat's history
-  cannot be loaded, the panel says so and offers **Try again** instead of a
-  message box.
+The agent reaches Home Keeper only through the public API, as the dashboard
+does. It never reads the database or Home Assistant.
 
-Threads are stored in the agent's own database in the shared Postgres, so a
-conversation survives a restart.
-`docker compose --profile agent down` keeps them; add `--volumes` to delete them
-with everything else.
+| Tool                         | Does                                                                                  | Needs approval |
+| ---------------------------- | ------------------------------------------------------------------------------------- | -------------- |
+| `list_monitored`             | Lists monitored devices with their kind and current state, such as "Heat" or `"412" "W"` | No          |
+| `get_usage`                  | On-time per day and per hour, switch-ons and unknown time for on/off devices; average brightness for lights | No |
+| `get_measurements`           | Min, mean, max and latest value with unit over 24 hours, 7 days or 30 days            | No             |
+| `get_events`                 | Recorded changes                                                                      | No             |
+| `get_health`                 | Whether Home Assistant can be reached                                                 | No             |
+| `list_devices`               | Lists the devices in Home Assistant with their kind                                   | No             |
+| `show_chart`                 | Draws a chart in the agent panel; see [Charts](#charts)                               | No             |
+| `monitor`, `stop_monitoring` | Starts or stops monitoring a device                                                   | Yes            |
+| `turn_on`, `turn_off`        | Switches a monitored light, plug or switch; a light can take a brightness of 1–100%   | Yes, and the `control` profile |
 
-If port 2026 is taken, override it, for example
-`AGENT_PORT=12026 docker compose --profile agent up --build --wait`. The
-dashboard does not use that port, so the panel keeps working.
-Aegra's CORS allows no browser origin: the panel calls it on the dashboard's own
-origin, and no other website may read its answers. The container writes its Aegra
-config at startup; `apps/agent/aegra.json` is only for running `aegra dev` locally.
+Usage lines use Home Assistant's words, for example
+`"Open" for 3h 12m, ..., became "Open" 4 time(s)` for a door sensor. A
+measurement line reads
+`- sensor.desk_power "Desk power": min 3.2, mean 41.5, max 412, latest 380 "W"`,
+or `no statistics` when the range has none.
+
+### Rules the agent follows
+
+- Every number comes from the API, never from the model's own arithmetic.
+- Every total comes with its unknown time. Unknown time is never "off".
+- It states only values `get_measurements` returns. It never estimates power or
+  energy use.
+- It may suggest a change, but proposes a command only after you ask for one or
+  agree.
+
+Before it shows an approval prompt, the agent checks the device and control
+state. It shows no prompt, and says why, when:
+
+- control is off,
+- the device is not monitored (it offers to monitor it),
+- the device is unavailable or its state is unknown,
+- the device is already in that state,
+- the brightness is outside 1–100%, or a brightness was asked for a plug or
+  switch,
+- the device is not a light, plug or switch ("This device cannot be switched.").
+
+After you approve, the agent reports the [outcome](control.md#outcome). A
+rejection changes nothing.
+
+## The agent panel
+
+The panel opens beside the current tab, so the device cards stay in view.
+
+- **Size.** It starts at 40% of the window. Drag its edge, or focus the edge and
+  use the arrow keys, for a width between 360 pixels and 70%. **Expand agent
+  panel** toggles 70%. On a narrow screen it fills the screen. The width and
+  open state persist across reloads.
+- **Answers** stream in. Tool calls show collapsed; open one to see its
+  arguments and result. **Stop generating** ends an answer early.
+- **Failures.** A failed question goes back into the message box so you can
+  resend it.
+- **Approvals.** A proposed change shows a card with the device, the action,
+  **Approve** and **Reject**. With several changes, decide each; the agent
+  continues once all are decided. A proposal the panel cannot display offers
+  only **Reject**. A device card changes on its next refresh, never before Home
+  Keeper sees the change.
+- **Chats.** **Recent chats** lists dashboard chats, newest first, titled by
+  their first question. Telegram chats do not appear. **New chat** starts one;
+  **Delete chat** deletes the open chat. A reload reopens the last chat.
+
+Without the `agent` profile, the panel says the agent is not running and links
+here.
+
+Chats live in the agent's own database. `docker compose --profile agent down`
+keeps them; add `--volumes` to delete them.
 
 ## Charts
 
-When a chart helps, the agent puts one in its answer in the agent panel. The
-agent chooses the kind of chart and the data; the dashboard draws it in its own
-colors, in light and dark mode. The agent cannot set colors, sizes or fonts.
+The agent chooses the kind and the data. The dashboard draws the chart in its
+own colors for light and dark mode. The agent cannot set colors, sizes or
+fonts.
 
-| Kind           | What it shows                                                                                   |
-| -------------- | ----------------------------------------------------------------------------------------------- |
-| `bar`          | Values compared across categories, such as switch-ons per device. Up to 5 series.               |
-| `line`         | Values over ordered categories, such as minutes on per hour. Points join with straight lines.   |
-| `usage_by_day` | On time and unknown time per day for up to 5 monitored devices, stacked, with totals below.     |
+| Kind           | Shows                                                                          | Data from               |
+| -------------- | ------------------------------------------------------------------------------ | ----------------------- |
+| `bar`          | Values across categories, such as switch-ons per device. Up to 5 series.        | The agent's tool results |
+| `line`         | Values over ordered categories, such as minutes on per hour.                    | The agent's tool results |
+| `usage_by_day` | On time and unknown time per day, stacked, for up to 5 devices and 366 days.    | The dashboard loads usage itself |
 
-- For `bar` and `line`, the agent uses only numbers from its tool results.
-- For `usage_by_day`, the agent names only the devices and a range of at most
-  366 days. The dashboard loads the usage itself, labels each device with its
-  name (or its entity id when it has none) and shows the days in the time zone
-  the usage report names, as the History dialog does. With several devices, each device
-  has its own stack of on and unknown time per day. A range without any history
-  draws every day as unknown and says no history is recorded.
-- Hover a bar or point to see its value. Each chart has a short text summary for
+The **⋯** menu on a chart offers:
+
+- **Show as table** / **Show as chart**.
+- **Download PNG**: the chart with its title, legend and, for `usage_by_day`,
+  each device's totals. Saved as `<title>-<YYYY-MM-DD>.png`.
+- **Download CSV**: the table with a header row and raw numbers (usage in hours,
+  2 decimals). Saved as `<title>-<YYYY-MM-DD>.csv`. A cell that starts with `=`,
+  `+`, `-` or `@` gets a leading `'`, so spreadsheets do not run it as a
+  formula.
+
+Details:
+
+- `usage_by_day` uses the time zone the usage report names. A range without
+  history draws every day as unknown.
+- Hover a bar or point to see its value. Each chart has a text summary for
   screen readers.
-- The **⋯** menu on a chart offers:
-  - **Show as table** and **Show as chart**. The table lists the category, then
-    one column per series, each value with its unit. For `usage_by_day` it
-    lists the date, then the on and unknown time of each device.
-  - **Download PNG**: the chart with its title and legend, and for
-    `usage_by_day` each device's totals, in the current light or dark look,
-    saved as `<title>-<YYYY-MM-DD>.png`. It is available while the chart is
-    shown.
-  - **Download CSV**: the table's columns with a header row and raw numbers
-    (usage in hours, with 2 decimals), saved as `<title>-<YYYY-MM-DD>.csv`. A
-    text cell that starts with `=`, `+`, `-` or `@` gets a leading `'`, so a
-    spreadsheet does not run it as a formula.
-- While the agent writes a chart, the panel shows a placeholder. A chart the
-  panel cannot draw says so; when its usage cannot load, the chart offers
-  **Retry**.
-- A reopened chat draws its charts again. `usage_by_day` loads the usage again,
-  so days Home Assistant has since purged show as unknown.
-- Device and series names are shown as text everywhere: in the chart, the
-  legend, the tooltip, the table and both downloads.
-- The chart code loads with the first chart, not when the panel opens.
-
-Telegram answers stay text only: a Telegram conversation's model is never
-offered `show_chart`.
+- A chart the panel cannot draw says so. A `usage_by_day` chart whose usage
+  fails offers **Retry**.
+- A reopened chat redraws its charts. `usage_by_day` loads usage again, so days
+  Home Assistant has purged show as unknown.
+- Device and series names render as text everywhere, including downloads.
+- The chart code loads with the first chart.
+- Telegram answers are text only. The model is never offered `show_chart` there.
 
 ## Set the model
 
-Put the model settings in a `.env` file in the repository root. Compose reads it
-automatically and Git ignores it. [.env.example](../.env.example) lists them.
+Put the settings in `.env` in the repository root. [.env.example](../.env.example)
+lists them.
 
-| Variable                | Meaning                                                                 |
-| ----------------------- | ----------------------------------------------------------------------- |
-| `AGENT_MODEL`           | `provider:model`. Default `azure:gpt-6.1-sol`.                          |
-| `AZURE_OPENAI_ENDPOINT` | Your Azure OpenAI resource, for example `https://my-resource.openai.azure.com` |
-| `AZURE_OPENAI_API_KEY`  | Its API key                                                             |
+| Variable                | Description                                                                  |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `AGENT_MODEL`           | `provider:model`. Default: `azure:gpt-6.1-sol`.                              |
+| `AZURE_OPENAI_ENDPOINT` | Your Azure OpenAI resource, such as `https://my-resource.openai.azure.com`   |
+| `AZURE_OPENAI_API_KEY`  | Its API key                                                                  |
+| `OPENAI_API_KEY`        | For an `openai:` model                                                       |
 
-With an `azure:` model, the part after the colon is your deployment name. Any
-other value is passed to LangChain's
-[`init_chat_model`](https://python.langchain.com/docs/how_to/chat_models_universal_init/),
-for example `anthropic:claude-sonnet-4-5`. Model choice lives in one file,
-`apps/agent/src/home_keeper_agent/model.py`. `openai:` models work with
-`OPENAI_API_KEY` in `.env`. Any other provider needs two changes: its LangChain
-package in `apps/agent/pyproject.toml`, and its key variable listed under the
-`agent` service's `environment` in `compose.agent.yaml`. Compose passes only the
-listed variables into the container, not the whole `.env`. The rest of the agent
-does not change.
+- With `azure:`, the part after the colon is your deployment name.
+- Any other value goes to LangChain's
+  [`init_chat_model`](https://python.langchain.com/docs/how_to/chat_models_universal_init/),
+  such as `anthropic:claude-sonnet-4-5`.
+- Another provider needs two changes: its LangChain package in
+  `apps/agent/pyproject.toml`, and its key variable under the `agent` service's
+  `environment` in `compose.agent.yaml`. Compose passes only listed variables
+  into the container.
+- Model choice lives in `apps/agent/src/home_keeper_agent/model.py`.
 
-If a required setting is missing, the agent fails at startup, names the
-variable in `docker compose logs agent`, and never turns healthy.
+A missing required setting stops the agent at startup. `docker compose logs
+agent` names the variable, and the service never turns healthy.
 
 ## What leaves your machine
 
-When the agent is on, your questions and the tool results go to the model
-provider you configured. Tool results contain light names, states, timestamps,
-usage numbers, the light control state and the outcome of each light command. The Home Assistant token, the database and the service
-credential never leave. [security.md](security.md) has the full boundary.
+Your questions, earlier messages in the chat, and the tool results go to your
+model provider. Tool results contain device names, states, timestamps, usage
+numbers, the control state and command outcomes.
+
+The Home Assistant token, the database and the service credential never leave.
+See [security.md](security.md).
 
 ## Example questions
 
-- Which lights are you watching, and are they on?
+- Which devices are you watching, and are they on?
 - How long was the desk lamp on this week, per day? Show it as a chart.
 - At which hours is the reading light usually on?
-- Which light was on longest in the last 7 days?
+- What did the desk power meter read today?
 - Was the desk lamp unavailable at any time yesterday?
-- Can you reach Home Assistant right now?
 - Start monitoring the hallway light.
-- Turn the desk lamp off.
-- Turn on the kettle plug.
 - Set the reading light to 30 percent.
 
 ## Limits
 
-- Aegra has no authentication. Anyone who can reach port 2026, or `/agent` on
-  the dashboard's address, can read and write every thread and start the agent.
-  With the `control` profile, they can also propose and approve their own device
-  commands. Both bind to `127.0.0.1` for that reason. Do not publish them on
-  your network.
-- The web container refuses `/agent` requests that browsers mark as sent by
-  another website. Port 2026 has no such check: a page you visit can still send
-  simple cross-site requests to it. Aegra does not check the `Host` header, so
-  DNS rebinding is not blocked on either.
-- There is no separate chat page. Threads made in the earlier Agent Chat UI do
-  not appear in Recent chats.
+> [!WARNING]
+> Aegra has no authentication. Anyone who can reach port 2026, or `/agent` on
+> the dashboard, can read and write every chat and run the agent. With the
+> `control` profile, they can also approve their own device commands. Both bind
+> to `127.0.0.1` for this reason. Do not publish them.
+
+- `web` refuses `/agent` requests that the browser marks as cross-site. Port
+  2026 has no such check, so a page you visit can send simple requests to it.
+- Aegra does not check the `Host` header, so neither route blocks DNS
+  rebinding.
+- Aegra's CORS allows no origin, so no other website can read its answers.
+- If port 2026 is taken, set `AGENT_PORT`. The panel does not use that port.
+- The container writes its Aegra config at startup. `apps/agent/aegra.json` is
+  only for `aegra dev`.
+- Chats from the earlier Agent Chat UI do not appear in **Recent chats**.
